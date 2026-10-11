@@ -1,1 +1,24 @@
-h1 { font-family: Arial, Helvetica, sans-serif; }
+/* ReplyIQ custom styles (Tailwind handles the rest) */
+.message-body { white-space: pre-wrap; word-break: break-word; }
+
+.deadline-overdue { color: #b91c1c; }
+.deadline-urgent  { color: #c2410c; }
+.deadline-ok      { color: #15803d; }
+
+.row-overdue { border-left: 4px solid #dc2626; }
+.row-urgent  { border-left: 4px solid #f97316; }
+.row-ok      { border-left: 4px solid #22c55e; }
+.row-resolved{ border-left: 4px solid #94a3b8; opacity: .7; }
+
+.field-label { display:block; font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:#64748b; }
+.field-input { margin-top:.25rem; width:100%; border-radius:.375rem; border:1px solid #cbd5e1; background:#fff; padding:.5rem .75rem; font-size:.875rem; }
+.field-input:focus { outline:none; box-shadow:0 0 0 2px #fbbf24; border-color:#fbbf24; }
+
+.seg { display: inline-flex; border: 1px solid #cbd5e1; border-radius: .375rem; overflow: hidden; }
+.seg button { padding: .375rem .75rem; font-size: .8rem; background: #fff; color: #475569; border: 0; cursor: pointer; }
+.seg button + button { border-left: 1px solid #cbd5e1; }
+.seg button.active-yes { background: #15803d; color: #fff; }
+.seg button.active-no  { background: #b91c1c; color: #fff; }
+.seg button.active-unset { background: #e2e8f0; color: #334155; }
+
+.saving-indicator { transition: opacity .3s; }

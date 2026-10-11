@@ -1,15 +1,21 @@
 {
-  "name": "webapp",
+  "name": "replyiq",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:sandbox": "wrangler pages dev dist --ip 0.0.0.0 --port 3000",
     "build": "vite build",
-    "preview": "wrangler pages dev",
-    "deploy": "npm run build && wrangler pages deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+    "preview": "wrangler pages dev dist",
+    "deploy": "npm run build && wrangler pages deploy dist",
+    "clean-port": "fuser -k 3000/tcp 2>/dev/null || true",
+    "db:schema": "psql \"$DATABASE_URL\" -f db/schema.sql",
+    "db:seed": "psql \"$DATABASE_URL\" -f db/seed.sql",
+    "db:reset": "npm run db:schema && npm run db:seed",
+    "test": "curl -s http://localhost:3000/api/health"
   },
   "dependencies": {
-    "hono": "^4.13.8"
+    "hono": "^4.13.8",
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
     "@hono/vite-build": "^1.11.1",
