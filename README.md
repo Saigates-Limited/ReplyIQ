@@ -3,7 +3,7 @@
 AI-assisted reply drafting for **Saigates Ltd** Amazon UK customer service.
 
 - **Goal**: answer Amazon UK customer messages inside the 24-hour window with AI drafts that a human always reviews, edits and approves. **Nothing is ever sent to customers automatically.**
-- **Stack**: Hono (TypeScript) on Cloudflare Pages/Workers · PostgreSQL (Supabase in production) via postgres.js · OpenAI `gpt-5.5` server-side · Tailwind + vanilla JS
+- **Stack**: Hono (TypeScript) on Cloudflare Pages/Workers · PostgreSQL (Supabase via Cloudflare Hyperdrive in production) via postgres.js · OpenAI `gpt-5.5` server-side · Tailwind + vanilla JS
 - **Production**: https://replyiq.pages.dev (Cloudflare Pages project `replyiq`, Saigates' own account)
 - **Sandbox preview**: https://3000-id2nlba4e4s5y3pr1acd5-02b9cc79.sandbox.novita.ai
   - No demo accounts. On a fresh database the app shows **`/setup`** once, to create the first manager; after that it is permanently disabled.
@@ -76,9 +76,21 @@ All routes except `/login`, `/setup`, `POST /api/auth/login|logout|setup`, `/api
 
 ## Production setup (Supabase + Cloudflare Pages)
 
-### 1. Database — Supabase Transaction Pooler (port 6543)
+### 1. Database — Supabase via Cloudflare Hyperdrive
 
-postgres.js on Workers is configured for Supabase's Supavisor pooler in **transaction mode**: `prepare: false` (required — PgBouncer/Supavisor transaction mode does not support named prepared statements), `max: 1`, one short-lived connection per request, `ssl: 'require'`. Hyperdrive is not needed; add it later only if you hit connection limits.
+**Why Hyperdrive:** a direct TLS connection from a Cloudflare Worker to Supabase's Supavisor pooler does not complete the handshake (verified from the edge: plain TCP connects, TLS loops until the subrequest limit). Hyperdrive terminates the Postgres TLS session inside Cloudflare and exposes a local binding to the Worker, which postgres.js uses with `prepare: false`, `max: 1`, one connection per request.
+
+Production configuration (already created, bound in `wrangler.jsonc` as `HYPERDRIVE`):
+
+| Setting | Value |
+|---|---|
+| Hyperdrive name / ID | `replyiq-db` / `619303c46e164a8eab43ef1101c16470` |
+| Origin host | `aws-0-eu-west-2.pooler.supabase.com` (**Session pooler**) |
+| Port | **5432** (session mode — Hyperdrive needs this, not the 6543 transaction pooler) |
+| User | `postgres.<project-ref>` |
+| Caching | Max Age 1 s, Stale-While-Revalidate 0 |
+
+If the Supabase password is ever rotated, update it in **Cloudflare → Workers & Pages → Hyperdrive → replyiq-db → Settings**; no redeploy needed.
 
 **Create the tables (Supabase SQL Editor — no psql needed):**
 
@@ -87,15 +99,9 @@ postgres.js on Workers is configured for Supabase's Supavisor pooler in **transa
 3. If you are upgrading an existing database, also run each file in `db/migrations/` in order.
 4. Do **not** run `db/seed.sql` in production — it is demo cases only.
 
-**Get the connection string:** Project Settings → **Database** → Connection string → **Transaction pooler** (port **6543**). Append `?sslmode=require`. It looks like:
-
-```
-postgres://postgres.<project-ref>:<PASSWORD>@aws-0-eu-west-2.pooler.supabase.com:6543/postgres?sslmode=require
-```
-
 Data API can stay off — the app speaks plain Postgres.
 
-**First login:** after deploying, open `https://<your-domain>/setup` and create your own manager account. The page is disabled permanently as soon as one account exists; add further staff from the **Staff** page.
+**First login:** open `https://replyiq.pages.dev/setup` and create your own manager account. The page is disabled permanently as soon as one account exists; add further staff from the **Staff** page.
 
 ### 2. Secrets — where to paste them (never in chat, never in git)
 
@@ -103,13 +109,12 @@ Data API can stay off — the app speaks plain Postgres.
 
 | Name | Value |
 |---|---|
-| `DATABASE_URL` | the Transaction Pooler URI above |
 | `OPENAI_API_KEY` | your OpenAI key (model `gpt-5.5`) |
+| `DATABASE_URL` | *optional* — only used when no Hyperdrive binding exists (e.g. local dev). Production uses Hyperdrive. |
 
 Or from a terminal with `CLOUDFLARE_API_TOKEN` set:
 
 ```bash
-npx wrangler pages secret put DATABASE_URL --project-name replyiq
 npx wrangler pages secret put OPENAI_API_KEY --project-name replyiq
 ```
 
@@ -161,4 +166,4 @@ npm run build && pm2 start ecosystem.config.cjs
 - Analytics / reporting on outcomes
 - Attachments (photos) on cases
 
-- **Platform**: Cloudflare Pages on Saigates' account (switch to Worker + Cron for the Gmail phase) · **Status**: ✅ deployed, awaiting `DATABASE_URL` / `OPENAI_API_KEY` secrets · **Last updated**: 2026-10-11
+- **Platform**: Cloudflare Pages on Saigates' account + Hyperdrive → Supabase (switch to Worker + Cron for the Gmail phase) · **Status**: ✅ live at https://replyiq.pages.dev, awaiting first manager account via `/setup` · **Last updated**: 2026-10-11

@@ -3,10 +3,20 @@
   "name": "replyiq",
   "compatibility_date": "2026-09-17",
   "pages_build_output_dir": "./dist",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Cloudflare Hyperdrive terminates the Postgres TLS connection to Supabase (session pooler, port 5432).
+  // Direct TLS from the Worker to Supavisor does not complete, so all production DB traffic goes via this binding.
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "619303c46e164a8eab43ef1101c16470",
+      // Local dev only: wrangler uses this instead of the real Hyperdrive. Override via .dev.vars (WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE).
+      "localConnectionString": "postgres://replyiq:replyiq_dev@localhost:5432/replyiq"
+    }
+  ]
+
   // Secrets (never put values here):
-  //   DATABASE_URL     - Supabase Transaction Pooler URI (port 6543, ?sslmode=require)
   //   OPENAI_API_KEY   - OpenAI key, server-side only
-  // Set them in the Cloudflare Pages dashboard (Settings → Environment variables, type "Secret")
-  // or with: npx wrangler pages secret put DATABASE_URL --project-name <project>
+  //   DATABASE_URL     - optional fallback when no Hyperdrive binding is present (local dev)
 }

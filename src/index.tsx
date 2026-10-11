@@ -3,7 +3,7 @@ import { serveStatic } from 'hono/cloudflare-workers'
 import { casesApi } from './routes/cases'
 import { authApi, authPublic } from './routes/auth'
 import { draftsApi } from './routes/drafts'
-import { getDb, type Bindings } from './db'
+import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
 import { page, loginPage, setupPage } from './page'
 
@@ -20,7 +20,7 @@ app.use('*', async (c, next) => {
 
 // ── Public (no login) ───────────────────────────────────────────
 app.use('/static/*', serveStatic({ root: './public' }))
-app.get('/api/health', (c) => c.json({ ok: true, db: Boolean(c.env.DATABASE_URL), ai: Boolean(c.env.OPENAI_API_KEY), time: new Date().toISOString() }))
+app.get('/api/health', (c) => c.json({ ok: true, db: dbConfigured(c.env), via: c.env.HYPERDRIVE ? 'hyperdrive' : c.env.DATABASE_URL ? 'direct' : 'none', ai: Boolean(c.env.OPENAI_API_KEY), time: new Date().toISOString() }))
 async function userCount(env: Bindings) {
   const sql = getDb(env)
   try {
@@ -45,7 +45,7 @@ const notConfigured = (c: any) =>
   )
 
 app.get('/login', async (c) => {
-  if (!c.env.DATABASE_URL) return notConfigured(c)
+  if (!dbConfigured(c.env)) return notConfigured(c)
   try {
     if (await getSessionUser(c)) return c.redirect('/')
     if ((await userCount(c.env)) === 0) return c.redirect('/setup')
@@ -56,7 +56,7 @@ app.get('/login', async (c) => {
   return c.html(loginPage())
 })
 app.get('/setup', async (c) => {
-  if (!c.env.DATABASE_URL) return notConfigured(c)
+  if (!dbConfigured(c.env)) return notConfigured(c)
   try {
     if ((await userCount(c.env)) > 0) return c.redirect('/login')
   } catch (e) {
