@@ -3,32 +3,10 @@
   "name": "webapp",
   "compatibility_date": "2026-09-17",
   "pages_build_output_dir": "./dist",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ]
-  // "vars": {
-  //   "MY_VAR": "my-variable"
-  // },
-  // "kv_namespaces": [
-  //   {
-  //     "binding": "MY_KV_NAMESPACE",
-  //     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  //   }
-  // ],
-  // "r2_buckets": [
-  //   {
-  //     "binding": "MY_BUCKET",
-  //     "bucket_name": "my-bucket"
-  //   }
-  // ],
-  // "d1_databases": [
-  //   {
-  //     "binding": "MY_DB",
-  //     "database_name": "my-database",
-  //     "database_id": ""
-  //   }
-  // ],
-  // "ai": {
-  //   "binding": "AI"
-  // }
+  "compatibility_flags": ["nodejs_compat"]
+  // Secrets (never put values here):
+  //   DATABASE_URL     - Supabase Transaction Pooler URI (port 6543, ?sslmode=require)
+  //   OPENAI_API_KEY   - OpenAI key, server-side only
+  // Set them in the Cloudflare Pages dashboard (Settings → Environment variables, type "Secret")
+  // or with: npx wrangler pages secret put DATABASE_URL --project-name <project>
 }

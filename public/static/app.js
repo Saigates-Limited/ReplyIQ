@@ -53,8 +53,24 @@
   function route() {
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
     if (m) renderCase(Number(m[1]))
+    else if (location.pathname === '/staff') renderStaff()
     else renderList()
   }
+
+  // Session expired anywhere → back to login
+  axios.interceptors.response.use(
+    (r) => r,
+    (err) => {
+      if (err.response?.status === 401) location.href = '/login?next=' + encodeURIComponent(location.pathname)
+      return Promise.reject(err)
+    }
+  )
+  document.getElementById('logout-btn').onclick = async () => {
+    await axios.post('/api/auth/logout')
+    location.href = '/login'
+  }
+  const ME = window.CURRENT_USER || { role: 'agent' }
+  const isManager = ME.role === 'manager'
 
   // ---------- header clock ----------
   const clock = document.getElementById('header-clock')
@@ -146,8 +162,14 @@
         </td>
         <td class="px-4 py-3">${statusBadge(k.status)}</td>
         <td class="px-4 py-3 hidden sm:table-cell text-slate-500 whitespace-nowrap">${dayjs(k.last_customer_message_at).from(now)} <span class="text-xs text-slate-400">(${k.message_count})</span></td>
-        <td class="px-4 py-3 hidden md:table-cell text-xs">${draft ? `<span class="px-2 py-0.5 rounded-full ${draft === 'approved' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}">${esc(draft)}</span>` : '<span class="text-slate-400">none</span>'}</td>
+        <td class="px-4 py-3 hidden md:table-cell text-xs">${draftBadge(draft, k.latest_draft_needs_manager)}</td>
       </tr>`
+  }
+
+  function draftBadge(status, needsManager) {
+    if (!status) return '<span class="text-slate-400">none</span>'
+    const cls = { draft: 'bg-amber-100 text-amber-800', approved: 'bg-emerald-100 text-emerald-800', sent: 'bg-slate-200 text-slate-700' }[status] || 'bg-slate-100 text-slate-600'
+    return `<span class="px-2 py-0.5 rounded-full ${cls}">${esc(status)}</span>${needsManager && status === 'draft' ? ' <span class="px-2 py-0.5 rounded-full bg-violet-100 text-violet-800" title="Needs manager approval"><i class="fas fa-user-shield"></i></span>' : ''}`
   }
 
   // ---------- CASE SCREEN ----------
@@ -247,19 +269,14 @@
               <p class="mt-3 text-xs text-slate-400">Changes save automatically.</p>
             </section>
 
-            <section id="draft-panel" class="bg-white rounded-xl shadow-sm p-5">
-              <h2 class="font-semibold mb-2"><i class="fas fa-wand-magic-sparkles mr-2 text-slate-400"></i>Reply draft</h2>
-              <button id="generate-btn" disabled class="w-full px-4 py-2 rounded-md bg-slate-300 text-slate-600 cursor-not-allowed text-sm font-medium" title="Draft generation is coming in the next phase">
-                <i class="fas fa-wand-magic-sparkles mr-1"></i>Generate draft
-              </button>
-              <p class="mt-2 text-xs text-slate-500">AI drafting (gpt-5.5) will be enabled in the next phase. Agents will review, edit and approve every draft — nothing is sent automatically.</p>
-              ${data.drafts.length ? `<div class="mt-3 text-xs text-slate-500">${data.drafts.length} previous draft(s)</div>` : ''}
-            </section>
           </aside>
         </div>
+
+        <section id="draft-workspace" class="mt-6"></section>
       </section>`
 
     wireFields(id)
+    renderDraftWorkspace(id, k, data.drafts)
   }
 
   function messageCard(m) {
@@ -330,6 +347,263 @@
     document.getElementById('status-select').addEventListener('change', async (e) => {
       await save({ status: e.target.value })
       renderCase(id)
+    })
+  }
+
+  // ---------- DRAFT WORKSPACE ----------
+  const TREE_LABEL = {
+    inr: 'Item not received', warranty: 'Warranty query', esim: 'eSIM / US variant', compatibility: 'Compatibility',
+    battery: 'Battery complaint', safety: 'SAFETY CONCERN', authenticity: 'Authenticity / condition', missing_item: 'Missing / wrong item',
+    change_of_mind: 'Change of mind', discount: 'Discount request', locked_return: 'Locked return (iCloud/FRP)', oow_repair: 'Out-of-warranty repair',
+    fault_0_30: 'Device fault 0–30 days', fault_31_90: 'Device fault 31–90 days', fault_91_365: 'Device fault 91–365 days', refund_return: 'Refund / return request', other: 'Other',
+  }
+
+  function renderDraftWorkspace(caseId, kase, drafts) {
+    const ws = document.getElementById('draft-workspace')
+    const active = drafts.filter((d) => d.status !== 'discarded')
+    const current = active[0] || null
+    const history = active.slice(1)
+
+    ws.innerHTML = `
+      <div class="bg-white rounded-xl shadow-sm">
+        <div class="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+          <h2 class="font-semibold"><i class="fas fa-wand-magic-sparkles mr-2 text-slate-400"></i>Reply draft</h2>
+          <div class="flex items-center gap-3 text-sm">
+            <span class="text-xs text-slate-500 hidden sm:inline"><i class="fas fa-shield-halved mr-1"></i>Nothing is sent automatically</span>
+            <button id="generate-btn" class="px-4 py-2 rounded-md bg-slate-900 text-white font-medium hover:bg-slate-800 disabled:opacity-50">
+              <i class="fas fa-wand-magic-sparkles mr-1"></i>${current ? 'Generate new draft' : 'Generate draft'}
+            </button>
+          </div>
+        </div>
+        <div id="draft-body" class="p-5">
+          ${current ? draftEditor(current, kase) : `
+            <div class="text-center py-10 text-slate-500">
+              <i class="fas fa-file-lines text-3xl mb-3 text-slate-300 block"></i>
+              No draft yet. Fill in the case details above, then click <strong>Generate draft</strong>.
+              <div class="mt-2 text-xs">The AI receives the customer's first name, the thread text (with emails, phones and postcodes redacted) and the case fields — nothing else.</div>
+            </div>`}
+        </div>
+        ${history.length ? `
+          <details class="border-t border-slate-100 px-5 py-3 text-sm">
+            <summary class="cursor-pointer text-slate-600">${history.length} earlier draft${history.length === 1 ? '' : 's'}</summary>
+            <div class="mt-3 space-y-3">
+              ${history.map((d) => `
+                <div class="rounded-md border border-slate-200 p-3">
+                  <div class="flex items-center justify-between text-xs text-slate-500 mb-2">
+                    <span>${draftBadge(d.status, d.needs_manager)} ${esc(TREE_LABEL[d.tree] || d.tree || '')} · ${fmtDateTime(d.created_at)} by ${esc(d.created_by_name || '—')}</span>
+                    <span class="${d.check_result === 'PASS' ? 'text-emerald-700' : 'text-red-700'} font-semibold">${esc(d.check_result || '')}</span>
+                  </div>
+                  <div class="message-body text-sm text-slate-700 max-h-40 overflow-auto">${esc(d.draft_text)}</div>
+                </div>`).join('')}
+            </div>
+          </details>` : ''}
+      </div>`
+
+    document.getElementById('generate-btn').onclick = () => generate(caseId)
+    if (current) wireDraftEditor(caseId, kase, current)
+  }
+
+  function checkBadge(result) {
+    return result === 'PASS'
+      ? '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold"><i class="fas fa-circle-check"></i> PASS</span>'
+      : '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-100 text-red-800 text-xs font-bold"><i class="fas fa-circle-xmark"></i> FAIL</span>'
+  }
+
+  function draftEditor(d, kase) {
+    const server = d.server_findings || []
+    const modelFindings = d.check_findings || []
+    const fails = server.filter((f) => f.severity === 'fail')
+    const warns = server.filter((f) => f.severity === 'warn')
+    const locked = d.status === 'sent'
+    const canApprove = d.status === 'draft' && !fails.length && (!d.needs_manager || isManager)
+
+    return `
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2">
+          <div class="flex flex-wrap items-center gap-2 mb-3 text-sm">
+            ${checkBadge(d.check_result)}
+            ${draftBadge(d.status, false)}
+            ${d.needs_manager ? `<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-violet-100 text-violet-800 text-xs font-semibold" title="${esc(d.needs_manager_reason || '')}"><i class="fas fa-user-shield"></i> Needs manager${d.needs_manager_reason ? ': ' + esc(d.needs_manager_reason) : ''}</span>` : ''}
+            <span class="text-xs text-slate-500 ml-auto">${esc(TREE_LABEL[d.tree] || d.tree || '')} · ${esc(d.model || '')}</span>
+          </div>
+          <label class="field-label" for="draft-text">Customer-facing reply ${locked ? '(sent — read only)' : '(edit freely)'}</label>
+          <textarea id="draft-text" class="field-input font-sans leading-relaxed" rows="14" ${locked ? 'readonly' : ''}>${esc(d.draft_text)}</textarea>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            ${locked ? '' : `<button id="save-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm"><i class="far fa-floppy-disk mr-1"></i>Save edits</button>`}
+            <button id="copy-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm"><i class="far fa-copy mr-1"></i>Copy reply</button>
+            <span id="draft-save-indicator" class="text-xs text-slate-400"></span>
+            <span class="ml-auto flex items-center gap-2">
+              ${d.status === 'draft' ? `
+                <button id="discard-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-red-700">Discard</button>
+                <button id="approve-btn" ${canApprove ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canApprove ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}"
+                  title="${!canApprove ? (fails.length ? 'Fix failing checks first' : d.needs_manager ? 'Only a manager can approve this draft' : '') : ''}">
+                  <i class="fas fa-check mr-1"></i>Approve
+                </button>` : ''}
+              ${d.status === 'approved' ? `
+                <button id="unapprove-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-slate-800">Withdraw approval</button>
+                <button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="Confirm you have pasted and sent this reply in Amazon Seller Central">
+                  <i class="fas fa-paper-plane mr-1"></i>Mark as sent in Amazon
+                </button>` : ''}
+            </span>
+          </div>
+          <dl class="mt-3 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
+            <div>Generated ${fmtDateTime(d.created_at)} by ${esc(d.created_by_name || '—')}</div>
+            ${d.edited_at ? `<div>Edited ${fmtDateTime(d.edited_at)} by ${esc(d.edited_by_name || '—')}</div>` : ''}
+            ${d.approved_at ? `<div class="text-emerald-700">Approved ${fmtDateTime(d.approved_at)} by ${esc(d.approved_by_name || '—')}</div>` : ''}
+            ${d.sent_recorded_at ? `<div class="text-sky-700">Sent ${fmtDateTime(d.sent_recorded_at)} by ${esc(d.sent_recorded_by_name || '—')}</div>` : ''}
+          </dl>
+        </div>
+
+        <aside class="space-y-4">
+          <section id="check-panel" class="rounded-lg border ${fails.length ? 'border-red-200 bg-red-50' : d.check_result === 'PASS' ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'} p-4">
+            <h3 class="font-semibold text-sm mb-2"><i class="fas fa-list-check mr-1"></i>Guardrail check</h3>
+            ${fails.length ? `<ul class="text-sm text-red-800 space-y-1 mb-2">${fails.map((f) => `<li><i class="fas fa-circle-xmark mr-1"></i>${esc(f.detail)}</li>`).join('')}</ul>` : ''}
+            ${warns.length ? `<ul class="text-sm text-amber-800 space-y-1 mb-2">${warns.map((f) => `<li><i class="fas fa-triangle-exclamation mr-1"></i>${esc(f.detail)}</li>`).join('')}</ul>` : ''}
+            ${!fails.length && !warns.length ? '<p class="text-sm text-emerald-800"><i class="fas fa-circle-check mr-1"></i>Server checks passed (no PII, no unsupported promises, tone OK).</p>' : ''}
+            ${modelFindings.length ? `<details class="mt-2 text-xs"><summary class="cursor-pointer text-slate-600">Model self-check (${modelFindings.length})</summary><ul class="mt-1 space-y-1 text-slate-700">${modelFindings.map((f) => `<li>• ${esc(f)}</li>`).join('')}</ul></details>` : ''}
+          </section>
+
+          <section id="staff-notes-panel" class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <h3 class="font-semibold text-sm mb-2"><i class="fas fa-note-sticky mr-1"></i>Staff notes <span class="font-normal text-xs text-slate-500">(internal, never sent)</span></h3>
+            <textarea id="staff-notes" class="field-input text-xs" rows="8" ${locked ? 'readonly' : ''}>${esc(d.staff_notes || '')}</textarea>
+          </section>
+        </aside>
+      </div>`
+  }
+
+  function wireDraftEditor(caseId, kase, d) {
+    const text = document.getElementById('draft-text')
+    const notes = document.getElementById('staff-notes')
+    const ind = document.getElementById('draft-save-indicator')
+    const refresh = () => renderCase(caseId)
+
+    async function act(fn, okMsg) {
+      try {
+        await fn()
+        if (okMsg) toast(okMsg)
+        refresh()
+      } catch (err) {
+        toast(err.response?.data?.error || err.message, 'err')
+      }
+    }
+
+    document.getElementById('save-draft-btn')?.addEventListener('click', () =>
+      act(() => axios.patch(`/api/drafts/${d.id}`, { draft_text: text.value, staff_notes: notes.value }), 'Draft saved and re-checked')
+    )
+    document.getElementById('copy-draft-btn').onclick = async () => {
+      await navigator.clipboard.writeText(text.value)
+      toast('Reply copied to clipboard')
+    }
+    document.getElementById('approve-btn')?.addEventListener('click', () => {
+      if (text.value.trim() !== d.draft_text.trim() || (notes.value || '') !== (d.staff_notes || '')) {
+        return toast('Save your edits before approving', 'err')
+      }
+      act(() => axios.post(`/api/drafts/${d.id}/approve`), 'Draft approved')
+    })
+    document.getElementById('unapprove-btn')?.addEventListener('click', () => act(() => axios.post(`/api/drafts/${d.id}/unapprove`), 'Approval withdrawn'))
+    document.getElementById('record-sent-btn')?.addEventListener('click', () => {
+      if (!confirm('Confirm you have sent this exact reply to the customer via Amazon. ReplyIQ will log it on the thread.')) return
+      act(() => axios.post(`/api/drafts/${d.id}/record-sent`), 'Recorded as sent')
+    })
+    document.getElementById('discard-btn')?.addEventListener('click', () => {
+      if (!confirm('Discard this draft?')) return
+      act(() => axios.post(`/api/drafts/${d.id}/discard`), 'Draft discarded')
+    })
+
+    // Unsaved-change hint
+    const dirty = () => { ind.textContent = 'Unsaved changes'; ind.className = 'text-xs text-amber-600' }
+    text.addEventListener('input', dirty)
+    notes.addEventListener('input', dirty)
+  }
+
+  async function generate(caseId) {
+    const btn = document.getElementById('generate-btn')
+    btn.disabled = true
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Drafting with gpt-5.5…'
+    try {
+      await axios.post(`/api/cases/${caseId}/drafts`, {}, { timeout: 120000 })
+      toast('Draft generated — review before approving')
+      renderCase(caseId)
+    } catch (err) {
+      toast(err.response?.data?.error || err.message, 'err')
+      btn.disabled = false
+      btn.innerHTML = '<i class="fas fa-wand-magic-sparkles mr-1"></i>Generate draft'
+    }
+  }
+
+  // ---------- STAFF ADMIN (managers) ----------
+  async function renderStaff() {
+    if (!isManager) return navigate('/')
+    app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading staff…</p>`
+    let users
+    try {
+      ;({ data: { users } } = await axios.get('/api/auth/users'))
+    } catch (err) {
+      return renderError(err)
+    }
+    app.innerHTML = `
+      <section id="staff-section">
+        <h1 class="text-2xl font-bold mb-1">Staff</h1>
+        <p class="text-sm text-slate-500 mb-4">Managers can approve any draft, including those flagged <em>needs manager</em>. Agents can approve ordinary drafts only.</p>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div class="lg:col-span-2 bg-white rounded-xl shadow-sm overflow-hidden">
+            <table class="w-full text-sm">
+              <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                <tr><th class="px-4 py-3">Name</th><th class="px-4 py-3">Email</th><th class="px-4 py-3">Role</th><th class="px-4 py-3">Last login</th><th class="px-4 py-3">Status</th></tr>
+              </thead>
+              <tbody>
+                ${users.map((u) => `
+                  <tr class="border-b border-slate-100" data-user-id="${u.id}">
+                    <td class="px-4 py-3 font-medium">${esc(u.name)}${u.id === ME.id ? ' <span class="text-xs text-slate-400">(you)</span>' : ''}</td>
+                    <td class="px-4 py-3 text-slate-600">${esc(u.email)}</td>
+                    <td class="px-4 py-3">
+                      <select data-role class="field-input py-1" style="width:auto" ${u.id === ME.id ? 'disabled' : ''}>
+                        <option value="agent" ${u.role === 'agent' ? 'selected' : ''}>agent</option>
+                        <option value="manager" ${u.role === 'manager' ? 'selected' : ''}>manager</option>
+                      </select>
+                    </td>
+                    <td class="px-4 py-3 text-slate-500">${u.last_login_at ? dayjs(u.last_login_at).fromNow() : 'never'}</td>
+                    <td class="px-4 py-3">
+                      <button data-toggle class="text-xs px-2 py-1 rounded-md ${u.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}" ${u.id === ME.id ? 'disabled' : ''}>${u.is_active ? 'active' : 'deactivated'}</button>
+                      <button data-reset class="text-xs px-2 py-1 rounded-md border border-slate-300 ml-1" title="Set a new password">reset pw</button>
+                    </td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+          <form id="new-user-form" class="bg-white rounded-xl shadow-sm p-5 space-y-3">
+            <h2 class="font-semibold">Add staff member</h2>
+            <div><label class="field-label">Name</label><input name="name" required class="field-input"></div>
+            <div><label class="field-label">Work email</label><input name="email" type="email" required class="field-input"></div>
+            <div><label class="field-label">Role</label><select name="role" class="field-input"><option value="agent">agent</option><option value="manager">manager</option></select></div>
+            <div><label class="field-label">Initial password (10+ chars)</label><input name="password" type="text" minlength="10" required class="field-input font-mono"></div>
+            <button class="w-full py-2 rounded-md bg-slate-900 text-white text-sm font-medium">Create</button>
+          </form>
+        </div>
+      </section>`
+
+    app.querySelector('#new-user-form').onsubmit = async (e) => {
+      e.preventDefault()
+      const f = e.target
+      try {
+        await axios.post('/api/auth/users', { name: f.name.value, email: f.email.value, role: f.role.value, password: f.password.value })
+        toast('Staff member created')
+        renderStaff()
+      } catch (err) {
+        toast(err.response?.data?.error || err.message, 'err')
+      }
+    }
+    app.querySelectorAll('tr[data-user-id]').forEach((tr) => {
+      const id = tr.dataset.userId
+      const patch = async (body, msg) => {
+        try { await axios.patch(`/api/auth/users/${id}`, body); toast(msg); renderStaff() } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      }
+      tr.querySelector('[data-role]').onchange = (e) => patch({ role: e.target.value }, 'Role updated')
+      tr.querySelector('[data-toggle]').onclick = (e) => patch({ is_active: e.target.textContent.trim() !== 'active' }, 'Status updated')
+      tr.querySelector('[data-reset]').onclick = () => {
+        const pw = prompt('New password (10+ characters). The user will be signed out.')
+        if (pw) patch({ password: pw }, 'Password reset')
+      }
     })
   }
 

@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
+import type { Vars } from '../auth'
 
-export const casesApi = new Hono<{ Bindings: Bindings }>()
+export const casesApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
 // Columns returned to the agent UI. PII columns (last name, email, phone,
 // address) are returned here because agents need them, but they are NEVER
@@ -24,7 +25,8 @@ casesApi.get('/', async (c) => {
     const rows = await sql.unsafe(
       `SELECT ${CASE_COLUMNS},
               (SELECT COUNT(*) FROM messages m WHERE m.case_id = cases.id)::int AS message_count,
-              (SELECT status FROM drafts d WHERE d.case_id = cases.id ORDER BY created_at DESC LIMIT 1) AS latest_draft_status
+              (SELECT status FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_status,
+              (SELECT needs_manager FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_needs_manager
        FROM cases
        WHERE CASE WHEN $1 = 'all' THEN TRUE
                   WHEN $1 = 'active' THEN status <> 'resolved'
@@ -47,7 +49,14 @@ casesApi.get('/:id', async (c) => {
     const [kase] = await sql.unsafe(`SELECT ${CASE_COLUMNS} FROM cases WHERE id = $1`, [id])
     if (!kase) return c.json({ error: 'Case not found' }, 404)
     const messages = await sql`SELECT id, direction, sender, body, sent_at FROM messages WHERE case_id = ${id} ORDER BY sent_at ASC`
-    const drafts = await sql`SELECT * FROM drafts WHERE case_id = ${id} ORDER BY created_at DESC`
+    const drafts = await sql`
+      SELECT d.*, cu.name AS created_by_name, eu.name AS edited_by_name, au.name AS approved_by_name, su.name AS sent_recorded_by_name
+      FROM drafts d
+      LEFT JOIN users cu ON cu.id = d.created_by
+      LEFT JOIN users eu ON eu.id = d.edited_by
+      LEFT JOIN users au ON au.id = d.approved_by
+      LEFT JOIN users su ON su.id = d.sent_recorded_by
+      WHERE d.case_id = ${id} ORDER BY d.created_at DESC`
     return c.json({ case: kase, messages, drafts, now: new Date().toISOString() })
   } finally {
     await sql.end()
