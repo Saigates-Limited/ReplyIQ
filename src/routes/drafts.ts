@@ -35,23 +35,28 @@ draftsApi.post('/cases/:id/drafts', async (c) => {
 
     const { result, payload } = await generateDraft(c.env, kase, messages)
     const findings = serverChecks(result.draft, kase)
-    const serverFail = findings.some((f) => f.severity === 'fail')
-    const checkResult = serverFail ? 'FAIL' : result.check.result
-    // Safety tree and manager flags from the model are honoured; server adds its own.
-    const needsManager =
-      result.needs_manager ||
-      result.tree === 'safety' ||
-      (kase.refund_issued === true || kase.a_to_z_open === true)
-    const reason =
-      result.needs_manager_reason ||
-      (result.tree === 'safety' ? 'Safety concern' : kase.a_to_z_open ? 'A-to-Z claim open' : kase.refund_issued ? 'Refund already issued' : '')
+    const checkResult = findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS'
+
+    // needs_manager: the model's flag OR any Step-0 / rule trigger we can verify from the data.
+    const threadText = messages.filter((m) => m.direction === 'inbound').map((m) => m.body).join('\n').toLowerCase()
+    const legal = /\b(consumer rights act|trading standards|legal action|solicitor|chargeback|a[- ]to[- ]z|a-z claim|section 75|small claims|ombudsman)\b/.test(threadText)
+    const batterySafety = /\b(swollen|swelling|bulging|burning|smoke|smoking|very hot|too hot|overheat)/.test(threadText) && /\b(battery|charg|hot|burn|smoke|swell|bulg)/.test(threadText)
+    const reasons: string[] = []
+    if (kase.refund_issued === true) reasons.push('refund already issued')
+    if (kase.a_to_z_open === true) reasons.push('A-to-Z claim open')
+    if (legal) reasons.push('customer mentions legal/A-to-Z/chargeback')
+    if (batterySafety) reasons.push('swollen/hot/burning battery')
+    if (findings.some((f) => f.rule === 'refund_over_15')) reasons.push('refund above £15')
+    if (result.needs_manager && !reasons.length) reasons.push('flagged by model')
+    const needsManager = result.needs_manager || reasons.length > 0
+    const urgency = batterySafety ? 'high' : result.urgency
 
     const [d] = await sql`
       INSERT INTO drafts (case_id, tree, draft_text, original_text, staff_notes, check_result, check_findings, server_findings,
-                          needs_manager, needs_manager_reason, model, created_by)
-      VALUES (${caseId}, ${result.tree}, ${result.draft}, ${result.draft}, ${result.staff_notes}, ${checkResult},
-              ${sql.json(result.check.findings)}, ${sql.json(findings)},
-              ${needsManager}, ${reason}, ${MODEL}, ${user.id})
+                          needs_manager, needs_manager_reason, urgency, model, created_by)
+      VALUES (${caseId}, ${result.lane}, ${result.draft}, ${result.draft}, ${result.staff_notes}, ${checkResult},
+              ${sql.json([])}, ${sql.json(findings)},
+              ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${MODEL}, ${user.id})
       RETURNING id`
     const draft = await loadDraft(sql, d.id)
     // Return what was sent to the model so the agent can see exactly what left the server.
@@ -81,7 +86,7 @@ draftsApi.patch('/drafts/:id', async (c) => {
     // Editing an approved draft un-approves it — approval must be re-given on the final text.
     await sql`
       UPDATE drafts SET draft_text = ${text}, staff_notes = ${notes}, server_findings = ${sql.json(findings)},
-        check_result = ${serverFail ? 'FAIL' : existing.check_result === 'FAIL' && !serverFail && text !== existing.draft_text ? 'PASS' : existing.check_result},
+        check_result = ${serverFail ? 'FAIL' : 'PASS'},
         status = CASE WHEN status = 'approved' THEN 'draft' ELSE status END,
         approved_by = CASE WHEN status = 'approved' THEN NULL ELSE approved_by END,
         approved_at = CASE WHEN status = 'approved' THEN NULL ELSE approved_at END,

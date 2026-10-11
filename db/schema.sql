@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS drafts (
   server_findings JSONB,                                -- deterministic server-side checks
   needs_manager   BOOLEAN NOT NULL DEFAULT FALSE,
   needs_manager_reason TEXT,
+  urgency         TEXT CHECK (urgency IN ('high','normal','low')),
   model           TEXT,
   status          TEXT NOT NULL DEFAULT 'draft',        -- draft | approved | sent | discarded
   created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,

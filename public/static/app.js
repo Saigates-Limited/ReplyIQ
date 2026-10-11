@@ -352,13 +352,6 @@
   }
 
   // ---------- DRAFT WORKSPACE ----------
-  const TREE_LABEL = {
-    inr: 'Item not received', warranty: 'Warranty query', esim: 'eSIM / US variant', compatibility: 'Compatibility',
-    battery: 'Battery complaint', safety: 'SAFETY CONCERN', authenticity: 'Authenticity / condition', missing_item: 'Missing / wrong item',
-    change_of_mind: 'Change of mind', discount: 'Discount request', locked_return: 'Locked return (iCloud/FRP)', oow_repair: 'Out-of-warranty repair',
-    fault_0_30: 'Device fault 0–30 days', fault_31_90: 'Device fault 31–90 days', fault_91_365: 'Device fault 91–365 days', refund_return: 'Refund / return request', other: 'Other',
-  }
-
   function renderDraftWorkspace(caseId, kase, drafts) {
     const ws = document.getElementById('draft-workspace')
     const active = drafts.filter((d) => d.status !== 'discarded')
@@ -391,7 +384,7 @@
               ${history.map((d) => `
                 <div class="rounded-md border border-slate-200 p-3">
                   <div class="flex items-center justify-between text-xs text-slate-500 mb-2">
-                    <span>${draftBadge(d.status, d.needs_manager)} ${esc(TREE_LABEL[d.tree] || d.tree || '')} · ${fmtDateTime(d.created_at)} by ${esc(d.created_by_name || '—')}</span>
+                    <span>${draftBadge(d.status, d.needs_manager)} ${esc(d.tree || '')} · ${fmtDateTime(d.created_at)} by ${esc(d.created_by_name || '—')}</span>
                     <span class="${d.check_result === 'PASS' ? 'text-emerald-700' : 'text-red-700'} font-semibold">${esc(d.check_result || '')}</span>
                   </div>
                   <div class="message-body text-sm text-slate-700 max-h-40 overflow-auto">${esc(d.draft_text)}</div>
@@ -412,7 +405,6 @@
 
   function draftEditor(d, kase) {
     const server = d.server_findings || []
-    const modelFindings = d.check_findings || []
     const fails = server.filter((f) => f.severity === 'fail')
     const warns = server.filter((f) => f.severity === 'warn')
     const locked = d.status === 'sent'
@@ -425,7 +417,8 @@
             ${checkBadge(d.check_result)}
             ${draftBadge(d.status, false)}
             ${d.needs_manager ? `<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-violet-100 text-violet-800 text-xs font-semibold" title="${esc(d.needs_manager_reason || '')}"><i class="fas fa-user-shield"></i> Needs manager${d.needs_manager_reason ? ': ' + esc(d.needs_manager_reason) : ''}</span>` : ''}
-            <span class="text-xs text-slate-500 ml-auto">${esc(TREE_LABEL[d.tree] || d.tree || '')} · ${esc(d.model || '')}</span>
+            ${d.urgency === 'high' ? '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-600 text-white text-xs font-bold"><i class="fas fa-bolt"></i> HIGH URGENCY</span>' : ''}
+            <span class="text-xs text-slate-500 ml-auto">Lane: ${esc(d.tree || '—')} · ${esc(d.model || '')}</span>
           </div>
           <label class="field-label" for="draft-text">Customer-facing reply ${locked ? '(sent — read only)' : '(edit freely)'}</label>
           <textarea id="draft-text" class="field-input font-sans leading-relaxed" rows="14" ${locked ? 'readonly' : ''}>${esc(d.draft_text)}</textarea>
@@ -460,8 +453,7 @@
             <h3 class="font-semibold text-sm mb-2"><i class="fas fa-list-check mr-1"></i>Guardrail check</h3>
             ${fails.length ? `<ul class="text-sm text-red-800 space-y-1 mb-2">${fails.map((f) => `<li><i class="fas fa-circle-xmark mr-1"></i>${esc(f.detail)}</li>`).join('')}</ul>` : ''}
             ${warns.length ? `<ul class="text-sm text-amber-800 space-y-1 mb-2">${warns.map((f) => `<li><i class="fas fa-triangle-exclamation mr-1"></i>${esc(f.detail)}</li>`).join('')}</ul>` : ''}
-            ${!fails.length && !warns.length ? '<p class="text-sm text-emerald-800"><i class="fas fa-circle-check mr-1"></i>Server checks passed (no PII, no unsupported promises, tone OK).</p>' : ''}
-            ${modelFindings.length ? `<details class="mt-2 text-xs"><summary class="cursor-pointer text-slate-600">Model self-check (${modelFindings.length})</summary><ul class="mt-1 space-y-1 text-slate-700">${modelFindings.map((f) => `<li>• ${esc(f)}</li>`).join('')}</ul></details>` : ''}
+            ${!fails.length && !warns.length ? '<p class="text-sm text-emerald-800"><i class="fas fa-circle-check mr-1"></i>All checks against reply_instructions.md passed.</p>' : ''}
           </section>
 
           <section id="staff-notes-panel" class="rounded-lg border border-slate-200 bg-slate-50 p-4">

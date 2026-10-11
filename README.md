@@ -16,7 +16,7 @@ AI-assisted reply drafting for **Saigates Ltd** Amazon UK customer service.
 | **First-run setup** — `/setup` creates the first manager while the `users` table is empty, then self-disables (atomic `INSERT … WHERE NOT EXISTS`). No seeded demo accounts. | ✅ |
 | **Case queue** sorted by reply deadline (last customer message + 24h, round the clock, no pausing) with overdue / due-soon highlighting and filters | ✅ |
 | **Case screen** — email thread, customer panel, auto-saving agent fields (order ID, device model, delivery date, refund issued, A-to-Z open, in stock, approved repair price, **repair quote accepted**, tracking number, carrier), case status | ✅ |
-| **Generate draft** — server-side call to OpenAI `gpt-5.5` using `reply_instructions.md` as the system prompt; returns the draft, staff notes, decision tree used, PASS/FAIL check and a `needs_manager` flag | ✅ |
+| **Generate draft** — server-side call to OpenAI `gpt-5.5` using `reply_instructions.md` as the system prompt; returns the reply, lane used, staff notes, `urgency` and `needs_manager`; the server computes PASS/FAIL | ✅ |
 | **Guardrail checks** — model self-check **plus** deterministic server checks (PII leakage incl. street address, unsupported refund/replacement promises, unapproved prices, ID / customer card-detail requests, accusations, "waterproof", unsafe charging advice, off-platform dealings, greeting/sign-off). Any server *fail* forces FAIL and blocks approval. | ✅ |
 | **Bank details rule** — our bank/payment details are allowed in a reply **only** when `approved_repair_price` is set **and** `repair_quote_accepted` = yes; blocked (FAIL) in every other case. | ✅ |
 | **Battery returns rule** — the Royal Mail return label and the UN3481 lithium-battery label are allowed in every battery case (incl. swollen/overheating) alongside "stop using and charging the phone"; a battery case that asks for a return *without* mentioning UN3481 gets a warning. | ✅ |
@@ -37,7 +37,9 @@ Built from an explicit allow-list in `src/ai.ts → buildPayload()`:
 
 ## `reply_instructions.md`
 
-Transcribed from the 16 Saigates decision-tree flowcharts plus universal rules and the JSON output contract, amended with the confirmed bank-details and battery-label rules. **The written Saigates file, once supplied, replaces this and takes precedence over the flowcharts.** It is bundled at build time (`import ... '?raw'`), so run `npm run build` (and redeploy) after editing.
+The official Saigates instructions (supplied 2026-10-11). Where it disagrees with the earlier flowcharts, **the file wins**. It defines Step 0 (refund issued / A-to-Z → acknowledge only + manager), the "Never" list, the £15 refund limit, fault lanes by `days_since_delivery`, battery handling (stop using/charging + Royal Mail label + UN3481), INR, locked phones, eSIM, compatibility, change of mind, paid repair, the return checklist, and the JSON output (`reply`, `lane`, `needs_manager`, `urgency`, `staff_notes`). It is bundled at build time (`import ... '?raw'`), so run `npm run build` (and redeploy) after editing.
+
+The server checker (`src/ai.ts → serverChecks`) mirrors the file one-for-one: every "Never" item is a **fail**; bank details pass only for an approved + accepted paid repair; battery cases must say stop using/charging (fail) and are expected to mention Royal Mail + UN3481 (warn); refunds over £15 and missing return checklists are **warnings** for the agent. `needs_manager` is also enforced server-side from the case data (refund issued, A-to-Z open, legal/Trading Standards/chargeback mentions, swollen/hot/burning battery, refund > £15).
 
 ## API
 
@@ -69,7 +71,7 @@ All routes except `/login`, `/setup`, `POST /api/auth/login|logout|setup`, `/api
 - **sessions** — SHA-256 of cookie token → user, `expires_at`
 - **cases** — case metadata, first name separated from PII columns, agent fields incl. `repair_quote_accepted`, `last_customer_message_at` (deadline derived as +24h)
 - **messages** — thread entries (`inbound|outbound`, sender, body, sent_at)
-- **drafts** — `tree`, `draft_text`, `original_text`, `staff_notes`, `check_result`, `check_findings` (model), `server_findings`, `needs_manager(+reason)`, `model`, `status` (`draft|approved|sent|discarded`), created/edited/approved/sent audit columns (`ON DELETE SET NULL`, so removing a staff account never loses draft history)
+- **drafts** — `tree` (= lane), `urgency`, `draft_text`, `original_text`, `staff_notes`, `check_result`, `server_findings` (`check_findings` kept for compatibility, unused), `needs_manager(+reason)`, `model`, `status` (`draft|approved|sent|discarded`), created/edited/approved/sent audit columns (`ON DELETE SET NULL`, so removing a staff account never loses draft history)
 
 ## Production setup (Supabase + Cloudflare Pages)
 
@@ -121,14 +123,14 @@ npx wrangler pages deploy dist --project-name <project>
 
 ## Gmail (future phase) — scheduled polling
 
-**Can this run every 15 minutes with nobody logged in?** Not on Cloudflare **Pages** alone — Pages Functions have no cron triggers. Two options, both small:
+**Can this run every 2 minutes with nobody logged in?** Not on Cloudflare **Pages** alone — Pages Functions have no cron triggers. Two options, both small:
 
 | Option | What it is | Effort |
 |---|---|---|
-| **A. Cloudflare Worker with a Cron Trigger** (recommended) | Deploy the same codebase as a *Worker* instead of Pages (`wrangler.jsonc` → `main` + `triggers.crons = ["*/15 * * * *"]`, static assets via `[assets]`). A `scheduled()` handler polls Gmail and writes cases to Supabase. Runs 24/7 regardless of browser sessions. | ~1 hour; one-time switch from Pages to Workers, same account, same URL style (`*.workers.dev` or custom domain). |
-| **B. Keep Pages, add Supabase `pg_cron` + `pg_net`** | A Postgres cron job in Supabase calls `POST https://<domain>/api/jobs/gmail-sync` every 15 minutes with a secret header. | ~30 min; no infra change, but the poll runs in a request context (CPU-time limits apply). |
+| **A. Cloudflare Worker with a Cron Trigger** (recommended) | Deploy the same codebase as a *Worker* instead of Pages (`wrangler.jsonc` → `main` + `triggers.crons = ["*/2 * * * *"]`, static assets via `[assets]`). A `scheduled()` handler polls Gmail and writes cases to Supabase. Runs 24/7 regardless of browser sessions. | ~1 hour; one-time switch from Pages to Workers, same account, same URL style (`*.workers.dev` or custom domain). |
+| **B. Keep Pages, add Supabase `pg_cron` + `pg_net`** | A Postgres cron job in Supabase calls `POST https://<domain>/api/jobs/gmail-sync` every 2 minutes with a secret header. | ~30 min; no infra change, but the poll runs in a request context (CPU-time limits apply). |
 
-Both use Gmail **push-free polling** (`users.messages.list` with `q=newer_than:1h from:marketplace.amazon.co.uk`), store the refresh token as a secret, and need the redirect URI below. I recommend **A** — it is the standard Cloudflare answer and removes the dependency on a browser being open. Note: Cloudflare cron triggers are only available when you deploy to your **own** Cloudflare account (not the Genspark-hosted path).
+Both use Gmail **push-free polling** (`users.messages.list` with `q=newer_than:10m from:marketplace.amazon.co.uk`, ~720 calls/day — well inside Gmail's free quota), store the refresh token as a secret, and need the redirect URI below. I recommend **A** — it is the standard Cloudflare answer and removes the dependency on a browser being open. Note: Cloudflare cron triggers are only available when you deploy to your **own** Cloudflare account (not the Genspark-hosted path).
 
 ### Google OAuth redirect URI
 
