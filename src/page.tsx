@@ -80,6 +80,7 @@ export const loginPage = () => `${HEAD('Sign in · ReplyIQ')}
       </button>
     </form>
     <p class="mt-6 text-xs text-slate-400 text-center"><i class="fas fa-lock mr-1"></i>Staff only. Access is logged.</p>
+    <p class="mt-2 text-xs text-slate-400 text-center"><a href="/privacy" class="underline hover:text-slate-600">Privacy policy</a> · Saigates Ltd</p>
   </main>
   <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
   <script>
@@ -135,5 +136,75 @@ export const setupPage = () => `${HEAD('First-run setup · ReplyIQ')}
       }
     });
   </script>
+</body>
+</html>`
+
+export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates Ltd')}
+<body class="bg-slate-100 text-slate-800 min-h-screen">
+  <header class="bg-slate-900 text-white">
+    <div class="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
+      <span class="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-amber-400 text-slate-900"><i class="fas fa-reply-all"></i></span>
+      <span><span class="font-bold text-lg leading-tight block">ReplyIQ</span><span class="text-xs text-slate-300 block">Saigates Ltd · Amazon UK Customer Service</span></span>
+      <a href="/login" class="ml-auto text-sm text-slate-300 hover:text-white">Staff sign in</a>
+    </div>
+  </header>
+  <main id="privacy-policy" class="max-w-3xl mx-auto px-4 py-10">
+    <article class="bg-white rounded-xl shadow-sm p-8 space-y-6 leading-relaxed">
+      <header>
+        <h1 class="text-2xl font-bold">Privacy Policy</h1>
+        <p class="text-sm text-slate-500 mt-1">ReplyIQ — an internal customer-service tool operated by Saigates Ltd. Last updated 11 October 2026.</p>
+      </header>
+
+      <section>
+        <h2 class="font-semibold text-lg mb-2">What ReplyIQ is</h2>
+        <p>ReplyIQ is used only by Saigates Ltd staff. It helps us answer messages from customers who have bought from us on Amazon UK. It is not a consumer product and has no public sign-up.</p>
+      </section>
+
+      <section>
+        <h2 class="font-semibold text-lg mb-2">What data we process and why</h2>
+        <ul class="list-disc pl-5 space-y-1">
+          <li><strong>Customer messages.</strong> ReplyIQ reads Amazon customer messages that arrive in our Gmail inbox so that our staff can see and reply to them in one place. We use the Gmail read scope for this. If we later enable creating Gmail drafts, those drafts are still only sent after a member of staff approves them.</li>
+          <li><strong>Order details</strong> that our staff enter about a case (order number, product, delivery date, tracking) so that replies are accurate.</li>
+          <li><strong>Staff accounts</strong> (name, work email, hashed password) so that only authorised staff can use the tool.</li>
+        </ul>
+        <p class="mt-2">Every reply to a customer is written as a draft, reviewed by a member of staff, and sent only after staff approval. Nothing is sent automatically.</p>
+      </section>
+
+      <section>
+        <h2 class="font-semibold text-lg mb-2">AI drafting</h2>
+        <p>To help staff write replies, ReplyIQ sends a reduced version of the case to OpenAI. Before anything is sent we remove personal details: only the customer's first name is included, and surnames, email addresses, phone numbers, postal addresses and postcodes are stripped from the message text. Requests are made with OpenAI's <code>store: false</code> setting, so OpenAI does not retain the content for training or storage.</p>
+      </section>
+
+      <section>
+        <h2 class="font-semibold text-lg mb-2">Where data is stored</h2>
+        <p>Case data is stored in our Supabase (PostgreSQL) database hosted in London, United Kingdom, and accessed through Cloudflare. Access requires a staff login. Google account tokens used for the Gmail connection are stored as encrypted secrets and are never shown in the browser.</p>
+      </section>
+
+      <section>
+        <h2 class="font-semibold text-lg mb-2">What we do not do</h2>
+        <ul class="list-disc pl-5 space-y-1">
+          <li>We do not sell personal data.</li>
+          <li>We do not share data with third parties for advertising or marketing.</li>
+          <li>We do not use Gmail data for any purpose other than reading and replying to our customers' messages.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="font-semibold text-lg mb-2">Google API Services</h2>
+        <p>ReplyIQ's use of information received from Google APIs adheres to the <a class="text-sky-700 underline" href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener" target="_blank">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+      </section>
+
+      <section>
+        <h2 class="font-semibold text-lg mb-2">Retention and your rights</h2>
+        <p>We keep case records for as long as needed to handle the customer's order and any follow-up, and to meet our obligations as an Amazon seller. Customers may ask us what we hold about them, or ask us to correct or delete it, by contacting us below.</p>
+      </section>
+
+      <section>
+        <h2 class="font-semibold text-lg mb-2">Contact</h2>
+        <p>Saigates Ltd — <a class="text-sky-700 underline" href="mailto:bijalshah.cc@gmail.com">bijalshah.cc@gmail.com</a></p>
+      </section>
+    </article>
+    <p class="text-xs text-slate-400 mt-6 text-center">&copy; 2026 Saigates Ltd</p>
+  </main>
 </body>
 </html>`

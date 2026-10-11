@@ -44,7 +44,7 @@ The server checker (`src/ai.ts → serverChecks`) mirrors the file one-for-one: 
 
 ## API
 
-All routes except `/login`, `/setup`, `POST /api/auth/login|logout|setup`, `/api/health`, `/static/*` and `/auth/google/callback` require a session.
+All routes except `/login`, `/setup`, `/privacy`, `POST /api/auth/login|logout|setup`, `/api/health`, `/static/*` and `/auth/google/callback` require a session.
 
 | Method | Path | Who | Description |
 |---|---|---|---|
@@ -137,6 +137,14 @@ npx wrangler pages deploy dist --project-name replyiq --branch main
 | **B. Keep Pages, add Supabase `pg_cron` + `pg_net`** | A Postgres cron job in Supabase calls `POST https://<domain>/api/jobs/gmail-sync` every 2 minutes with a secret header. | ~30 min; no infra change, but the poll runs in a request context (CPU-time limits apply). |
 
 Both use Gmail **push-free polling** (`users.messages.list` with `q=newer_than:10m from:marketplace.amazon.co.uk`, ~720 calls/day — well inside Gmail's free quota), store the refresh token as a secret, and need the redirect URI below. I recommend **A** — it is the standard Cloudflare answer and removes the dependency on a browser being open. Note: Cloudflare cron triggers are only available when you deploy to your **own** Cloudflare account (not the Genspark-hosted path).
+
+### Google OAuth consent screen (Branding)
+
+| Field | Value |
+|---|---|
+| Application home page | `https://replyiq.pages.dev/login` (public, no login required) |
+| Privacy policy | `https://replyiq.pages.dev/privacy` (public) |
+| Authorised domain | `replyiq.pages.dev` |
 
 ### Google OAuth redirect URI
 
