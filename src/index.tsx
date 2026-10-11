@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
-import { serveStatic } from 'hono/cloudflare-workers'
 import { casesApi } from './routes/cases'
 import { authApi, authPublic } from './routes/auth'
 import { draftsApi } from './routes/drafts'
+import { gmailApi, gmailCallback, sendApi } from './routes/gmail'
+import { runSync } from './sync'
 import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
 import { page, loginPage, setupPage, privacyPage } from './page'
@@ -19,7 +20,7 @@ app.use('*', async (c, next) => {
 })
 
 // ── Public (no login) ───────────────────────────────────────────
-app.use('/static/*', serveStatic({ root: './public' }))
+app.get('/static/*', (c) => c.env.ASSETS.fetch(c.req.raw))
 app.get('/privacy', (c) => c.html(privacyPage()))
 app.get('/api/health', (c) => c.json({ ok: true, db: dbConfigured(c.env), via: c.env.HYPERDRIVE ? 'hyperdrive' : c.env.DATABASE_URL ? 'direct' : 'none', ai: Boolean(c.env.OPENAI_API_KEY), time: new Date().toISOString() }))
 async function userCount(env: Bindings) {
@@ -68,11 +69,8 @@ app.get('/setup', async (c) => {
 })
 app.route('/api/auth', authPublic)
 
-// Gmail OAuth callback — reserved for the Gmail integration phase.
-// Redirect URI to register in Google Cloud: https://<your-domain>/auth/google/callback
-app.get('/auth/google/callback', (c) =>
-  c.text('Gmail integration is not enabled yet. This redirect URI is reserved for ReplyIQ.', 501)
-)
+// Gmail OAuth callback (public URL; validated via one-time state tied to a logged-in manager)
+app.route('/', gmailCallback)
 
 // ── Everything below requires a staff session ───────────────────
 app.use('*', requireAuth)
@@ -80,15 +78,38 @@ app.use('*', requireAuth)
 app.route('/api/auth', authApi)
 app.route('/api/cases', casesApi)
 app.route('/api', draftsApi)
+app.route('/api/gmail', gmailApi)
+app.route('/api', sendApi) // POST /api/drafts/:id/send
 
 // SPA pages
 app.get('/', (c) => c.html(page(c.get('user'))))
 app.get('/cases/:id', (c) => c.html(page(c.get('user'))))
 app.get('/staff', (c) => c.html(page(c.get('user'))))
+app.get('/gmail', (c) => c.html(page(c.get('user'))))
 
 app.onError((err, c) => {
   console.error(err)
   return c.json({ error: err.message || 'Internal error' }, 500)
 })
 
-export default app
+// Worker entry: HTTP + cron. The scheduled handler is the ONLY automated path and it is read-only (sync).
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
+    ctx.waitUntil(
+      (async () => {
+        const sql = getDb(env)
+        try {
+          const conn = await sql`SELECT 1 FROM gmail_connection WHERE id = 1`
+          if (!conn.length) return
+          const r = await runSync(env, sql, 'cron')
+          console.log('gmail sync', JSON.stringify(r))
+        } catch (e) {
+          console.error('gmail sync failed', e)
+        } finally {
+          await sql.end()
+        }
+      })()
+    )
+  },
+}

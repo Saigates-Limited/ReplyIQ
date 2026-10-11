@@ -29,6 +29,7 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
       <nav class="text-sm text-slate-300 flex items-center gap-4">
         <span id="header-clock" class="font-mono hidden md:inline"></span>
         <a href="/" data-link class="hover:text-white"><i class="fas fa-inbox mr-1"></i>Queue</a>
+        <a href="/gmail" data-link class="hover:text-white"><i class="fab fa-google mr-1"></i>Gmail</a>
         ${user.role === 'manager' ? `<a href="/staff" data-link class="hover:text-white"><i class="fas fa-users mr-1"></i>Staff</a>` : ''}
         <span class="text-slate-500">|</span>
         <span id="current-user" class="flex items-center gap-2">
@@ -163,11 +164,11 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
       <section>
         <h2 class="font-semibold text-lg mb-2">What data we process and why</h2>
         <ul class="list-disc pl-5 space-y-1">
-          <li><strong>Customer messages.</strong> ReplyIQ reads Amazon customer messages that arrive in our Gmail inbox so that our staff can see and reply to them in one place. We use the Gmail read scope for this. If we later enable creating Gmail drafts, those drafts are still only sent after a member of staff approves them.</li>
+          <li><strong>Customer messages.</strong> ReplyIQ reads Amazon customer messages that arrive in our Gmail inbox (Gmail read permission) so that our staff can see and reply to them in one place, and sends staff-approved replies from that inbox (Gmail send permission).</li>
           <li><strong>Order details</strong> that our staff enter about a case (order number, product, delivery date, tracking) so that replies are accurate.</li>
           <li><strong>Staff accounts</strong> (name, work email, hashed password) so that only authorised staff can use the tool.</li>
         </ul>
-        <p class="mt-2">Every reply to a customer is written as a draft, reviewed by a member of staff, and sent only after staff approval. Nothing is sent automatically.</p>
+        <p class="mt-2">Every reply to a customer is written as a draft and reviewed by a member of staff. A reply is sent only when a member of staff approves it and presses <strong>Send</strong>; the send goes through our Gmail account using the Gmail send permission. Nothing is sent automatically.</p>
       </section>
 
       <section>

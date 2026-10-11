@@ -54,6 +54,7 @@
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
     if (m) renderCase(Number(m[1]))
     else if (location.pathname === '/staff') renderStaff()
+    else if (location.pathname === '/gmail') renderGmail()
     else renderList()
   }
 
@@ -168,7 +169,7 @@
 
   function draftBadge(status, needsManager) {
     if (!status) return '<span class="text-slate-400">none</span>'
-    const cls = { draft: 'bg-amber-100 text-amber-800', approved: 'bg-emerald-100 text-emerald-800', sent: 'bg-slate-200 text-slate-700' }[status] || 'bg-slate-100 text-slate-600'
+    const cls = { draft: 'bg-amber-100 text-amber-800', approved: 'bg-emerald-100 text-emerald-800', sending: 'bg-sky-100 text-sky-800', sent: 'bg-slate-200 text-slate-700' }[status] || 'bg-slate-100 text-slate-600'
     return `<span class="px-2 py-0.5 rounded-full ${cls}">${esc(status)}</span>${needsManager && status === 'draft' ? ' <span class="px-2 py-0.5 rounded-full bg-violet-100 text-violet-800" title="Needs manager approval"><i class="fas fa-user-shield"></i></span>' : ''}`
   }
 
@@ -195,6 +196,7 @@
             <h1 class="text-2xl font-bold">${esc(k.subject)}</h1>
             <div class="mt-1 flex items-center gap-3 text-sm">
               ${statusBadge(k.status)}
+              ${k.source === 'gmail' ? '<span class="inline-block px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-700 border border-red-200"><i class="fab fa-google mr-1"></i>Gmail</span>' : ''}
               <span class="${d.cls}"><i class="far fa-clock mr-1"></i>${esc(d.label)} · due ${fmtDateTime(k.reply_deadline)}</span>
             </div>
           </div>
@@ -435,16 +437,21 @@
                 </button>` : ''}
               ${d.status === 'approved' ? `
                 <button id="unapprove-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-slate-800">Withdraw approval</button>
+                ${kase.source === 'gmail' && kase.customer_reply_to ? `
+                <button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800">
+                  <i class="fas fa-paper-plane mr-1"></i>Send to customer
+                </button>` : `
                 <button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="Confirm you have pasted and sent this reply in Amazon Seller Central">
                   <i class="fas fa-paper-plane mr-1"></i>Mark as sent in Amazon
-                </button>` : ''}
+                </button>`}` : ''}
+              ${d.status === 'sending' ? '<span class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Sending…</span>' : ''}
             </span>
           </div>
           <dl class="mt-3 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
             <div>Generated ${fmtDateTime(d.created_at)} by ${esc(d.created_by_name || '—')}</div>
             ${d.edited_at ? `<div>Edited ${fmtDateTime(d.edited_at)} by ${esc(d.edited_by_name || '—')}</div>` : ''}
             ${d.approved_at ? `<div class="text-emerald-700">Approved ${fmtDateTime(d.approved_at)} by ${esc(d.approved_by_name || '—')}</div>` : ''}
-            ${d.sent_recorded_at ? `<div class="text-sky-700">Sent ${fmtDateTime(d.sent_recorded_at)} by ${esc(d.sent_recorded_by_name || '—')}</div>` : ''}
+            ${d.sent_recorded_at ? `<div class="text-sky-700">Sent ${d.sent_via === 'gmail' ? 'via Gmail' : '(recorded manually)'} ${fmtDateTime(d.sent_recorded_at)} by ${esc(d.sent_recorded_by_name || '—')}</div>` : ''}
           </dl>
         </div>
 
@@ -494,6 +501,38 @@
       act(() => axios.post(`/api/drafts/${d.id}/approve`), 'Draft approved')
     })
     document.getElementById('unapprove-btn')?.addEventListener('click', () => act(() => axios.post(`/api/drafts/${d.id}/unapprove`), 'Approval withdrawn'))
+    document.getElementById('send-btn')?.addEventListener('click', () => {
+      const modal = document.createElement('div')
+      modal.id = 'send-confirm'
+      modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50'
+      modal.innerHTML = `
+        <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6">
+          <h3 class="font-bold text-lg mb-1"><i class="fas fa-paper-plane mr-2 text-emerald-700"></i>Send this reply now?</h3>
+          <p class="text-sm text-slate-600 mb-3">This will email the customer through Amazon's messaging system from the connected Saigates mailbox. It cannot be recalled.</p>
+          <dl class="text-sm grid grid-cols-4 gap-y-1 mb-3">
+            <dt class="text-slate-500">To</dt><dd class="col-span-3 font-mono text-xs break-all">${esc(kase.customer_reply_to)}</dd>
+            <dt class="text-slate-500">Case</dt><dd class="col-span-3">${esc(kase.case_ref)} · ${esc(kase.subject)}</dd>
+            <dt class="text-slate-500">Approved by</dt><dd class="col-span-3">${esc(d.approved_by_name || '—')} ${d.needs_manager ? '<span class="text-violet-700">(manager)</span>' : ''}</dd>
+          </dl>
+          <pre class="message-body text-sm bg-slate-50 border border-slate-200 rounded-md p-3 max-h-64 overflow-auto font-sans">${esc(d.draft_text)}</pre>
+          <div class="mt-4 flex justify-end gap-2">
+            <button id="send-cancel" class="px-4 py-2 rounded-md border border-slate-300 text-sm">Cancel</button>
+            <button id="send-now" class="px-4 py-2 rounded-md bg-emerald-700 text-white text-sm font-medium"><i class="fas fa-paper-plane mr-1"></i>Send now</button>
+          </div>
+        </div>`
+      document.body.appendChild(modal)
+      modal.querySelector('#send-cancel').onclick = () => modal.remove()
+      modal.querySelector('#send-now').onclick = async () => {
+        const b = modal.querySelector('#send-now'); b.disabled = true; b.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Sending…'
+        try {
+          await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: d.draft_text }, { timeout: 60000 })
+          modal.remove(); toast('Reply sent to the customer'); refresh()
+        } catch (err) {
+          b.disabled = false; b.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send now'
+          toast(err.response?.data?.error || err.message, 'err')
+        }
+      }
+    })
     document.getElementById('record-sent-btn')?.addEventListener('click', () => {
       if (!confirm('Confirm you have sent this exact reply to the customer via Amazon. ReplyIQ will log it on the thread.')) return
       act(() => axios.post(`/api/drafts/${d.id}/record-sent`), 'Recorded as sent')
@@ -597,6 +636,61 @@
         const pw = prompt('New password (10+ characters). The user will be signed out.')
         if (pw) patch({ password: pw }, 'Password reset')
       }
+    })
+  }
+
+  // ---------- GMAIL (connection + sync status) ----------
+  async function renderGmail() {
+    app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>`
+    let st
+    try { ;({ data: st } = await axios.get('/api/gmail/status')) } catch (err) { return renderError(err) }
+    const q = new URLSearchParams(location.search)
+    const flash = q.get('ok') ? `<div class="mb-4 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-2 text-sm"><i class="fas fa-circle-check mr-1"></i>${esc(q.get('ok'))}</div>`
+      : q.get('error') ? `<div class="mb-4 rounded-md bg-red-50 border border-red-200 text-red-800 px-4 py-2 text-sm"><i class="fas fa-circle-xmark mr-1"></i>${esc(q.get('error'))}</div>` : ''
+    const c = st.connection
+    app.innerHTML = `
+      <section id="gmail-section">
+        <h1 class="text-2xl font-bold mb-1"><i class="fab fa-google mr-2 text-slate-400"></i>Gmail connection</h1>
+        <p class="text-sm text-slate-500 mb-4">ReplyIQ reads Amazon customer messages from the connected mailbox every ${st.poll_interval_minutes} minutes. Email is only ever sent when a member of staff presses <strong>Send to customer</strong> on an approved draft.</p>
+        ${flash}
+        ${!st.configured ? `<div class="mb-4 rounded-md bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 text-sm"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(st.configError)}</div>` : ''}
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <h2 class="font-semibold mb-3">Mailbox</h2>
+            ${st.connected ? `
+              <dl class="text-sm space-y-1">
+                <div><dt class="text-slate-500 inline">Account:</dt> <dd class="inline font-medium">${esc(c.email_address)}</dd></div>
+                <div><dt class="text-slate-500 inline">Connected:</dt> <dd class="inline">${fmtDateTime(c.connected_at)} by ${esc(c.connected_by_name || '—')}</dd></div>
+                <div><dt class="text-slate-500 inline">Last sync:</dt> <dd class="inline">${c.last_sync_at ? dayjs(c.last_sync_at).fromNow() : 'never'} ${c.last_sync_status === 'error' ? `<span class="text-red-700">— ${esc(c.last_sync_error || 'error')}</span>` : c.last_sync_status === 'ok' ? '<span class="text-emerald-700">OK</span>' : ''}</dd></div>
+              </dl>
+              <div class="mt-4 flex gap-2">
+                <button id="sync-now" class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-rotate mr-1"></i>Sync now</button>
+                ${isManager ? '<button id="disconnect" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm text-red-700">Disconnect</button>' : ''}
+              </div>` : `
+              <p class="text-sm text-slate-600 mb-4">No mailbox connected.</p>
+              ${isManager ? `<button id="connect" ${st.configured ? '' : 'disabled'} class="px-4 py-2 rounded-md bg-slate-900 text-white text-sm disabled:opacity-50"><i class="fab fa-google mr-1"></i>Connect Gmail</button>` : '<p class="text-xs text-slate-500">A manager needs to connect the mailbox.</p>'}`}
+            <p class="mt-4 text-xs text-slate-400">Permissions requested: read mail, send mail. The sign-in token is stored encrypted.</p>
+          </div>
+          <div class="lg:col-span-2 bg-white rounded-xl shadow-sm overflow-hidden">
+            <div class="px-5 py-3 border-b border-slate-100 font-semibold">Recent sync runs</div>
+            <table class="w-full text-sm">
+              <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-4 py-2">When</th><th class="px-4 py-2">Trigger</th><th class="px-4 py-2">Threads</th><th class="px-4 py-2">New msgs</th><th class="px-4 py-2">New cases</th><th class="px-4 py-2">Result</th></tr></thead>
+              <tbody>${st.recent_runs.length ? st.recent_runs.map((r) => `<tr class="border-b border-slate-100"><td class="px-4 py-2 whitespace-nowrap">${fmtDateTime(r.started_at)}</td><td class="px-4 py-2">${esc(r.trigger)}</td><td class="px-4 py-2">${r.threads_seen ?? '—'}</td><td class="px-4 py-2">${r.messages_new ?? '—'}</td><td class="px-4 py-2">${r.cases_new ?? '—'}</td><td class="px-4 py-2 ${r.status === 'error' ? 'text-red-700' : 'text-emerald-700'}" title="${esc(r.error || '')}">${esc(r.status || 'running')}</td></tr>`).join('') : '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">No runs yet</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+      </section>`
+    app.querySelector('#connect')?.addEventListener('click', async () => {
+      try { const { data } = await axios.post('/api/gmail/connect'); location.href = data.url } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+    })
+    app.querySelector('#disconnect')?.addEventListener('click', async () => {
+      if (!confirm('Disconnect the Gmail mailbox? Syncing and sending will stop until reconnected.')) return
+      try { await axios.post('/api/gmail/disconnect'); toast('Disconnected'); history.replaceState({}, '', '/gmail'); renderGmail() } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+    })
+    app.querySelector('#sync-now')?.addEventListener('click', async (e) => {
+      e.target.disabled = true; e.target.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Syncing…'
+      try { const { data } = await axios.post('/api/gmail/sync', {}, { timeout: 120000 }); toast(`Sync done: ${data.messagesNew} new message(s), ${data.casesNew} new case(s)`) } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      history.replaceState({}, '', '/gmail'); renderGmail()
     })
   }
 

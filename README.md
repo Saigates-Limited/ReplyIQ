@@ -4,7 +4,8 @@ AI-assisted reply drafting for **Saigates Ltd** Amazon UK customer service.
 
 - **Goal**: answer Amazon UK customer messages inside the 24-hour window with AI drafts that a human always reviews, edits and approves. **Nothing is ever sent to customers automatically.**
 - **Stack**: Hono (TypeScript) on Cloudflare Pages/Workers · PostgreSQL (Supabase via Cloudflare Hyperdrive in production) via postgres.js · OpenAI `gpt-5.5` server-side · Tailwind + vanilla JS
-- **Production**: https://replyiq.pages.dev (Cloudflare Pages project `replyiq`, Saigates' own account)
+- **Production**: https://replyiq.saigateslimited.workers.dev (Cloudflare **Worker** `replyiq` with 15-min cron, Saigates' own account)
+- **Previous**: https://replyiq.pages.dev (Pages deployment, superseded — delete once the Worker URL is confirmed)
 - **Sandbox preview**: https://3000-id2nlba4e4s5y3pr1acd5-02b9cc79.sandbox.novita.ai
   - No demo accounts. On a fresh database the app shows **`/setup`** once, to create the first manager; after that it is permanently disabled.
 
@@ -23,7 +24,9 @@ AI-assisted reply drafting for **Saigates Ltd** Amazon UK customer service.
 | **Battery returns rule** — the Royal Mail return label and the UN3481 lithium-battery label are allowed in every battery case (incl. swollen/overheating) alongside "stop using and charging the phone"; a battery case that asks for a return *without* mentioning UN3481 gets a warning. | ✅ |
 | **Edit → Approve → Mark as sent** — edits are re-checked and un-approve the draft; `needs_manager` drafts can only be approved by a manager; FAIL drafts cannot be approved; "Mark as sent" logs the outbound message on the thread after the agent sends it manually in Amazon | ✅ |
 | Transparency — the API returns the exact payload sent to the model (`sent_to_model`) | ✅ |
-| Gmail integration | ⏳ redirect URI reserved, see below |
+| **Gmail connection** — manager clicks *Connect Gmail*; OAuth (`gmail.readonly` + `gmail.send`); refresh token stored AES-256-GCM encrypted (`TOKEN_ENC_KEY`) | ✅ |
+| **Poller** — Worker cron `*/15 * * * *` reads Amazon buyer-seller threads (1-hour lookback), creates/updates cases, stores Gmail `internalDate` as the received time so the 24-hour deadline is exact. Read-only. Also *Sync now* button. | ✅ |
+| **Send to customer** — on **approved** drafts of Gmail-sourced cases only. Gates: approved status, manager approval honoured, on-screen text must equal approved text, server checks must pass, atomic one-send claim, logged with who/when. Confirmation modal shows recipient + text. The only code path that sends email. | ✅ |
 
 ## Privacy: what reaches OpenAI
 
@@ -56,6 +59,12 @@ All routes except `/login`, `/setup`, `/privacy`, `POST /api/auth/login|logout|s
 | POST | `/api/auth/password` `{current,next}` | staff | Change own password |
 | GET/POST | `/api/auth/users` | manager | List / create staff |
 | PATCH | `/api/auth/users/:id` `{role,is_active,name,password}` | manager | Update staff |
+| GET | `/api/gmail/status` | staff | Connection + last 10 sync runs |
+| POST | `/api/gmail/connect` | manager | Returns Google consent URL (state stored, 15-min expiry) |
+| GET | `/auth/google/callback` | public (state-bound) | Stores encrypted refresh token |
+| POST | `/api/gmail/disconnect` | manager | Revokes + deletes token |
+| POST | `/api/gmail/sync` | staff | Run the poller now |
+| POST | `/api/drafts/:id/send` `{confirm_text}` | staff | **Send approved draft via Gmail** (see gates above) |
 | GET | `/api/cases?status=active\|open\|awaiting_customer\|resolved\|all` | staff | Queue ordered by deadline |
 | GET | `/api/cases/:id` | staff | Case + messages + drafts |
 | PATCH | `/api/cases/:id` | staff | Update agent fields / status (422 on bad input) |
@@ -70,9 +79,10 @@ All routes except `/login`, `/setup`, `/privacy`, `POST /api/auth/login|logout|s
 
 - **users** — email, name, role (`agent|manager`), `password_hash`, `is_active`, `last_login_at`
 - **sessions** — SHA-256 of cookie token → user, `expires_at`
-- **cases** — case metadata, first name separated from PII columns, agent fields incl. `repair_quote_accepted`, `last_customer_message_at` (deadline derived as +24h)
-- **messages** — thread entries (`inbound|outbound`, sender, body, sent_at)
-- **drafts** — `tree` (= lane), `urgency`, `draft_text`, `original_text`, `staff_notes`, `check_result`, `server_findings` (`check_findings` kept for compatibility, unused), `needs_manager(+reason)`, `model`, `status` (`draft|approved|sent|discarded`), created/edited/approved/sent audit columns (`ON DELETE SET NULL`, so removing a staff account never loses draft history)
+- **cases** — case metadata, first name separated from PII columns, agent fields incl. `repair_quote_accepted`, `last_customer_message_at` (deadline derived as +24h), `source` (manual|gmail), `gmail_thread_id`, `customer_reply_to` (anonymised Amazon address, server-only)
+- **messages** — thread entries (`inbound|outbound`, sender, body, subject, `gmail_message_id`, `rfc_message_id` for threading, `sent_at` = Gmail `internalDate`)
+- **gmail_connection** (single row: mailbox, encrypted refresh token, scopes, last sync) · **oauth_states** · **sync_runs** (audit of every poll)
+- **drafts** — `tree` (= lane), `urgency`, `sent_via`, `sent_gmail_message_id`, `draft_text`, `original_text`, `staff_notes`, `check_result`, `server_findings` (`check_findings` kept for compatibility, unused), `needs_manager(+reason)`, `model`, `status` (`draft|approved|sent|discarded`), created/edited/approved/sent audit columns (`ON DELETE SET NULL`, so removing a staff account never loses draft history)
 
 ## Production setup (Supabase + Cloudflare Pages)
 
@@ -103,58 +113,36 @@ Data API can stay off — the app speaks plain Postgres.
 
 **First login:** open `https://replyiq.pages.dev/setup` and create your own manager account. The page is disabled permanently as soon as one account exists; add further staff from the **Staff** page.
 
-### 2. Secrets — where to paste them (never in chat, never in git)
+### 2. Secrets (Worker)
 
-**Cloudflare Dashboard → Workers & Pages → `replyiq` → Settings → Environment variables → Production → Add variable → tick "Encrypt" (Secret):**
+Secrets live on the **Worker** `replyiq` (not the old Pages project). Dashboard: **Workers & Pages → replyiq (Worker) → Settings → Variables and Secrets → Add → type Secret**. Or from a terminal with `CLOUDFLARE_API_TOKEN` set: `echo "<value>" | npx wrangler secret put NAME`.
 
-| Name | Value |
-|---|---|
-| `OPENAI_API_KEY` | your OpenAI key (model `gpt-5.5`) |
-| `DATABASE_URL` | *optional* — only used when no Hyperdrive binding exists (e.g. local dev). Production uses Hyperdrive. |
+| Name | Value | Who sets it |
+|---|---|---|
+| `OPENAI_API_KEY` | OpenAI key (model `gpt-5.5`) | Saigates |
+| `GOOGLE_CLIENT_ID` | from the Google Cloud OAuth client (`….apps.googleusercontent.com`) | Saigates |
+| `GOOGLE_CLIENT_SECRET` | from the same client (`GOCSPX-…`) | Saigates |
+| `TOKEN_ENC_KEY` | 32 random bytes, base64 (`openssl rand -base64 32`) — encrypts the Gmail refresh token at rest. **If this is lost or rotated, reconnect Gmail.** | set at first deploy |
 
-Or from a terminal with `CLOUDFLARE_API_TOKEN` set:
-
-```bash
-npx wrangler pages secret put OPENAI_API_KEY --project-name replyiq
-```
-
-Redeploy after adding secrets (Deployments → ⋯ → Retry deployment, or `npm run build && npx wrangler pages deploy dist --project-name replyiq`). Until then https://replyiq.pages.dev shows a "not configured" page. For local development paste the same values into `.dev.vars` (gitignored).
+Secrets on Workers apply immediately — no redeploy needed.
 
 ### 3. Deploy
 
 ```bash
-npm run build
-npx wrangler pages deploy dist --project-name replyiq --branch main
+npm run build && npx wrangler deploy      # or: npm run deploy
 ```
 
-## Gmail (future phase) — scheduled polling
+`wrangler.jsonc` carries the cron (`*/15 * * * *`), the Hyperdrive binding and the assets binding. Check the cron fired: **Workers & Pages → replyiq → Logs** (observability is on) or **Gmail page → Recent sync runs** (`trigger = cron`).
 
-**Can this run every 15 minutes with nobody logged in?** Not on Cloudflare **Pages** alone — Pages Functions have no cron triggers. Two options, both small:
+## Gmail
 
-| Option | What it is | Effort |
-|---|---|---|
-| **A. Cloudflare Worker with a Cron Trigger** (recommended) | Deploy the same codebase as a *Worker* instead of Pages (`wrangler.jsonc` → `main` + `triggers.crons = ["*/15 * * * *"]`, static assets via `[assets]`). A `scheduled()` handler polls Gmail and writes cases to Supabase. Runs 24/7 regardless of browser sessions. | ~1 hour; one-time switch from Pages to Workers, same account, same URL style (`*.workers.dev` or custom domain). |
-| **B. Keep Pages, add Supabase `pg_cron` + `pg_net`** | A Postgres cron job in Supabase calls `POST https://<domain>/api/jobs/gmail-sync` every 15 minutes with a secret header. | ~30 min; no infra change, but the poll runs in a request context (CPU-time limits apply). |
+**Google Cloud setup** (done by Saigates): OAuth client type *Web application*; redirect URI `https://replyiq.saigateslimited.workers.dev/auth/google/callback` (plus any custom domain later); scopes `gmail.readonly` and `gmail.send`; consent screen in *Testing* with the Saigates mailbox as a test user until Google verification passes. Branding: home page `/login`, privacy policy `/privacy`.
 
-Both use Gmail **push-free polling** (`users.messages.list` with `q=newer_than:1h from:marketplace.amazon.co.uk`, ~100 calls/day — well inside Gmail's free quota), store the refresh token as a secret, and need the redirect URI below. I recommend **A** — it is the standard Cloudflare answer and removes the dependency on a browser being open. Note: Cloudflare cron triggers are only available when you deploy to your **own** Cloudflare account (not the Genspark-hosted path).
+**Connecting**: a manager opens **Gmail** in the header → *Connect Gmail* → Google consent → back to ReplyIQ. The poller starts on the next 15-minute tick; *Sync now* runs it immediately.
 
-### Google OAuth consent screen (Branding)
+**How the deadline works**: each ingested message's `sent_at` is Gmail's `internalDate` (arrival time at the mailbox). The case's 24-hour clock runs from the latest customer `internalDate`, so polling delay never shifts a deadline.
 
-| Field | Value |
-|---|---|
-| Application home page | `https://replyiq.pages.dev/login` (public, no login required) |
-| Privacy policy | `https://replyiq.pages.dev/privacy` (public) |
-| Authorised domain | `replyiq.pages.dev` |
-
-### Google OAuth redirect URI
-
-Register this **Authorised redirect URI** in Google Cloud → APIs & Services → Credentials → OAuth 2.0 Client (Web application):
-
-```
-https://<your-production-domain>/auth/google/callback
-```
-
-Live value now: **`https://replyiq.pages.dev/auth/google/callback`** (add a second entry if you later attach a custom domain, e.g. `https://replyiq.saigates.co.uk/auth/google/callback`). Add the sandbox URL too if you want to test before going live: `https://3000-id2nlba4e4s5y3pr1acd5-02b9cc79.sandbox.novita.ai/auth/google/callback`. Scopes will be `gmail.readonly` (to ingest threads) and, only if you later want ReplyIQ to create Gmail *drafts* (still never send), `gmail.compose`. The route exists already and returns 501 until the integration is built; it will need `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` secrets.
+**Sending**: *Send to customer* appears only on approved drafts of Gmail-sourced cases. The reply goes to the customer's anonymised `@marketplace.amazon.co.uk` address with `In-Reply-To`/`References` headers and the Gmail `threadId`, so Amazon and Gmail both thread it correctly. Manual (non-Gmail) cases keep the *Mark as sent in Amazon* button.
 
 ## Local development
 
@@ -162,16 +150,17 @@ Live value now: **`https://replyiq.pages.dev/auth/google/callback`** (add a seco
 sudo service postgresql start                       # sandbox has PostgreSQL 17
 export DATABASE_URL=postgres://replyiq:replyiq_dev@localhost:5432/replyiq
 npm run db:reset                                    # schema + demo cases (no users)
-cp .dev.vars.example .dev.vars                      # fill DATABASE_URL, OPENAI_API_KEY
-npm run build && pm2 start ecosystem.config.cjs
+cp .dev.vars.example .dev.vars                      # OPENAI_API_KEY, GOOGLE_*, TOKEN_ENC_KEY (local DB comes from wrangler.jsonc localConnectionString)
+npm run build && pm2 start ecosystem.config.cjs     # wrangler dev --test-scheduled
+curl "http://localhost:3000/__scheduled?cron=*/15+*+*+*+*"   # fire the cron locally
 # then open /setup to create the first manager
 ```
 
 ## Not yet implemented
 
-- Gmail ingestion (new emails → cases/threads)
+- Custom domain (e.g. `replyiq.saigates.co.uk`) — one `wrangler.jsonc` route + DNS
 - Password-reset-by-email, 2FA
 - Analytics / reporting on outcomes
 - Attachments (photos) on cases
 
-- **Platform**: Cloudflare Pages on Saigates' account + Hyperdrive → Supabase (switch to Worker + Cron for the Gmail phase) · **Status**: ✅ live at https://replyiq.pages.dev, awaiting first manager account via `/setup` · **Last updated**: 2026-10-11
+- **Platform**: Cloudflare Worker (cron */15) on Saigates' account + Hyperdrive → Supabase · **Status**: ✅ live at https://replyiq.saigateslimited.workers.dev; awaiting Worker secrets (`OPENAI_API_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) and Gmail connection · **Last updated**: 2026-10-11

@@ -7,6 +7,8 @@ export type Bindings = {
   OPENAI_BASE_URL?: string   // optional override (defaults to https://api.openai.com/v1)
   GOOGLE_CLIENT_ID?: string  // Gmail integration (future phase)
   GOOGLE_CLIENT_SECRET?: string
+  TOKEN_ENC_KEY?: string     // base64 32-byte key for encrypting the Gmail refresh token at rest
+  ASSETS: Fetcher            // Workers static assets binding (public/)
 }
 
 export const dbConfigured = (env: Bindings) => Boolean(env.HYPERDRIVE?.connectionString || env.DATABASE_URL)

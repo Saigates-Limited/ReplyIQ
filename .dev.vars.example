@@ -3,3 +3,6 @@ OPENAI_API_KEY=sk-your-key-here
 # OPENAI_BASE_URL=        (leave unset for api.openai.com)
 # GOOGLE_CLIENT_ID=       (Gmail phase)
 # GOOGLE_CLIENT_SECRET=
+# GOOGLE_CLIENT_ID=...
+# GOOGLE_CLIENT_SECRET=...
+# TOKEN_ENC_KEY=   (openssl rand -base64 32)

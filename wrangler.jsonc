@@ -1,22 +1,26 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "replyiq",
+  "main": "dist/index.js",
   "compatibility_date": "2026-09-17",
-  "pages_build_output_dir": "./dist",
   "compatibility_flags": ["nodejs_compat"],
 
-  // Cloudflare Hyperdrive terminates the Postgres TLS connection to Supabase (session pooler, port 5432).
-  // Direct TLS from the Worker to Supavisor does not complete, so all production DB traffic goes via this binding.
+  // Static files in public/ (served at /static/* via the ASSETS binding)
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+
+  // Gmail poller: every 15 minutes, read-only. Email is only ever sent by a staff member pressing Send.
+  "triggers": { "crons": ["*/15 * * * *"] },
+
+  // Cloudflare Hyperdrive → Supabase session pooler (5432). Direct Worker→Supavisor TLS does not complete.
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
       "id": "619303c46e164a8eab43ef1101c16470",
-      // Local dev only: wrangler uses this instead of the real Hyperdrive. Override via .dev.vars (WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE).
       "localConnectionString": "postgres://replyiq:replyiq_dev@localhost:5432/replyiq"
     }
-  ]
+  ],
 
-  // Secrets (never put values here):
-  //   OPENAI_API_KEY   - OpenAI key, server-side only
-  //   DATABASE_URL     - optional fallback when no Hyperdrive binding is present (local dev)
+  "observability": { "enabled": true }
+
+  // Secrets (wrangler secret put <NAME>): OPENAI_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, TOKEN_ENC_KEY
 }
