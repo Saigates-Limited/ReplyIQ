@@ -4,6 +4,7 @@ AI-assisted reply drafting for **Saigates Ltd** Amazon UK customer service.
 
 - **Goal**: answer Amazon UK customer messages inside the 24-hour window with AI drafts that a human always reviews, edits and approves. **Nothing is ever sent to customers automatically.**
 - **Stack**: Hono (TypeScript) on Cloudflare Pages/Workers · PostgreSQL (Supabase in production) via postgres.js · OpenAI `gpt-5.5` server-side · Tailwind + vanilla JS
+- **Production**: https://replyiq.pages.dev (Cloudflare Pages project `replyiq`, Saigates' own account)
 - **Sandbox preview**: https://3000-id2nlba4e4s5y3pr1acd5-02b9cc79.sandbox.novita.ai
   - No demo accounts. On a fresh database the app shows **`/setup`** once, to create the first manager; after that it is permanently disabled.
 
@@ -98,7 +99,7 @@ Data API can stay off — the app speaks plain Postgres.
 
 ### 2. Secrets — where to paste them (never in chat, never in git)
 
-**Cloudflare Dashboard → Workers & Pages → your Pages project → Settings → Environment variables → Production → Add variable → tick "Encrypt" (Secret):**
+**Cloudflare Dashboard → Workers & Pages → `replyiq` → Settings → Environment variables → Production → Add variable → tick "Encrypt" (Secret):**
 
 | Name | Value |
 |---|---|
@@ -108,17 +109,17 @@ Data API can stay off — the app speaks plain Postgres.
 Or from a terminal with `CLOUDFLARE_API_TOKEN` set:
 
 ```bash
-npx wrangler pages secret put DATABASE_URL --project-name <project>
-npx wrangler pages secret put OPENAI_API_KEY --project-name <project>
+npx wrangler pages secret put DATABASE_URL --project-name replyiq
+npx wrangler pages secret put OPENAI_API_KEY --project-name replyiq
 ```
 
-Redeploy after adding secrets. For local development paste the same values into `.dev.vars` (gitignored).
+Redeploy after adding secrets (Deployments → ⋯ → Retry deployment, or `npm run build && npx wrangler pages deploy dist --project-name replyiq`). Until then https://replyiq.pages.dev shows a "not configured" page. For local development paste the same values into `.dev.vars` (gitignored).
 
 ### 3. Deploy
 
 ```bash
 npm run build
-npx wrangler pages deploy dist --project-name <project>
+npx wrangler pages deploy dist --project-name replyiq --branch main
 ```
 
 ## Gmail (future phase) — scheduled polling
@@ -140,7 +141,7 @@ Register this **Authorised redirect URI** in Google Cloud → APIs & Services �
 https://<your-production-domain>/auth/google/callback
 ```
 
-e.g. `https://replyiq.pages.dev/auth/google/callback` or `https://replyiq.saigates.co.uk/auth/google/callback` if you attach a custom domain. Add the sandbox URL too if you want to test before going live: `https://3000-id2nlba4e4s5y3pr1acd5-02b9cc79.sandbox.novita.ai/auth/google/callback`. Scopes will be `gmail.readonly` (to ingest threads) and, only if you later want ReplyIQ to create Gmail *drafts* (still never send), `gmail.compose`. The route exists already and returns 501 until the integration is built; it will need `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` secrets.
+Live value now: **`https://replyiq.pages.dev/auth/google/callback`** (add a second entry if you later attach a custom domain, e.g. `https://replyiq.saigates.co.uk/auth/google/callback`). Add the sandbox URL too if you want to test before going live: `https://3000-id2nlba4e4s5y3pr1acd5-02b9cc79.sandbox.novita.ai/auth/google/callback`. Scopes will be `gmail.readonly` (to ingest threads) and, only if you later want ReplyIQ to create Gmail *drafts* (still never send), `gmail.compose`. The route exists already and returns 501 until the integration is built; it will need `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` secrets.
 
 ## Local development
 
@@ -160,4 +161,4 @@ npm run build && pm2 start ecosystem.config.cjs
 - Analytics / reporting on outcomes
 - Attachments (photos) on cases
 
-- **Platform**: Cloudflare Pages (Worker + Cron for the Gmail phase) · **Status**: sandbox, awaiting deploy-path decision and production secrets · **Last updated**: 2026-10-11
+- **Platform**: Cloudflare Pages on Saigates' account (switch to Worker + Cron for the Gmail phase) · **Status**: ✅ deployed, awaiting `DATABASE_URL` / `OPENAI_API_KEY` secrets · **Last updated**: 2026-10-11

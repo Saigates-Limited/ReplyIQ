@@ -30,13 +30,39 @@ async function userCount(env: Bindings) {
     await sql.end()
   }
 }
+const notConfigured = (c: any) =>
+  c.html(
+    `<!DOCTYPE html><html lang="en-GB"><head><meta charset="UTF-8"><title>ReplyIQ — not configured</title><script src="https://cdn.tailwindcss.com"></script></head>
+     <body class="bg-slate-900 min-h-screen flex items-center justify-center p-4"><main class="max-w-md bg-white rounded-2xl p-8 shadow-xl">
+     <h1 class="font-bold text-xl mb-2">ReplyIQ is deployed but not configured</h1>
+     <p class="text-sm text-slate-600 mb-3">The <code>DATABASE_URL</code> secret is missing or the database is unreachable.</p>
+     <ol class="text-sm text-slate-700 list-decimal pl-5 space-y-1">
+       <li>Run <code>db/schema.sql</code> in the Supabase SQL Editor.</li>
+       <li>Cloudflare Dashboard → Workers &amp; Pages → <strong>replyiq</strong> → Settings → Environment variables → Production → add <code>DATABASE_URL</code> and <code>OPENAI_API_KEY</code> (Encrypt).</li>
+       <li>Redeploy, then reload this page.</li>
+     </ol></main></body></html>`,
+    503
+  )
+
 app.get('/login', async (c) => {
-  if (await getSessionUser(c)) return c.redirect('/')
-  if ((await userCount(c.env)) === 0) return c.redirect('/setup')
+  if (!c.env.DATABASE_URL) return notConfigured(c)
+  try {
+    if (await getSessionUser(c)) return c.redirect('/')
+    if ((await userCount(c.env)) === 0) return c.redirect('/setup')
+  } catch (e) {
+    console.error(e)
+    return notConfigured(c)
+  }
   return c.html(loginPage())
 })
 app.get('/setup', async (c) => {
-  if ((await userCount(c.env)) > 0) return c.redirect('/login')
+  if (!c.env.DATABASE_URL) return notConfigured(c)
+  try {
+    if ((await userCount(c.env)) > 0) return c.redirect('/login')
+  } catch (e) {
+    console.error(e)
+    return notConfigured(c)
+  }
   return c.html(setupPage())
 })
 app.route('/api/auth', authPublic)
