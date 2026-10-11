@@ -169,7 +169,7 @@ export function serverChecks(draft: string, kase: CaseRow): ServerFinding[] {
   if (kase.customer_last_name && d.includes(kase.customer_last_name.toLowerCase())) add('pii', 'fail', 'Contains the customer surname')
   if (kase.customer_email && d.includes(kase.customer_email.toLowerCase())) add('pii', 'fail', 'Contains the customer email address')
   if (/(?:\+44[\s-]?\(?0?\)?|\(?0)\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}\b/.test(draft) && !paidRepairApproved(kase))
-    add('pii', 'fail', 'Contains a phone number')
+    add('pii', 'fail', 'Repeats a phone number in the reply')
   if (kase.customer_address) {
     const street = kase.customer_address.split(',')[0].trim()
     if (street.length > 3 && d.includes(street.toLowerCase())) add('pii', 'fail', 'Contains the customer street address')
@@ -184,7 +184,11 @@ export function serverChecks(draft: string, kase: CaseRow): ServerFinding[] {
     !asks(new RegExp(`\\b(?:never|do not|don't|not) (?:share|send|give|provide|tell)\\b[^.\\n]{0,30}${credWord}`))
   )
     add('never_ask_credentials', 'fail', 'Asks for a PIN, passcode, verification code or password')
-  if (asks(/\b(your|a|best|contact) (phone|mobile|telephone|contact) number\b|\bnumber (?:we|i) can (?:call|reach)\b/))
+  // Fail only when the reply ASKS for a phone number (a request verb nearby), not on the bare phrase.
+  if (
+    asks(/\b(?:send|share|provide|give|tell|confirm|let us know|what is|what's|could you|can you|please)\b[^.\n]{0,40}\b(?:your |a |the best |a contact )?(?:phone|mobile|telephone|contact) number\b/) ||
+    asks(/\bnumber (?:we|i) can (?:call|reach|contact) you\b/)
+  )
     add('never_ask_phone', 'fail', 'Asks for the customer phone number')
   if (asks(/\b(your|an?) email address\b|\bemail (?:us|me) (?:at|on)\b/))
     add('never_ask_email', 'fail', 'Asks for an email address')

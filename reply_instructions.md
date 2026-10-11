@@ -60,6 +60,8 @@ Use days_since_delivery to choose the lane:
 
 ## Item not received
 - Apologise and confirm we are checking with the carrier.
+- Ask the customer to check with neighbours, anyone else at the address,
+  and any safe place, porch or bin store.
 - Treat every phone as high value. Tell the customer they may be asked
   for a police crime reference number if the parcel shows as delivered
   but was not received.
