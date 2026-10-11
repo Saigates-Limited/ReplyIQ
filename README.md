@@ -129,14 +129,14 @@ npx wrangler pages deploy dist --project-name replyiq --branch main
 
 ## Gmail (future phase) — scheduled polling
 
-**Can this run every 2 minutes with nobody logged in?** Not on Cloudflare **Pages** alone — Pages Functions have no cron triggers. Two options, both small:
+**Can this run every 15 minutes with nobody logged in?** Not on Cloudflare **Pages** alone — Pages Functions have no cron triggers. Two options, both small:
 
 | Option | What it is | Effort |
 |---|---|---|
-| **A. Cloudflare Worker with a Cron Trigger** (recommended) | Deploy the same codebase as a *Worker* instead of Pages (`wrangler.jsonc` → `main` + `triggers.crons = ["*/2 * * * *"]`, static assets via `[assets]`). A `scheduled()` handler polls Gmail and writes cases to Supabase. Runs 24/7 regardless of browser sessions. | ~1 hour; one-time switch from Pages to Workers, same account, same URL style (`*.workers.dev` or custom domain). |
-| **B. Keep Pages, add Supabase `pg_cron` + `pg_net`** | A Postgres cron job in Supabase calls `POST https://<domain>/api/jobs/gmail-sync` every 2 minutes with a secret header. | ~30 min; no infra change, but the poll runs in a request context (CPU-time limits apply). |
+| **A. Cloudflare Worker with a Cron Trigger** (recommended) | Deploy the same codebase as a *Worker* instead of Pages (`wrangler.jsonc` → `main` + `triggers.crons = ["*/15 * * * *"]`, static assets via `[assets]`). A `scheduled()` handler polls Gmail and writes cases to Supabase. Runs 24/7 regardless of browser sessions. | ~1 hour; one-time switch from Pages to Workers, same account, same URL style (`*.workers.dev` or custom domain). |
+| **B. Keep Pages, add Supabase `pg_cron` + `pg_net`** | A Postgres cron job in Supabase calls `POST https://<domain>/api/jobs/gmail-sync` every 15 minutes with a secret header. | ~30 min; no infra change, but the poll runs in a request context (CPU-time limits apply). |
 
-Both use Gmail **push-free polling** (`users.messages.list` with `q=newer_than:10m from:marketplace.amazon.co.uk`, ~720 calls/day — well inside Gmail's free quota), store the refresh token as a secret, and need the redirect URI below. I recommend **A** — it is the standard Cloudflare answer and removes the dependency on a browser being open. Note: Cloudflare cron triggers are only available when you deploy to your **own** Cloudflare account (not the Genspark-hosted path).
+Both use Gmail **push-free polling** (`users.messages.list` with `q=newer_than:1h from:marketplace.amazon.co.uk`, ~100 calls/day — well inside Gmail's free quota), store the refresh token as a secret, and need the redirect URI below. I recommend **A** — it is the standard Cloudflare answer and removes the dependency on a browser being open. Note: Cloudflare cron triggers are only available when you deploy to your **own** Cloudflare account (not the Genspark-hosted path).
 
 ### Google OAuth consent screen (Branding)
 
