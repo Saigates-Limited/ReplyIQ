@@ -256,6 +256,7 @@
                 ${boolField('refund_issued', 'Refund issued', k.refund_issued)}
                 ${boolField('a_to_z_open', 'A-to-Z open', k.a_to_z_open)}
                 ${boolField('in_stock', 'In stock', k.in_stock)}
+                ${boolField('repair_quote_accepted', 'Repair quote accepted', k.repair_quote_accepted)}
                 <div>
                   <label class="field-label" for="f-carrier">Carrier</label>
                   <input id="f-carrier" name="carrier" list="carrier-list" class="field-input" value="${esc(k.carrier || '')}">

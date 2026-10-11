@@ -44,6 +44,43 @@ authPublic.post('/login', async (c) => {
   return c.json({ user: { id: user.id, email: user.email, name: user.name, role: user.role } })
 })
 
+// First-run: create the first manager. Only works while the users table is empty,
+// so it is impossible to use once any account exists.
+authPublic.get('/setup-status', async (c) => {
+  const sql = getDb(c.env)
+  try {
+    const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM users`
+    return c.json({ needs_setup: n === 0 })
+  } finally {
+    await sql.end()
+  }
+})
+
+authPublic.post('/setup', async (c) => {
+  const b = (await c.req.json().catch(() => ({}))) as { email?: string; name?: string; password?: string }
+  const email = String(b.email ?? '').trim().toLowerCase()
+  const name = String(b.name ?? '').trim()
+  const password = String(b.password ?? '')
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.json({ error: 'Valid email required' }, 400)
+  if (!name) return c.json({ error: 'Name required' }, 400)
+  if (password.length < 12) return c.json({ error: 'Password must be at least 12 characters' }, 400)
+  const sql = getDb(c.env)
+  try {
+    const hash = await hashPassword(password)
+    // Atomic: insert only if the table is still empty.
+    const rows = await sql`
+      INSERT INTO users (email, name, role, password_hash)
+      SELECT ${email}, ${name}, 'manager', ${hash}
+      WHERE NOT EXISTS (SELECT 1 FROM users)
+      RETURNING id`
+    if (!rows.length) return c.json({ error: 'Setup has already been completed' }, 409)
+    await createSession(c, rows[0].id)
+    return c.json({ ok: true }, 201)
+  } finally {
+    await sql.end()
+  }
+})
+
 authPublic.post('/logout', async (c) => {
   await destroySession(c)
   return c.json({ ok: true })

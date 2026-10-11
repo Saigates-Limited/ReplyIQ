@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS cases (
   a_to_z_open           BOOLEAN,
   in_stock              BOOLEAN,
   approved_repair_price NUMERIC(10,2),
+  repair_quote_accepted BOOLEAN,                       -- customer accepted the approved paid-repair quote
   tracking_number       TEXT,
   carrier               TEXT,
 
@@ -76,12 +77,12 @@ CREATE TABLE IF NOT EXISTS drafts (
   needs_manager_reason TEXT,
   model           TEXT,
   status          TEXT NOT NULL DEFAULT 'draft',        -- draft | approved | sent | discarded
-  created_by      INTEGER REFERENCES users(id),
-  edited_by       INTEGER REFERENCES users(id),
+  created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  edited_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
   edited_at       TIMESTAMPTZ,
-  approved_by     INTEGER REFERENCES users(id),
+  approved_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
   approved_at     TIMESTAMPTZ,
-  sent_recorded_by INTEGER REFERENCES users(id),
+  sent_recorded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   sent_recorded_at TIMESTAMPTZ,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()

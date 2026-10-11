@@ -98,3 +98,42 @@ export const loginPage = () => `${HEAD('Sign in · ReplyIQ')}
   </script>
 </body>
 </html>`
+
+export const setupPage = () => `${HEAD('First-run setup · ReplyIQ')}
+<body class="bg-slate-900 min-h-screen flex items-center justify-center p-4">
+  <main id="setup-card" class="w-full max-w-md bg-white rounded-2xl shadow-xl p-8">
+    <div class="flex items-center gap-3 mb-2">
+      <span class="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-amber-400 text-slate-900 text-lg"><i class="fas fa-reply-all"></i></span>
+      <div>
+        <h1 class="font-bold text-xl leading-tight">ReplyIQ — first-run setup</h1>
+        <p class="text-xs text-slate-500">Saigates Ltd</p>
+      </div>
+    </div>
+    <p class="text-sm text-slate-600 mb-6">No staff accounts exist yet. Create the first <strong>manager</strong> account. This page disappears permanently once an account exists.</p>
+    <form id="setup-form" class="space-y-4" autocomplete="off">
+      <div><label for="name" class="field-label">Your name</label><input id="name" name="name" required class="field-input"></div>
+      <div><label for="email" class="field-label">Work email</label><input id="email" name="email" type="email" required class="field-input"></div>
+      <div><label for="password" class="field-label">Password (12+ characters)</label><input id="password" name="password" type="password" minlength="12" required autocomplete="new-password" class="field-input"></div>
+      <div><label for="confirm" class="field-label">Confirm password</label><input id="confirm" name="confirm" type="password" required autocomplete="new-password" class="field-input"></div>
+      <p id="setup-error" class="hidden text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2"></p>
+      <button id="setup-btn" type="submit" class="w-full py-2.5 rounded-md bg-slate-900 text-white font-medium hover:bg-slate-800">Create manager account</button>
+    </form>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+  <script>
+    const form = document.getElementById('setup-form'), err = document.getElementById('setup-error'), btn = document.getElementById('setup-btn');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault(); err.classList.add('hidden');
+      if (form.password.value !== form.confirm.value) { err.textContent = 'Passwords do not match'; err.classList.remove('hidden'); return; }
+      btn.disabled = true; btn.textContent = 'Creating…';
+      try {
+        await axios.post('/api/auth/setup', { name: form.name.value, email: form.email.value, password: form.password.value });
+        location.href = '/';
+      } catch (ex) {
+        err.textContent = ex.response?.data?.error || 'Setup failed'; err.classList.remove('hidden');
+        btn.disabled = false; btn.textContent = 'Create manager account';
+      }
+    });
+  </script>
+</body>
+</html>`

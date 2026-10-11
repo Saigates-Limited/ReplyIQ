@@ -3,9 +3,9 @@ import { serveStatic } from 'hono/cloudflare-workers'
 import { casesApi } from './routes/cases'
 import { authApi, authPublic } from './routes/auth'
 import { draftsApi } from './routes/drafts'
-import type { Bindings } from './db'
+import { getDb, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
-import { page, loginPage } from './page'
+import { page, loginPage, setupPage } from './page'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
@@ -21,9 +21,23 @@ app.use('*', async (c, next) => {
 // ── Public (no login) ───────────────────────────────────────────
 app.use('/static/*', serveStatic({ root: './public' }))
 app.get('/api/health', (c) => c.json({ ok: true, db: Boolean(c.env.DATABASE_URL), ai: Boolean(c.env.OPENAI_API_KEY), time: new Date().toISOString() }))
+async function userCount(env: Bindings) {
+  const sql = getDb(env)
+  try {
+    const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM users`
+    return n as number
+  } finally {
+    await sql.end()
+  }
+}
 app.get('/login', async (c) => {
   if (await getSessionUser(c)) return c.redirect('/')
+  if ((await userCount(c.env)) === 0) return c.redirect('/setup')
   return c.html(loginPage())
+})
+app.get('/setup', async (c) => {
+  if ((await userCount(c.env)) > 0) return c.redirect('/login')
+  return c.html(setupPage())
 })
 app.route('/api/auth', authPublic)
 

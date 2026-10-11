@@ -1,57 +1,57 @@
 -- Sample data for ReplyIQ (relative timestamps so deadlines are meaningful).
--- Staff users are seeded separately by scripts/seed-users.mjs (needs PBKDF2 hashing).
+-- Staff accounts are NOT seeded: the first manager is created via the /setup page on first run.
 TRUNCATE drafts, messages, cases RESTART IDENTITY CASCADE;
 
 INSERT INTO cases (case_ref, subject, status, customer_first_name, customer_last_name, customer_email, customer_phone, customer_address,
-                   order_id, device_model, delivery_date, refund_issued, a_to_z_open, in_stock, approved_repair_price, tracking_number, carrier,
+                   order_id, device_model, delivery_date, refund_issued, a_to_z_open, in_stock, approved_repair_price, repair_quote_accepted, tracking_number, carrier,
                    last_customer_message_at)
 VALUES
 -- Safety concern (priority, needs manager)
 ('RIQ-1001', 'Phone getting very hot while charging', 'open',
  'Emma', 'Thompson', 'emma.t@example.co.uk', '07700 900123', '14 Elm Road, Leeds LS1 4AB',
- '204-1234567-1234567', 'iPhone 13 128GB (Renewed)', CURRENT_DATE - 12, false, false, true, NULL, NULL, NULL,
+ '204-1234567-1234567', 'iPhone 13 128GB (Renewed)', CURRENT_DATE - 12, false, false, true, NULL, NULL, NULL, NULL,
  now() - INTERVAL '22 hours'),
 
 -- INR, tracking shows delivered
 ('RIQ-1002', 'Order marked delivered but nothing arrived', 'open',
  'Oliver', 'Patel', 'oliver.p@example.co.uk', '07700 900456', '3 Castle Street, Bristol BS1 2AB',
- '203-9876543-7654321', 'Samsung Galaxy S22 (Renewed)', CURRENT_DATE - 2, false, false, true, NULL, 'EV123456789GB', 'Evri',
+ '203-9876543-7654321', 'Samsung Galaxy S22 (Renewed)', CURRENT_DATE - 2, false, false, true, NULL, NULL, 'EV123456789GB', 'Evri',
  now() - INTERVAL '5 hours'),
 
 -- Battery complaint, 64 days (31-90 band)
 ('RIQ-1003', 'Battery drains in a few hours and shuts down at 20%', 'open',
  'Sophie', 'Williams', 'sophie.w@example.co.uk', NULL, '88 Queen Avenue, Manchester M1 1AA',
- '206-5555555-2222222', 'iPhone 12 64GB (Renewed)', CURRENT_DATE - 64, false, false, false, NULL, NULL, NULL,
+ '206-5555555-2222222', 'iPhone 12 64GB (Renewed)', CURRENT_DATE - 64, false, false, false, NULL, NULL, NULL, NULL,
  now() - INTERVAL '26 hours'),
 
 -- Refund request, A-to-Z open (acknowledge only, manager)
 ('RIQ-1004', 'Still waiting for my refund', 'open',
  'James', 'O''Connor', 'james.oc@example.co.uk', '07700 900789', '21 Harbour Lane, Liverpool L1 8JQ',
- '205-1111111-3333333', 'Google Pixel 7 (Renewed)', CURRENT_DATE - 20, false, true, true, NULL, NULL, NULL,
+ '205-1111111-3333333', 'Google Pixel 7 (Renewed)', CURRENT_DATE - 20, false, true, true, NULL, NULL, NULL, NULL,
  now() - INTERVAL '14 hours'),
 
 -- Out-of-warranty repair with approved quote
 ('RIQ-1005', 'Cracked screen - can you repair it?', 'open',
  'Amelia', 'Hughes', 'amelia.h@example.co.uk', NULL, '7 Park View, Sheffield S1 2HE',
- '202-4444444-8888888', 'iPhone 14 Pro 256GB (Renewed)', CURRENT_DATE - 140, false, false, true, 89.00, NULL, NULL,
+ '202-4444444-8888888', 'iPhone 14 Pro 256GB (Renewed)', CURRENT_DATE - 140, false, false, true, 89.00, NULL, NULL, NULL,
  now() - INTERVAL '2 hours'),
 
 -- Missing accessory under £15
 ('RIQ-1006', 'No charging cable in the box', 'open',
  'Harry', 'Begum', 'harry.b@example.co.uk', '07700 900321', '55 Mill Road, Cambridge CB1 2AZ',
- '207-2222222-9999999', 'iPhone 15 128GB (Renewed)', CURRENT_DATE - 3, false, false, true, NULL, NULL, NULL,
+ '207-2222222-9999999', 'iPhone 15 128GB (Renewed)', CURRENT_DATE - 3, false, false, true, NULL, NULL, NULL, NULL,
  now() - INTERVAL '9 hours'),
 
 -- eSIM / US variant
 ('RIQ-1007', 'No SIM tray on my iPhone?', 'open',
  'Isla', 'Murray', 'isla.m@example.co.uk', NULL, '12 Brae Street, Edinburgh EH1 1AA',
- '208-3333333-1111111', 'iPhone 14 128GB (Renewed, US model)', CURRENT_DATE - 1, false, false, false, NULL, NULL, NULL,
+ '208-3333333-1111111', 'iPhone 14 128GB (Renewed, US model)', CURRENT_DATE - 1, false, false, false, NULL, NULL, NULL, NULL,
  now() - INTERVAL '1 hour'),
 
 -- Resolved example
 ('RIQ-1008', 'Which charger do I need?', 'resolved',
  'Noah', 'Clarke', 'noah.c@example.co.uk', NULL, '9 Abbey Close, York YO1 7HH',
- '209-6666666-4444444', 'iPhone 15 Pro (Renewed)', CURRENT_DATE - 6, false, false, true, NULL, NULL, NULL,
+ '209-6666666-4444444', 'iPhone 15 Pro (Renewed)', CURRENT_DATE - 6, false, false, true, NULL, NULL, NULL, NULL,
  now() - INTERVAL '3 days');
 
 INSERT INTO messages (case_id, direction, sender, body, sent_at) VALUES

@@ -11,7 +11,7 @@ const CASE_COLUMNS = `
   id, case_ref, subject, status,
   customer_first_name, customer_last_name, customer_email, customer_phone, customer_address,
   order_id, device_model, delivery_date, refund_issued, a_to_z_open, in_stock,
-  approved_repair_price, tracking_number, carrier,
+  approved_repair_price, repair_quote_accepted, tracking_number, carrier,
   last_customer_message_at,
   (last_customer_message_at + INTERVAL '24 hours') AS reply_deadline,
   created_at, updated_at
@@ -73,6 +73,7 @@ const EDITABLE = {
   a_to_z_open: 'bool',
   in_stock: 'bool',
   approved_repair_price: 'money',
+  repair_quote_accepted: 'bool',
   tracking_number: 'text',
   carrier: 'text',
 } as const
