@@ -5,6 +5,16 @@ import { TONES, TONE_META } from '../tone'
 
 export const casesApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
+// Until migration 0008 (archived_at) is applied in production, fall back to non-archive SQL.
+let archiveColsKnown: boolean | null = null
+async function hasArchiveCols(sql: ReturnType<typeof getDb>) {
+  if (archiveColsKnown !== null) return archiveColsKnown
+  const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'archived_at'`
+  archiveColsKnown = !!r
+  return archiveColsKnown
+}
+const archExpr = (has: boolean, expr: string) => (has ? expr : expr.replace(/cases\.archived_at IS NULL/g, 'TRUE').replace(/cases\.archived_at IS NOT NULL/g, 'FALSE').replace(/cases\.archived_at,/g, 'NULL::timestamptz AS archived_at,'))
+
 // Columns returned to the agent UI. PII columns (last name, email, phone,
 // address) are returned here because agents need them, but they are NEVER
 // included in anything sent to OpenAI (see the draft generation step).
@@ -50,8 +60,9 @@ casesApi.get('/', async (c) => {
   try {
     // Queue order (agreed with Saigates): overdue first, then Red (angry) / Purple (dispute), then everyone else by deadline.
     // "Deadline" is the earlier of the 24h customer-reply deadline and any open Amazon event deadline.
+    const has = await hasArchiveCols(sql)
     const rows = await sql.unsafe(
-      `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS},
+      archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS},
               (SELECT COUNT(*) FROM messages m WHERE m.case_id = cases.id AND m.kind <> 'event')::int AS message_count,
               (SELECT status FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_status,
               (SELECT needs_manager FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_needs_manager,
@@ -64,7 +75,7 @@ casesApi.get('/', async (c) => {
        ORDER BY
          CASE WHEN cases.status <> 'resolved' AND ${DEADLINE_EXPR} < now() THEN 0 ELSE 1 END,
          CASE WHEN cases.tone IN ('angry','dispute') THEN 0 ELSE 1 END,
-         ${DEADLINE_EXPR} ASC NULLS LAST`,
+         ${DEADLINE_EXPR} ASC NULLS LAST`),
       [status]
     )
     return c.json({ cases: rows, now: new Date().toISOString() })
@@ -80,7 +91,7 @@ casesApi.get('/:id', async (c) => {
   const sql = getDb(c.env)
   try {
     const [kase] = await sql.unsafe(
-      `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS} FROM cases LEFT JOIN users u ON u.id = cases.assigned_to WHERE cases.id = $1`,
+      archExpr(await hasArchiveCols(sql), `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS} FROM cases LEFT JOIN users u ON u.id = cases.assigned_to WHERE cases.id = $1`),
       [id]
     )
     if (!kase) return c.json({ error: 'Case not found' }, 404)
@@ -177,9 +188,10 @@ casesApi.patch('/:id', async (c) => {
   const sql = getDb(c.env)
   try {
     const cols = Object.keys(updates)
+    const has = await hasArchiveCols(sql)
     const [row] = await sql.unsafe(
       `UPDATE cases SET ${cols.map((k, i) => `${k} = $${i + 2}`).join(', ')}, updated_at = now()
-       WHERE id = $1 RETURNING ${CASE_COLUMNS}`,
+       WHERE id = $1 RETURNING ${has ? CASE_COLUMNS : CASE_COLUMNS.replace('archived_at,', 'NULL::timestamptz AS archived_at,')}`,
       [id, ...cols.map((k) => updates[k])] as any[]
     )
     if (!row) return c.json({ error: 'Case not found' }, 404)
@@ -189,7 +201,7 @@ casesApi.patch('/:id', async (c) => {
                 WHERE id = (SELECT id FROM messages WHERE case_id = ${id} AND direction = 'inbound' AND kind <> 'event' ORDER BY sent_at DESC LIMIT 1)`
     }
     const [full] = await sql.unsafe(
-      `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS} FROM cases LEFT JOIN users u ON u.id = cases.assigned_to WHERE cases.id = $1`,
+      archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS} FROM cases LEFT JOIN users u ON u.id = cases.assigned_to WHERE cases.id = $1`),
       [id]
     )
     return c.json({ case: full ?? row })
@@ -203,6 +215,7 @@ casesApi.post('/:id/archive', requireManager, async (c) => {
   const id = Number(c.req.param('id'))
   const sql = getDb(c.env)
   try {
+    if (!(await hasArchiveCols(sql))) return c.json({ error: 'Archiving needs migration 0008b (archived_at column) to be run in Supabase first.' }, 503)
     const [row] = await sql`UPDATE cases SET archived_at = now(), archived_by = ${c.get('user').id} WHERE id = ${id} AND archived_at IS NULL RETURNING id`
     if (!row) return c.json({ error: 'Case not found or already archived' }, 404)
     return c.json({ ok: true })

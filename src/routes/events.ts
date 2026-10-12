@@ -5,6 +5,15 @@ import { getDb, type Bindings } from '../db'
 import type { Vars } from '../auth'
 import { TONES } from '../tone'
 
+let archiveColsKnown: boolean | null = null
+async function archFilter(sql: ReturnType<typeof getDb>) {
+  if (archiveColsKnown === null) {
+    const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'archived_at'`
+    archiveColsKnown = !!r
+  }
+  return archiveColsKnown ? 'c.archived_at IS NULL' : 'TRUE'
+}
+
 export const eventsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
 // Allowed status transitions per tracker (agreed with Saigates)
@@ -48,7 +57,7 @@ eventsApi.get('/', async (c) => {
   try {
     const rows = await sql.unsafe(
       `SELECT ${EVENT_SELECT} ${EVENT_FROM}
-       WHERE e.kind = ANY(string_to_array($1, ',')) AND (c.archived_at IS NULL)
+       WHERE e.kind = ANY(string_to_array($1, ',')) AND (${await archFilter(sql)})
          AND ($2 = 'all' OR NOT (e.status = ANY(string_to_array($3, ','))))
        ORDER BY
          CASE WHEN e.deadline_at IS NOT NULL AND e.deadline_at < now() AND NOT (e.status = ANY(string_to_array($3, ','))) THEN 0 ELSE 1 END,
@@ -65,12 +74,13 @@ eventsApi.get('/', async (c) => {
 eventsApi.get('/counts', async (c) => {
   const sql = getDb(c.env)
   try {
-    const [r] = await sql`
+    const af = await archFilter(sql)
+    const [r] = await sql.unsafe(`
       SELECT
-        (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE c.archived_at IS NULL AND e.kind LIKE 'atoz%' AND e.status NOT IN ('won','lost','closed'))::int AS atoz,
-        (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE c.archived_at IS NULL AND e.kind = 'return_request' AND e.status NOT IN ('refunded','closed'))::int AS returns,
-        (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE c.archived_at IS NULL AND e.kind = 'chargeback' AND e.status NOT IN ('won','lost','closed'))::int AS chargebacks,
-        (SELECT COUNT(*) FROM cases WHERE status <> 'resolved' AND archived_at IS NULL)::int AS messages`
+        (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE ${af} AND e.kind LIKE 'atoz%' AND e.status NOT IN ('won','lost','closed'))::int AS atoz,
+        (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE ${af} AND e.kind = 'return_request' AND e.status NOT IN ('refunded','closed'))::int AS returns,
+        (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE ${af} AND e.kind = 'chargeback' AND e.status NOT IN ('won','lost','closed'))::int AS chargebacks,
+        (SELECT COUNT(*) FROM cases c WHERE c.status <> 'resolved' AND ${af})::int AS messages`)
     return c.json(r)
   } finally {
     await sql.end()
