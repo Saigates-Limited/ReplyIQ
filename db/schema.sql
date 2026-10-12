@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS cases (
   carrier               TEXT,
 
   -- Gmail source (NULL for manually created cases)
-  gmail_thread_id       TEXT UNIQUE,
+  gmail_thread_id       TEXT,                           -- latest thread for this case (Amazon opens one thread per message)
   customer_reply_to     TEXT,                          -- anonymised @marketplace.amazon.co.uk address; server only
   source                TEXT NOT NULL DEFAULT 'manual', -- manual | gmail
 
@@ -135,3 +135,5 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   error         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs(started_at DESC);
+CREATE SEQUENCE IF NOT EXISTS case_ref_seq;
+CREATE TABLE IF NOT EXISTS gmail_threads_seen (thread_id TEXT PRIMARY KEY, history_id TEXT, seen_at TIMESTAMPTZ NOT NULL DEFAULT now());

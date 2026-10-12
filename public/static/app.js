@@ -667,6 +667,7 @@
               </dl>
               <div class="mt-4 flex gap-2">
                 <button id="sync-now" class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-rotate mr-1"></i>Sync now</button>
+                ${isManager ? `<select id="import-days" class="field-input py-1 text-sm" style="width:auto"><option value="">Import history…</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>` : ''}
                 ${isManager ? '<button id="disconnect" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm text-red-700">Disconnect</button>' : ''}
               </div>` : `
               <p class="text-sm text-slate-600 mb-4">No mailbox connected.</p>
@@ -688,6 +689,22 @@
     app.querySelector('#disconnect')?.addEventListener('click', async () => {
       if (!confirm('Disconnect the Gmail mailbox? Syncing and sending will stop until reconnected.')) return
       try { await axios.post('/api/gmail/disconnect'); toast('Disconnected'); history.replaceState({}, '', '/gmail'); renderGmail() } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+    })
+    app.querySelector('#import-days')?.addEventListener('change', async (e) => {
+      const days = Number(e.target.value); if (!days) return
+      if (!confirm(`Import all Amazon customer threads from the last ${days} days as cases? Threads already imported are skipped.`)) { e.target.value = ''; return }
+      e.target.disabled = true
+      let total = { c: 0, m: 0 }, rounds = 0
+      try {
+        for (;;) {
+          const { data } = await axios.post('/api/gmail/sync', { days }, { timeout: 120000 })
+          total.c += data.casesNew; total.m += data.messagesNew; rounds++
+          toast(`Importing… ${total.c} case(s), ${total.m} message(s) so far, ${data.remaining} thread(s) left`)
+          if (!data.remaining || rounds > 60) break
+        }
+        toast(`Import complete: ${total.c} new case(s), ${total.m} new message(s)`)
+      } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      history.replaceState({}, '', '/gmail'); renderGmail()
     })
     app.querySelector('#sync-now')?.addEventListener('click', async (e) => {
       e.target.disabled = true; e.target.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Syncing…'

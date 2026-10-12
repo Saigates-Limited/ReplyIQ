@@ -81,7 +81,7 @@ All routes except `/login`, `/setup`, `/privacy`, `POST /api/auth/login|logout|s
 - **sessions** — SHA-256 of cookie token → user, `expires_at`
 - **cases** — case metadata, first name separated from PII columns, agent fields incl. `repair_quote_accepted`, `last_customer_message_at` (deadline derived as +24h), `source` (manual|gmail), `gmail_thread_id`, `customer_reply_to` (anonymised Amazon address, server-only)
 - **messages** — thread entries (`inbound|outbound`, sender, body, subject, `gmail_message_id`, `rfc_message_id` for threading, `sent_at` = Gmail `internalDate`)
-- **gmail_connection** (single row: mailbox, encrypted refresh token, scopes, last sync) · **oauth_states** · **sync_runs** (audit of every poll)
+- **gmail_connection** (single row: mailbox, encrypted refresh token, scopes, last sync) · **oauth_states** · **sync_runs** (audit of every poll) · **gmail_threads_seen** · sequence `case_ref_seq`
 - **drafts** — `tree` (= lane), `urgency`, `sent_via`, `sent_gmail_message_id`, `draft_text`, `original_text`, `staff_notes`, `check_result`, `server_findings` (`check_findings` kept for compatibility, unused), `needs_manager(+reason)`, `model`, `status` (`draft|approved|sent|discarded`), created/edited/approved/sent audit columns (`ON DELETE SET NULL`, so removing a staff account never loses draft history)
 
 ## Production setup (Supabase + Cloudflare Pages)
@@ -140,7 +140,9 @@ npm run build && npx wrangler deploy      # or: npm run deploy
 
 **Google Cloud setup** (done by Saigates): OAuth client type *Web application*; redirect URI `https://replyiq.saigateslimited.workers.dev/auth/google/callback` (plus any custom domain later); scopes `gmail.readonly` and `gmail.send`; consent screen in *Testing* with the Saigates mailbox as a test user until Google verification passes. Branding: home page `/login`, privacy policy `/privacy`.
 
-**Connecting**: a manager opens **Gmail** in the header → *Connect Gmail* → Google consent → back to ReplyIQ. The poller starts on the next 15-minute tick; *Sync now* runs it immediately.
+**Connecting**: a manager opens **Gmail** in the header → *Connect Gmail* → Google consent → back to ReplyIQ. The poller starts on the next 15-minute tick; *Sync now* runs it immediately. **Import history…** (manager) pulls the last 7/30/90 days in batches of 12 threads (Cloudflare subrequest limit) and loops until done; processed threads are recorded in `gmail_threads_seen` so re-runs are cheap.
+
+**Amazon email format**: notifications come from `<name> <token@marketplace.amazon.co.uk>`; the body is `# <order>:` / `1 / <product> [ASIN: …]` / `--- Message: ---` … `--- End message ---`. The parser (`src/sync.ts → parseAmazonBody`) extracts the customer text, order ID and product (→ `device_model`). **Amazon opens a new Gmail thread for every message, so cases are keyed by order ID**, and the case keeps the *latest* thread id for replies. Amazon Customer Service relays ("Dear Amazon Seller…") are labelled as such on the thread.
 
 **How the deadline works**: each ingested message's `sent_at` is Gmail's `internalDate` (arrival time at the mailbox). The case's 24-hour clock runs from the latest customer `internalDate`, so polling delay never shifts a deadline.
 

@@ -60,11 +60,15 @@ gmailApi.post('/disconnect', requireManager, async (c) => {
   }
 })
 
-// POST /api/gmail/sync  (any staff) → run the poller now
+// POST /api/gmail/sync  (any staff) → run the poller now (1-hour window)
+// POST /api/gmail/sync {days: 7|30|90}  (manager) → one-off history import
 gmailApi.post('/sync', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { days?: number }
+  const days = [7, 30, 90].includes(Number(body.days)) ? Number(body.days) : 0
+  if (days && c.get('user').role !== 'manager') return c.json({ error: 'Only a manager can import history' }, 403)
   const sql = getDb(c.env)
   try {
-    const result = await runSync(c.env, sql, 'manual')
+    const result = await runSync(c.env, sql, days ? 'import' : 'manual', days ? { lookbackDays: days } : {})
     return c.json({ ok: true, ...result })
   } catch (e: any) {
     return c.json({ error: e.message }, 502)
