@@ -801,6 +801,7 @@
                 <button id="sync-now" class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-rotate mr-1"></i>Sync now</button>
                 ${isManager ? `<select id="import-days" class="field-input py-1 text-sm" style="width:auto"><option value="">Import history…</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>` : ''}
                 ${isManager ? '<button id="tone-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Label older customer messages with a tone (AI, gpt-6-luna)"><i class="fas fa-tags mr-1"></i>Label tones</button>' : ''}
+                ${isManager ? '<button id="tone-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Label customer messages that have no tone yet"><i class="fas fa-tags mr-1"></i>Label tones</button>' : ''}
                 ${isManager ? '<button id="disconnect" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm text-red-700">Disconnect</button>' : ''}
               </div>` : `
               <p class="text-sm text-slate-600 mb-4">No mailbox connected.</p>
@@ -850,6 +851,19 @@
           if (!data.remaining || !data.labelled || rounds > 30) break
         }
         toast(`Tone labels done: ${total} message(s) labelled`)
+      } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      renderGmail()
+    })
+    app.querySelector('#tone-backfill')?.addEventListener('click', async (e) => {
+      const b = e.currentTarget; b.disabled = true
+      let total = 0, rounds = 0
+      try {
+        for (;;) {
+          b.innerHTML = `<i class="fas fa-spinner fa-spin mr-1"></i>Labelling… ${total} done`
+          const { data } = await axios.post('/api/gmail/tone-backfill', { limit: 20 }, { timeout: 120000 })
+          total += data.labelled; rounds++
+          if (!data.remaining || !data.labelled || rounds > 40) { toast(`Tone labels: ${total} message(s) labelled, ${data.remaining} remaining`); break }
+        }
       } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
       renderGmail()
     })
