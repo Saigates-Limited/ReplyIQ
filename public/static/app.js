@@ -15,6 +15,19 @@
     resolved: 'bg-slate-200 text-slate-700',
   }
 
+  // Tone labels (AI-suggested, staff can override). Order = severity rank.
+  const TONE_META = {
+    angry: { word: 'ANGRY / ESCALATING', colour: 'Red' },
+    dispute: { word: 'DISPUTE / LEGAL', colour: 'Purple' },
+    frustrated: { word: 'FRUSTRATED', colour: 'Orange' },
+    worried: { word: 'WORRIED / CONFUSED', colour: 'Yellow' },
+    neutral: { word: 'NEUTRAL', colour: 'Blue' },
+    happy: { word: 'HAPPY', colour: 'Green' },
+  }
+  const toneChip = (t, extra = '') => (t && TONE_META[t] ? `<span class="tone tone-${t} ${extra}" title="${TONE_META[t].colour}">${TONE_META[t].word}</span>` : `<span class="tone tone-none ${extra}">NO LABEL</span>`)
+  const EVENT_LABEL = { atoz_claim: 'A-to-Z claim', atoz_info_request: 'A-to-Z: info requested', atoz_decision: 'A-to-Z decision', return_request: 'Return request', chargeback: 'Chargeback' }
+  const EVENT_CLASS = (kind) => (kind.startsWith('atoz') ? 'notice-atoz' : kind === 'chargeback' ? 'notice-chargeback' : 'notice-return')
+
   function toast(msg, kind = 'ok') {
     toastEl.textContent = msg
     toastEl.className = `fixed bottom-4 right-4 px-4 py-2 rounded-lg shadow-lg text-sm text-white ${kind === 'ok' ? 'bg-emerald-600' : 'bg-red-600'}`
@@ -22,10 +35,12 @@
     toastEl._t = setTimeout(() => toastEl.classList.add('hidden'), 2500)
   }
 
-  // Deadline = 24h after last customer message. Returns display info.
+  // Deadline = 24h after last customer message, or the earliest open Amazon event deadline (whichever is sooner).
   function deadlineInfo(kase, now) {
     if (kase.status === 'resolved') return { label: 'Resolved', cls: 'text-slate-500', row: 'row-resolved', urgency: 3 }
-    const dl = dayjs(kase.reply_deadline)
+    const when = kase.effective_deadline || kase.reply_deadline
+    if (!when) return { label: 'No deadline', cls: 'text-slate-400', row: 'row-ok', urgency: 2 }
+    const dl = dayjs(when)
     const mins = dl.diff(now, 'minute')
     const abs = Math.abs(mins)
     const h = Math.floor(abs / 60), m = abs % 60
@@ -52,10 +67,29 @@
 
   function route() {
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
+    const p = location.pathname
+    setActiveNav(m ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : 'messages')
+    refreshBadges()
     if (m) renderCase(Number(m[1]))
-    else if (location.pathname === '/staff') renderStaff()
-    else if (location.pathname === '/gmail') renderGmail()
+    else if (p === '/staff') renderStaff()
+    else if (p === '/gmail') renderGmail()
+    else if (p === '/atoz') renderTracker('atoz')
+    else if (p === '/returns') renderTracker('return')
+    else if (p === '/chargebacks') renderTracker('chargeback')
     else renderList()
+  }
+  function setActiveNav(name) {
+    document.querySelectorAll('.nav-tab').forEach((a) => a.classList.toggle('active', a.dataset.nav === name))
+  }
+  let badgeTimer = 0
+  async function refreshBadges() {
+    clearTimeout(badgeTimer)
+    try {
+      const { data } = await axios.get('/api/events/counts')
+      const set = (k, v) => { const el = document.querySelector(`[data-badge="${k}"]`); if (el) el.textContent = v ? String(v) : '' }
+      set('atoz', data.atoz); set('returns', data.returns); set('chargebacks', data.chargebacks); set('messages', data.messages)
+    } catch {}
+    badgeTimer = setTimeout(refreshBadges, 120000)
   }
 
   // Session expired anywhere → back to login
@@ -91,8 +125,10 @@
     }
     const now = dayjs(data.now)
     const cases = data.cases
-    const overdue = cases.filter((k) => k.status !== 'resolved' && dayjs(k.reply_deadline).isBefore(now)).length
-    const urgent = cases.filter((k) => k.status !== 'resolved' && !dayjs(k.reply_deadline).isBefore(now) && dayjs(k.reply_deadline).diff(now, 'minute') < 240).length
+    const dlOf = (k) => k.effective_deadline || k.reply_deadline
+    const overdue = cases.filter((k) => k.status !== 'resolved' && dlOf(k) && dayjs(dlOf(k)).isBefore(now)).length
+    const urgent = cases.filter((k) => k.status !== 'resolved' && dlOf(k) && !dayjs(dlOf(k)).isBefore(now) && dayjs(dlOf(k)).diff(now, 'minute') < 240).length
+    const hot = cases.filter((k) => k.status !== 'resolved' && (k.tone === 'angry' || k.tone === 'dispute')).length
 
     const filters = [['active', 'Active'], ['open', 'Open'], ['awaiting_customer', 'Awaiting customer'], ['resolved', 'Resolved'], ['all', 'All']]
 
@@ -100,11 +136,12 @@
       <section id="case-list-section">
         <div class="flex flex-wrap items-end justify-between gap-4 mb-4">
           <div>
-            <h1 class="text-2xl font-bold">Case queue</h1>
-            <p class="text-sm text-slate-500">Sorted by reply deadline — 24 hours from the customer's latest message.</p>
+            <h1 class="text-2xl font-bold">Messages</h1>
+            <p class="text-sm text-slate-500">Overdue first, then <span class="tone tone-angry">ANGRY</span> / <span class="tone tone-dispute">DISPUTE</span>, then everyone else by deadline (24h from the customer's latest message, or an Amazon deadline if sooner).</p>
           </div>
           <div class="flex items-center gap-3 text-sm">
             <span class="px-3 py-1 rounded-full bg-red-100 text-red-800"><i class="fas fa-triangle-exclamation mr-1"></i>${overdue} overdue</span>
+            <span class="px-3 py-1 rounded-full bg-violet-100 text-violet-800" title="Angry or dispute/legal tone"><i class="fas fa-fire mr-1"></i>${hot} hot</span>
             <span class="px-3 py-1 rounded-full bg-orange-100 text-orange-800"><i class="fas fa-clock mr-1"></i>${urgent} due &lt; 4h</span>
             <button id="refresh-btn" class="px-3 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-50"><i class="fas fa-rotate mr-1"></i>Refresh</button>
           </div>
@@ -120,15 +157,17 @@
               <tr>
                 <th class="px-4 py-3">Deadline</th>
                 <th class="px-4 py-3">Case</th>
+                <th class="px-4 py-3">Tone</th>
                 <th class="px-4 py-3 hidden md:table-cell">Customer</th>
                 <th class="px-4 py-3 hidden lg:table-cell">Order / Device</th>
                 <th class="px-4 py-3">Status</th>
+                <th class="px-4 py-3 hidden xl:table-cell">Assigned</th>
                 <th class="px-4 py-3 hidden sm:table-cell">Last message</th>
                 <th class="px-4 py-3 hidden md:table-cell">Draft</th>
               </tr>
             </thead>
             <tbody id="case-rows">
-              ${cases.length ? cases.map((k) => caseRow(k, now)).join('') : `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">No cases match this filter.</td></tr>`}
+              ${cases.length ? cases.map((k) => caseRow(k, now)).join('') : `<tr><td colspan="9" class="px-4 py-8 text-center text-slate-500">No cases match this filter.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -146,22 +185,31 @@
   function caseRow(k, now) {
     const d = deadlineInfo(k, now)
     const draft = k.latest_draft_status
+    const flags = [
+      k.open_atoz ? '<span class="px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 text-[10px] font-semibold" title="Open A-to-Z claim">A-to-Z</span>' : '',
+      k.open_returns ? '<span class="px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-800 text-[10px] font-semibold" title="Open return">RETURN</span>' : '',
+      k.open_chargebacks ? '<span class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-semibold" title="Open chargeback">CHARGEBACK</span>' : '',
+      k.battery_flag ? '<span class="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-semibold" title="Battery / heat safety rule applies"><i class="fas fa-fire"></i> BATTERY</span>' : '',
+    ].join(' ')
     return `
-      <tr data-case-id="${k.id}" class="case-row ${d.row} border-b border-slate-100 hover:bg-amber-50 cursor-pointer">
+      <tr data-case-id="${k.id}" class="case-row ${d.row} row-tone-${k.tone || 'none'} border-b border-slate-100 hover:bg-amber-50 cursor-pointer">
         <td class="px-4 py-3 whitespace-nowrap">
           <div class="${d.cls}">${esc(d.label)}</div>
-          <div class="text-xs text-slate-400">${fmtDateTime(k.reply_deadline)}</div>
+          <div class="text-xs text-slate-400">${fmtDateTime(k.effective_deadline || k.reply_deadline)}</div>
         </td>
         <td class="px-4 py-3">
           <div class="font-mono text-xs text-slate-500">${esc(k.case_ref)}</div>
           <div class="font-medium">${esc(k.subject)}</div>
+          ${flags ? `<div class="mt-1 flex flex-wrap gap-1">${flags}</div>` : ''}
         </td>
+        <td class="px-4 py-3">${toneChip(k.tone)}</td>
         <td class="px-4 py-3 hidden md:table-cell">${esc(k.customer_first_name)} ${esc(k.customer_last_name || '')}</td>
         <td class="px-4 py-3 hidden lg:table-cell">
           <div class="font-mono text-xs">${esc(k.order_id || '—')}</div>
           <div class="text-xs text-slate-500">${esc(k.device_model || '')}</div>
         </td>
         <td class="px-4 py-3">${statusBadge(k.status)}</td>
+        <td class="px-4 py-3 hidden xl:table-cell text-slate-600 text-xs">${k.assigned_to_name ? `<i class="far fa-user mr-1 text-slate-400"></i>${esc(k.assigned_to_name)}` : '<span class="text-slate-300">unassigned</span>'}</td>
         <td class="px-4 py-3 hidden sm:table-cell text-slate-500 whitespace-nowrap">${dayjs(k.last_customer_message_at).from(now)} <span class="text-xs text-slate-400">(${k.message_count})</span></td>
         <td class="px-4 py-3 hidden md:table-cell text-xs">${draftBadge(draft, k.latest_draft_needs_manager)}</td>
       </tr>`
@@ -209,19 +257,49 @@
         </header>
 
         <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
-          <!-- Thread -->
-          <article id="email-thread" class="lg:col-span-3 bg-white rounded-xl shadow-sm">
-            <div class="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
-              <h2 class="font-semibold"><i class="far fa-envelope mr-2 text-slate-400"></i>Email thread</h2>
-              <span class="text-xs text-slate-500">${data.messages.length} message${data.messages.length === 1 ? '' : 's'}</span>
+          <!-- Conversation (chat view: customer left, us right, Amazon notices centred) -->
+          <article id="conversation" class="lg:col-span-3 bg-white rounded-xl shadow-sm">
+            <div class="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+              <h2 class="font-semibold"><i class="far fa-comments mr-2 text-slate-400"></i>Conversation <span class="text-xs font-normal text-slate-500">· order ${esc(k.order_id || '—')}</span></h2>
+              <div class="flex items-center gap-2 text-xs">
+                ${toneChip(k.tone)}
+                <select id="tone-select" class="field-input py-0.5 text-xs mt-0" style="width:auto" title="Override the AI tone label">
+                  <option value="">Override tone…</option>
+                  ${Object.entries(TONE_META).map(([v, m]) => `<option value="${v}">${m.colour} — ${m.word}</option>`).join('')}
+                </select>
+                <span class="text-slate-400">${data.messages.length} item${data.messages.length === 1 ? '' : 's'}</span>
+              </div>
             </div>
-            <div class="p-5 space-y-4">
-              ${data.messages.map(messageCard).join('')}
+            <div class="chat p-4 flex flex-col gap-2 max-h-[70vh] overflow-auto" id="chat-scroll">
+              ${chatItems(data.messages, data.events)}
             </div>
+            ${k.battery_flag ? '<div class="px-5 py-2 text-xs bg-red-600 text-white rounded-b-xl"><i class="fas fa-fire mr-1"></i><strong>Battery / heat flag:</strong> stop using &amp; charging, Royal Mail label with UN3481 marking, manager approval, high urgency.</div>' : ''}
           </article>
 
           <!-- Right column -->
           <aside class="lg:col-span-2 space-y-6">
+            <section id="ticket-panel" class="bg-white rounded-xl shadow-sm p-5">
+              <h2 class="font-semibold mb-3"><i class="fas fa-ticket mr-2 text-slate-400"></i>Ticket</h2>
+              <div class="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <label class="field-label" for="assigned-select">Assigned to</label>
+                  <select id="assigned-select" class="field-input">
+                    <option value="">Unassigned</option>
+                    ${(data.staff || []).map((u) => `<option value="${u.id}" ${k.assigned_to === u.id ? 'selected' : ''}>${esc(u.name)}${u.id === ME.id ? ' (me)' : ''}</option>`).join('')}
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label">Deadline</label>
+                  <div class="mt-2 ${d.cls} text-sm">${esc(d.label)}</div>
+                </div>
+                <div class="col-span-2">
+                  <label class="field-label" for="internal-notes">Internal notes <span class="normal-case font-normal">(never sent, never shared with the AI)</span></label>
+                  <textarea id="internal-notes" class="field-input text-xs" rows="3" placeholder="Stock check, call-backs, anything for colleagues…">${esc(k.internal_notes || '')}</textarea>
+                </div>
+              </div>
+              ${data.events.length ? `<div class="mt-3 space-y-1">${data.events.map((e) => `<a href="/${e.kind.startsWith('atoz') ? 'atoz' : e.kind === 'chargeback' ? 'chargebacks' : 'returns'}" data-link class="block text-xs rounded-md px-2 py-1 notice ${EVENT_CLASS(e.kind)} text-left"><strong>${esc(EVENT_LABEL[e.kind] || e.kind)}</strong> · ${esc(e.status)}${e.amount ? ` · £${Number(e.amount).toFixed(2)}` : ''}${e.deadline_at ? ` · due ${fmtDateTime(e.deadline_at)}` : ''}</a>`).join('')}</div>` : ''}
+            </section>
+
             <section id="customer-panel" class="bg-white rounded-xl shadow-sm p-5">
               <h2 class="font-semibold mb-3"><i class="far fa-user mr-2 text-slate-400"></i>Customer</h2>
               <dl class="text-sm grid grid-cols-3 gap-y-2">
@@ -279,21 +357,51 @@
       </section>`
 
     wireFields(id)
-    renderDraftWorkspace(id, k, data.drafts)
+    wireTicket(id, k)
+    renderDraftWorkspace(id, k, data.drafts, data.events)
+    const sc = document.getElementById('chat-scroll'); if (sc) sc.scrollTop = sc.scrollHeight
   }
 
-  function messageCard(m) {
-    const inbound = m.direction === 'inbound'
-    return `
-      <div class="message ${inbound ? '' : 'ml-6'} rounded-lg border ${inbound ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'}">
-        <div class="px-4 py-2 flex items-center justify-between text-xs border-b ${inbound ? 'border-slate-200' : 'border-amber-200'}">
-          <span class="font-semibold ${inbound ? 'text-slate-700' : 'text-amber-800'}">
-            <i class="fas ${inbound ? 'fa-arrow-down-long' : 'fa-arrow-up-long'} mr-1"></i>${esc(m.sender)}
-          </span>
-          <time class="text-slate-500" datetime="${esc(m.sent_at)}">${fmtDateTime(m.sent_at)}</time>
-        </div>
-        <div class="px-4 py-3 text-sm message-body">${esc(m.body)}</div>
+  // WhatsApp-style items: customer left (white), Saigates right (green), Seller Central copies right (dashed), Amazon notices centred.
+  function chatItems(messages, events) {
+    const evById = Object.fromEntries((events || []).map((e) => [e.id, e]))
+    let lastDay = ''
+    return messages.map((m) => {
+      const day = dayjs(m.sent_at).format('ddd DD MMM YYYY')
+      const sep = day !== lastDay ? `<div class="day-sep">${day}</div>` : ''
+      lastDay = day
+      if (m.kind === 'event') {
+        const e = evById[m.event_id]
+        const kind = e?.kind || 'return_request'
+        return `${sep}<div class="notice ${EVENT_CLASS(kind)}"><div class="font-semibold"><i class="fab fa-amazon mr-1"></i>${esc(EVENT_LABEL[kind] || kind)}${e?.amount ? ` · £${Number(e.amount).toFixed(2)}` : ''}</div><div class="message-body">${esc(m.body)}</div>${e?.customer_comment ? `<div class="mt-1 italic">“${esc(e.customer_comment)}”</div>` : ''}<div class="opacity-70 mt-1">${fmtDateTime(m.sent_at)}${e?.deadline_at ? ` · respond by ${fmtDateTime(e.deadline_at)}` : ''}</div></div>`
+      }
+      const inbound = m.direction === 'inbound'
+      const sc = m.kind === 'seller_central_copy'
+      const cls = inbound ? 'bubble-in' : sc ? 'bubble-sc' : 'bubble-out'
+      const tone = inbound ? `<span data-msg-tone="${m.id}" class="cursor-pointer" title="Click to change">${toneChip(m.tone)}</span>${m.tone_source === 'staff' ? '<i class="fas fa-user-pen text-slate-400" title="Set by staff"></i>' : ''}` : ''
+      return `${sep}<div class="bubble ${cls}">
+        <div class="text-[11px] font-semibold ${inbound ? 'text-sky-700' : 'text-emerald-800'}">${esc(m.sender || (inbound ? 'Customer' : 'Saigates'))}${sc ? ' <span class="font-normal text-orange-700">· sent via Seller Central</span>' : ''}</div>
+        <div class="message-body">${esc(m.body)}</div>
+        <div class="bubble-meta">${tone}<span>${dayjs(m.sent_at).format('HH:mm')}</span>${!inbound ? '<i class="fas fa-check-double text-sky-500"></i>' : ''}</div>
       </div>`
+    }).join('')
+  }
+
+  function wireTicket(id, k) {
+    const save = async (patch, msg) => {
+      try { await axios.patch(`/api/cases/${id}`, patch); toast(msg); renderCase(id) } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+    }
+    document.getElementById('assigned-select')?.addEventListener('change', (e) => save({ assigned_to: e.target.value || null }, 'Assignment saved'))
+    let nt
+    document.getElementById('internal-notes')?.addEventListener('input', (e) => { clearTimeout(nt); nt = setTimeout(() => axios.patch(`/api/cases/${id}`, { internal_notes: e.target.value }).catch(() => toast('Could not save notes', 'err')), 800) })
+    document.getElementById('tone-select')?.addEventListener('change', (e) => { if (e.target.value) save({ tone: e.target.value }, 'Tone label updated') })
+    document.querySelectorAll('[data-msg-tone]').forEach((el) => {
+      el.onclick = async () => {
+        const pick = prompt('Set tone for this message: ' + Object.keys(TONE_META).join(', '))
+        if (!pick || !TONE_META[pick.trim().toLowerCase()]) return
+        try { await axios.patch(`/api/messages/${el.dataset.msgTone}/tone`, { tone: pick.trim().toLowerCase() }); toast('Tone updated'); renderCase(id) } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      }
+    })
   }
 
   function boolField(name, label, value) {
@@ -354,23 +462,39 @@
   }
 
   // ---------- DRAFT WORKSPACE ----------
-  function renderDraftWorkspace(caseId, kase, drafts) {
+  // Draft modes. Only 'customer' can ever be emailed; the others are copy-and-paste into Seller Central.
+  const MODES = {
+    customer: { label: 'Reply to customer', icon: 'fa-envelope', banner: '' },
+    seller_central_atoz: { label: 'A-to-Z response (Seller Central)', icon: 'fa-scale-balanced', banner: 'Statement to Amazon for the A-to-Z claim. Copy and paste it into Seller Central → A-to-z Guarantee claims. Never emailed. Manager approval required.' },
+    seller_central_return: { label: 'Return handling (Seller Central)', icon: 'fa-rotate-left', banner: 'Return note for Seller Central → Manage Returns plus an internal checklist in staff notes. Never emailed. Manager approval required.' },
+    chargeback_evidence: { label: 'Chargeback evidence', icon: 'fa-credit-card', banner: 'Evidence representation to Amazon for the chargeback. Copy into the Seller Central chargeback form (email sending will be enabled once the Reply-To address is verified). Manager approval required.' },
+  }
+  let draftMode = 'customer'
+
+  function renderDraftWorkspace(caseId, kase, drafts, events) {
     const ws = document.getElementById('draft-workspace')
     const active = drafts.filter((d) => d.status !== 'discarded')
     const current = active[0] || null
     const history = active.slice(1)
+    const hasCustomerMsg = true
+    const ev = events || []
+    const available = ['customer', ev.some((e) => e.kind.startsWith('atoz')) || kase.a_to_z_open ? 'seller_central_atoz' : null, ev.some((e) => e.kind === 'return_request') ? 'seller_central_return' : null, ev.some((e) => e.kind === 'chargeback') || kase.chargeback_open ? 'chargeback_evidence' : null].filter(Boolean)
+    if (!available.includes(draftMode)) draftMode = current?.mode && available.includes(current.mode) ? current.mode : 'customer'
+    const mode = MODES[draftMode]
 
     ws.innerHTML = `
       <div class="bg-white rounded-xl shadow-sm">
         <div class="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
-          <h2 class="font-semibold"><i class="fas fa-wand-magic-sparkles mr-2 text-slate-400"></i>Reply draft</h2>
-          <div class="flex items-center gap-3 text-sm">
-            <span class="text-xs text-slate-500 hidden sm:inline"><i class="fas fa-shield-halved mr-1"></i>Nothing is sent automatically</span>
+          <h2 class="font-semibold"><i class="fas fa-wand-magic-sparkles mr-2 text-slate-400"></i>Draft</h2>
+          <div class="flex flex-wrap items-center gap-2 text-sm">
+            <div id="mode-bar" class="flex flex-wrap gap-1">${available.map((m) => `<button data-mode="${m}" class="mode-btn ${m === draftMode ? 'active' : ''}"><i class="fas ${MODES[m].icon} mr-1"></i>${MODES[m].label}</button>`).join('')}</div>
             <button id="generate-btn" class="px-4 py-2 rounded-md bg-slate-900 text-white font-medium hover:bg-slate-800 disabled:opacity-50">
-              <i class="fas fa-wand-magic-sparkles mr-1"></i>${current ? 'Generate new draft' : 'Generate draft'}
+              <i class="fas fa-wand-magic-sparkles mr-1"></i>Generate
             </button>
           </div>
         </div>
+        ${mode.banner ? `<div class="mode-banner mx-5 mt-4 bg-amber-50 border border-amber-200 text-amber-900"><i class="fas fa-clipboard mr-1"></i>${esc(mode.banner)}</div>` : ''}
+        ${current && current.mode && current.mode !== 'customer' ? `<div class="mode-banner mx-5 mt-4 bg-violet-50 border border-violet-200 text-violet-900"><i class="fas fa-paste mr-1"></i>The draft below is a <strong>${esc(MODES[current.mode]?.label || current.mode)}</strong> — copy it into Seller Central, then press <em>Mark as sent</em>. It cannot be emailed.</div>` : ''}
         <div id="draft-body" class="p-5">
           ${current ? draftEditor(current, kase) : `
             <div class="text-center py-10 text-slate-500">
@@ -395,7 +519,8 @@
           </details>` : ''}
       </div>`
 
-    document.getElementById('generate-btn').onclick = () => generate(caseId)
+    document.getElementById('generate-btn').onclick = () => generate(caseId, draftMode)
+    ws.querySelectorAll('[data-mode]').forEach((b) => (b.onclick = () => { draftMode = b.dataset.mode; renderDraftWorkspace(caseId, kase, drafts, events) }))
     if (current) wireDraftEditor(caseId, kase, current)
   }
 
@@ -422,7 +547,7 @@
             ${d.urgency === 'high' ? '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-600 text-white text-xs font-bold"><i class="fas fa-bolt"></i> HIGH URGENCY</span>' : ''}
             <span class="text-xs text-slate-500 ml-auto">Lane: ${esc(d.tree || '—')} · ${esc(d.model || '')}</span>
           </div>
-          <label class="field-label" for="draft-text">Customer-facing reply ${locked ? '(sent — read only)' : '(edit freely)'}</label>
+          <label class="field-label" for="draft-text">${d.mode && d.mode !== 'customer' ? 'Text to paste into Seller Central' : 'Customer-facing reply'} ${locked ? '(sent — read only)' : '(edit freely)'}</label>
           <textarea id="draft-text" class="field-input font-sans leading-relaxed" rows="14" ${locked ? 'readonly' : ''}>${esc(d.draft_text)}</textarea>
           <div class="mt-2 flex flex-wrap items-center gap-2">
             ${locked ? '' : `<button id="save-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm"><i class="far fa-floppy-disk mr-1"></i>Save edits</button>`}
@@ -437,12 +562,12 @@
                 </button>` : ''}
               ${d.status === 'approved' ? `
                 <button id="unapprove-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-slate-800">Withdraw approval</button>
-                ${kase.source === 'gmail' && kase.customer_reply_to ? `
+                ${(!d.mode || d.mode === 'customer') && kase.source === 'gmail' && kase.customer_reply_to ? `
                 <button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800">
                   <i class="fas fa-paper-plane mr-1"></i>Send to customer
                 </button>` : `
-                <button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="Confirm you have pasted and sent this reply in Amazon Seller Central">
-                  <i class="fas fa-paper-plane mr-1"></i>Mark as sent in Amazon
+                <button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="Confirm you have pasted this into Amazon Seller Central">
+                  <i class="fas fa-paste mr-1"></i>Mark as sent in Seller Central
                 </button>`}` : ''}
               ${d.status === 'sending' ? '<span class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Sending…</span>' : ''}
             </span>
@@ -550,12 +675,12 @@
     notes.addEventListener('input', dirty)
   }
 
-  async function generate(caseId) {
+  async function generate(caseId, mode) {
     const btn = document.getElementById('generate-btn')
     btn.disabled = true
     btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Drafting with gpt-5.5…'
     try {
-      await axios.post(`/api/cases/${caseId}/drafts`, {}, { timeout: 120000 })
+      await axios.post(`/api/cases/${caseId}/drafts`, { mode: mode || 'customer' }, { timeout: 120000 })
       toast('Draft generated — review before approving')
       renderCase(caseId)
     } catch (err) {
@@ -710,6 +835,53 @@
       e.target.disabled = true; e.target.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Syncing…'
       try { const { data } = await axios.post('/api/gmail/sync', {}, { timeout: 120000 }); toast(`Sync done: ${data.messagesNew} new message(s), ${data.casesNew} new case(s)`) } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
       history.replaceState({}, '', '/gmail'); renderGmail()
+    })
+  }
+
+  // ---------- TRACKERS: A-to-Z / Returns / Chargebacks ----------
+  const TRACKER = {
+    atoz: { title: 'A-to-Z Guarantee claims', icon: 'fa-scale-balanced', hint: 'Respond within 3 days once Amazon asks for information. Responses are pasted into Seller Central — never emailed to the no-reply address.' },
+    return: { title: 'Return requests', icon: 'fa-rotate-left', hint: 'requested → received → inspected → refunded / closed. Heat or overheating in the reason applies the battery rule automatically.' },
+    chargeback: { title: 'Chargebacks', icon: 'fa-credit-card', hint: 'Respond within 7 days. open → response sent → won / lost (debited). Evidence is pasted into Seller Central until the Reply-To address is verified.' },
+  }
+  let trackerShow = 'open'
+  async function renderTracker(kind) {
+    const t = TRACKER[kind]
+    app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>`
+    let data
+    try { ;({ data } = await axios.get('/api/events', { params: { kind, status: trackerShow } })) } catch (err) { return renderError(err) }
+    const now = dayjs(data.now)
+    app.innerHTML = `
+      <section id="tracker-${kind}">
+        <div class="flex flex-wrap items-end justify-between gap-4 mb-4">
+          <div><h1 class="text-2xl font-bold"><i class="fas ${t.icon} mr-2 text-slate-400"></i>${t.title}</h1><p class="text-sm text-slate-500">${t.hint}</p></div>
+          <div class="flex gap-1 text-sm">${[['open', 'Open'], ['all', 'All']].map(([v, l]) => `<button data-show="${v}" class="px-3 py-1.5 rounded-md ${trackerShow === v ? 'bg-slate-900 text-white' : 'bg-white border border-slate-300'}">${l}</button>`).join('')}</div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr>
+              <th class="px-4 py-3">Deadline</th><th class="px-4 py-3">Order / Case</th><th class="px-4 py-3 hidden md:table-cell">Details</th><th class="px-4 py-3">Amount</th><th class="px-4 py-3">Status</th><th class="px-4 py-3 hidden lg:table-cell">Assigned / Draft</th>
+            </tr></thead>
+            <tbody>${data.events.length ? data.events.map((e) => {
+              const closed = kind === 'return' ? ['refunded', 'closed'].includes(e.status) : ['won', 'lost', 'closed'].includes(e.status)
+              const dl = e.deadline_at && !closed ? deadlineInfo({ status: 'open', effective_deadline: e.deadline_at }, now) : null
+              return `<tr class="border-b border-slate-100 ${dl ? dl.row : ''}" data-event-id="${e.id}">
+                <td class="px-4 py-3 whitespace-nowrap">${dl ? `<div class="${dl.cls}">${esc(dl.label)}</div><div class="text-xs text-slate-400">${fmtDateTime(e.deadline_at)}</div>` : `<span class="text-slate-400 text-xs">${e.deadline_at ? fmtDateTime(e.deadline_at) : 'none'}</span>`}</td>
+                <td class="px-4 py-3"><a href="/cases/${e.case_id}" data-link class="font-mono text-xs text-sky-700 hover:underline">${esc(e.order_id)}</a><div class="text-xs text-slate-500">${esc(e.case_ref || '')} · ${esc(e.customer_first_name || '')} ${esc(e.customer_last_name || '')} ${toneChip(e.case_tone)}${e.battery_flag ? ' <span class="px-1.5 rounded bg-red-600 text-white text-[10px] font-semibold"><i class="fas fa-fire"></i> BATTERY</span>' : ''}</div><div class="text-xs text-slate-400">${esc(EVENT_LABEL[e.kind] || e.kind)} · received ${fmtDateTime(e.received_at)}</div></td>
+                <td class="px-4 py-3 hidden md:table-cell text-xs text-slate-600 max-w-md">${kind === 'return' ? `<div><strong>${esc(e.product || e.item_description || '')}</strong></div><div>${esc(e.return_reason || '')}${e.policy_check ? ` · ${esc(e.policy_check)}` : ''}${e.authorisation ? ` · ${esc(e.authorisation)}` : ''}</div>${e.customer_comment ? `<div class="italic text-slate-500">“${esc(e.customer_comment)}”</div>` : ''}` : kind === 'chargeback' ? `<div><strong>${esc(e.item_description || '')}</strong></div><div>Ordered ${e.order_date ? fmtDate(e.order_date) : '—'}</div>` : `<div class="message-body">${esc(e.raw_excerpt || '')}</div>`}</td>
+                <td class="px-4 py-3 whitespace-nowrap">${e.amount ? `£${Number(e.amount).toFixed(2)}` : '—'}</td>
+                <td class="px-4 py-3"><select data-status class="field-input py-1 text-xs mt-0" style="width:auto">${data.statuses.map((s) => `<option value="${s}" ${e.status === s ? 'selected' : ''}>${s.replace('_', ' ')}</option>`).join('')}</select>${e.responded_at ? `<div class="text-[10px] text-slate-400 mt-1">responded ${fmtDateTime(e.responded_at)} by ${esc(e.responded_by_name || '')}</div>` : ''}</td>
+                <td class="px-4 py-3 hidden lg:table-cell text-xs">${e.assigned_to_name ? `<i class="far fa-user mr-1 text-slate-400"></i>${esc(e.assigned_to_name)}` : '<span class="text-slate-300">unassigned</span>'}<div class="mt-1">${draftBadge(e.latest_draft_status, false)}</div></td>
+              </tr>`
+            }).join('') : `<tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">Nothing here. New notices appear after the next Gmail sync.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </section>`
+    app.querySelectorAll('[data-show]').forEach((b) => (b.onclick = () => { trackerShow = b.dataset.show; renderTracker(kind) }))
+    app.querySelectorAll('tr[data-event-id] [data-status]').forEach((sel) => {
+      sel.onchange = async () => {
+        try { await axios.patch(`/api/events/${sel.closest('tr').dataset.eventId}`, { status: sel.value }); toast('Status updated'); refreshBadges(); renderTracker(kind) } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      }
     })
   }
 

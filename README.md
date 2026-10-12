@@ -168,3 +168,30 @@ curl "http://localhost:3000/__scheduled?cron=*/15+*+*+*+*"   # fire the cron loc
 - Attachments (photos) on cases
 
 - **Platform**: Cloudflare Worker (cron */15) on Saigates' account + Hyperdrive → Supabase · **Status**: ✅ live at https://replyiq.saigateslimited.workers.dev; awaiting Worker secrets (`OPENAI_API_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) and Gmail connection · **Last updated**: 2026-10-11
+
+
+## Phase 8 (in progress) — Amazon notices, tabs, tone, tickets, draft modes
+
+**Done in code (commit after 9b8ef43), NOT yet deployed to production:**
+- Gmail sync also reads `atoz-guarantee-no-reply@amazon.co.uk`, `cb-seller-notification@amazon.co.uk`, and
+  `donotreply@amazon.com` (Return authorisation notifications + "Your email to <Name>" Seller Central reply copies).
+- `amazon_events` table: A-to-Z claims (3-day deadline once info is requested), return requests, chargebacks (7-day deadline).
+  Statuses — A-to-Z/Chargeback: open → response_sent → won/lost/closed; Returns: requested → received → inspected → refunded/closed.
+- Return reason/comment mentioning heat/overheating/swelling sets `cases.battery_flag` → battery rule forced in checks,
+  `needs_manager`, urgency high.
+- Tone labels per customer message (`gpt-6-luna`), case-level tone, staff override. Queue sort: overdue → angry/dispute → deadline.
+- Tickets: `assigned_to`, `internal_notes` (never sent / never to OpenAI).
+- Draft modes: `customer` | `seller_central_atoz` | `seller_central_return` | `chargeback_evidence`. Non-customer modes
+  can never be emailed (`/send` refuses); "Mark as sent" marks the matching event `response_sent`.
+- UI: tabs Messages | A-to-Z | Returns | Chargebacks (with counts), WhatsApp-style chat view, tone chips, ticket panel, mode buttons.
+- PII: order IDs protected from the phone-number redactor; "Shipping address:" blocks redacted.
+
+**API added:** `GET /api/events?kind=atoz|return|chargeback&status=open|all`, `GET /api/events/counts`, `PATCH /api/events/:id {status,response_text}`,
+`PATCH /api/messages/:id/tone`, `POST /api/gmail/tone-backfill` (manager), `PATCH /api/cases/:id` now accepts `assigned_to, internal_notes, tone, chargeback_open, battery_flag`,
+`POST /api/cases/:id/drafts {mode}`.
+
+**To go live:** run `db/migrations/0006_events_tickets_tone.sql` and `0007_draft_mode.sql` in Supabase SQL Editor, deploy the Worker,
+run "Import history → 7 days" on the Gmail page, then `POST /api/gmail/tone-backfill` until `remaining = 0`.
+
+**Still to do (Step C):** R2 bucket + attachments (Gmail attachments in chat, agent uploads: PDF/JPG/JPEG/PNG/XML, ≤10 MB per message incl. attachments, ≤5 files),
+chargeback email send only after real Reply-To verified.

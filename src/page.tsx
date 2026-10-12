@@ -26,11 +26,14 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
           <span class="text-xs text-slate-300 block">Saigates Ltd · Amazon UK Customer Service</span>
         </span>
       </a>
-      <nav class="text-sm text-slate-300 flex items-center gap-4">
-        <span id="header-clock" class="font-mono hidden md:inline"></span>
-        <a href="/" data-link class="hover:text-white"><i class="fas fa-inbox mr-1"></i>Queue</a>
-        <a href="/gmail" data-link class="hover:text-white"><i class="fab fa-google mr-1"></i>Gmail</a>
-        ${user.role === 'manager' ? `<a href="/staff" data-link class="hover:text-white"><i class="fas fa-users mr-1"></i>Staff</a>` : ''}
+      <nav class="text-sm text-slate-300 flex items-center gap-3 flex-wrap justify-end">
+        <span id="header-clock" class="font-mono hidden xl:inline"></span>
+        <a href="/" data-link data-nav="messages" class="nav-tab hover:text-white"><i class="fas fa-comments mr-1"></i>Messages <span class="nav-badge" data-badge="messages"></span></a>
+        <a href="/atoz" data-link data-nav="atoz" class="nav-tab hover:text-white"><i class="fas fa-scale-balanced mr-1"></i>A-to-Z <span class="nav-badge" data-badge="atoz"></span></a>
+        <a href="/returns" data-link data-nav="returns" class="nav-tab hover:text-white"><i class="fas fa-rotate-left mr-1"></i>Returns <span class="nav-badge" data-badge="returns"></span></a>
+        <a href="/chargebacks" data-link data-nav="chargebacks" class="nav-tab hover:text-white"><i class="fas fa-credit-card mr-1"></i>Chargebacks <span class="nav-badge" data-badge="chargebacks"></span></a>
+        <a href="/gmail" data-link data-nav="gmail" class="nav-tab hover:text-white"><i class="fab fa-google mr-1"></i>Gmail</a>
+        ${user.role === 'manager' ? `<a href="/staff" data-link data-nav="staff" class="nav-tab hover:text-white"><i class="fas fa-users mr-1"></i>Staff</a>` : ''}
         <span class="text-slate-500">|</span>
         <span id="current-user" class="flex items-center gap-2">
           <span class="inline-flex items-center justify-center w-7 h-7 rounded-full ${user.role === 'manager' ? 'bg-violet-500' : 'bg-sky-600'} text-white text-xs font-bold" title="${esc(user.role)}">${esc(user.name.replace(/[^\p{L}\s]/gu, '').trim().split(/\s+/).map((p) => p[0] || '').join('').slice(0, 2).toUpperCase())}</span>

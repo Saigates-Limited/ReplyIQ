@@ -22,3 +22,42 @@
 .seg button.active-unset { background: #e2e8f0; color: #334155; }
 
 .saving-indicator { transition: opacity .3s; }
+
+/* ── Nav tabs ── */
+.nav-tab { padding: .25rem .5rem; border-radius: .375rem; white-space: nowrap; }
+.nav-tab.active { background: rgba(255,255,255,.12); color: #fff; }
+.nav-badge:empty { display: none; }
+.nav-badge { display:inline-block; min-width:1.25rem; padding:0 .35rem; border-radius:9999px; background:#f59e0b; color:#0f172a; font-size:.65rem; font-weight:700; text-align:center; line-height:1.25rem; vertical-align:middle; }
+
+/* ── Tone chips (Red ANGRY, Purple DISPUTE, Orange FRUSTRATED, Yellow WORRIED, Blue NEUTRAL, Green HAPPY) ── */
+.tone { display:inline-flex; align-items:center; gap:.3rem; padding:.1rem .55rem; border-radius:9999px; font-size:.65rem; font-weight:700; letter-spacing:.03em; white-space:nowrap; }
+.tone::before { content:''; width:.5rem; height:.5rem; border-radius:9999px; background:currentColor; }
+.tone-angry      { background:#fee2e2; color:#b91c1c; }
+.tone-dispute    { background:#ede9fe; color:#6d28d9; }
+.tone-frustrated { background:#ffedd5; color:#c2410c; }
+.tone-worried    { background:#fef9c3; color:#a16207; }
+.tone-neutral    { background:#dbeafe; color:#1d4ed8; }
+.tone-happy      { background:#dcfce7; color:#15803d; }
+.tone-none       { background:#f1f5f9; color:#94a3b8; }
+.row-tone-angry   td:nth-child(2) { box-shadow: inset 4px 0 0 #dc2626; }
+.row-tone-dispute td:nth-child(2) { box-shadow: inset 4px 0 0 #7c3aed; }
+
+/* ── Chat view ── */
+.chat { background: #e5ddd5 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'%3E%3Ccircle cx='20' cy='20' r='1' fill='%23cbbfb3' opacity='.5'/%3E%3C/svg%3E"); border-radius: .75rem; }
+.bubble { max-width: 78%; padding: .5rem .75rem; border-radius: .75rem; font-size: .875rem; line-height: 1.45; position: relative; box-shadow: 0 1px 1px rgba(0,0,0,.08); }
+.bubble-in  { background:#fff; border-top-left-radius:.2rem; align-self:flex-start; }
+.bubble-out { background:#dcf8c6; border-top-right-radius:.2rem; align-self:flex-end; }
+.bubble-sc  { background:#fff7ed; border:1px dashed #fdba74; border-top-right-radius:.2rem; align-self:flex-end; }
+.bubble-meta { font-size:.65rem; color:#64748b; margin-top:.25rem; display:flex; gap:.5rem; align-items:center; justify-content:flex-end; }
+.bubble-in .bubble-meta { justify-content:flex-start; }
+.notice { align-self:center; max-width:90%; background:#fdf6e3; border:1px solid #f1d98a; color:#713f12; border-radius:.75rem; padding:.5rem .9rem; font-size:.78rem; text-align:center; }
+.notice-atoz { background:#f5f3ff; border-color:#c4b5fd; color:#4c1d95; }
+.notice-return { background:#ecfeff; border-color:#67e8f9; color:#155e75; }
+.notice-chargeback { background:#fff1f2; border-color:#fda4af; color:#881337; }
+.day-sep { align-self:center; background:rgba(255,255,255,.85); color:#64748b; font-size:.65rem; padding:.15rem .6rem; border-radius:9999px; }
+.attachment-chip { display:inline-flex; align-items:center; gap:.3rem; background:#f1f5f9; border:1px solid #e2e8f0; border-radius:.4rem; padding:.2rem .5rem; font-size:.7rem; color:#334155; }
+
+/* ── Mode buttons ── */
+.mode-btn { padding:.4rem .75rem; border-radius:.375rem; border:1px solid #cbd5e1; background:#fff; font-size:.8rem; color:#334155; }
+.mode-btn.active { background:#0f172a; color:#fff; border-color:#0f172a; }
+.mode-banner { font-size:.8rem; border-radius:.5rem; padding:.5rem .75rem; }
