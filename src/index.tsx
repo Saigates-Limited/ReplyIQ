@@ -1,4 +1,7 @@
 import { Hono } from 'hono'
+import instructions from '../reply_instructions.md?raw'
+import { MODEL } from './ai'
+import { TONE_MODEL } from './tone'
 import { casesApi } from './routes/cases'
 import { authApi, authPublic } from './routes/auth'
 import { draftsApi } from './routes/drafts'
@@ -90,6 +93,21 @@ app.get('/cases/:id', (c) => c.html(page(c.get('user'))))
 app.get('/staff', (c) => c.html(page(c.get('user'))))
 app.get('/gmail', (c) => c.html(page(c.get('user'))))
 app.get('/inbox', (c) => c.html(page(c.get('user'))))
+app.get('/policy', (c) => c.html(page(c.get('user'))))
+app.get('/settings', (c) => c.html(page(c.get('user'))))
+app.get('/api/policy', (c) => c.json({ markdown: instructions, model: MODEL, tone_model: TONE_MODEL }))
+app.get('/api/settings', (c) =>
+  c.json({
+    draft_model: MODEL,
+    tone_model: TONE_MODEL,
+    openai_configured: !!c.env.OPENAI_API_KEY,
+    openai_store: false,
+    database: 'Supabase PostgreSQL (London) via Cloudflare Hyperdrive',
+    hosting: 'Cloudflare Worker · cron */15 * * * *',
+    attachments: { types: ['PDF', 'JPG/JPEG', 'PNG', 'XML'], max_files: 5, max_message_mb: 10 },
+    auto_send: false,
+  })
+)
 app.get('/atoz', (c) => c.html(page(c.get('user'))))
 app.get('/returns', (c) => c.html(page(c.get('user'))))
 app.get('/chargebacks', (c) => c.html(page(c.get('user'))))

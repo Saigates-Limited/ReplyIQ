@@ -68,13 +68,15 @@
   function route() {
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
     const p = location.pathname
-    setActiveNav(m || p === '/inbox' ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : 'dashboard')
+    setActiveNav(m || p === '/inbox' ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/settings' ? 'settings' : 'dashboard')
     refreshBadges()
     document.getElementById('sidebar')?.classList.remove('open')
     if (m) renderInbox(Number(m[1]))
     else if (p === '/inbox') renderInbox(null)
     else if (p === '/staff') renderStaff()
     else if (p === '/gmail') renderGmail()
+    else if (p === '/policy') renderPolicy()
+    else if (p === '/settings') renderSettings()
     else if (p === '/atoz') renderTracker('atoz')
     else if (p === '/returns') renderTracker('return')
     else if (p === '/chargebacks') renderTracker('chargeback')
@@ -258,13 +260,15 @@
               <span class="${d.cls}"><i class="far fa-clock mr-1"></i>${esc(d.label)} · due ${fmtDateTime(k.reply_deadline)}</span>
             </div>
           </div>
-          <div class="text-right text-sm">
-            ${k.archived_at ? `<div class="mb-2 text-xs px-2 py-1 rounded bg-slate-200 text-slate-700 inline-block"><i class="fas fa-box-archive mr-1"></i>Archived ${fmtDateTime(k.archived_at)}</div>` : ''}
-            ${isManager ? `<button id="archive-btn" class="mb-2 ml-2 text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:text-slate-900">${k.archived_at ? 'Unarchive' : '<i class="fas fa-box-archive mr-1"></i>Archive'}</button>` : ''}
-            <label class="field-label">Case status</label>
-            <select id="status-select" class="field-input mt-1" style="width:auto">
+          <div class="flex items-end gap-2 text-sm">
+            ${k.archived_at ? `<span class="text-xs px-2 py-1.5 rounded bg-slate-200 text-slate-700"><i class="fas fa-box-archive mr-1"></i>Archived ${fmtDateTime(k.archived_at)}</span>` : ''}
+            <div>
+              <label class="field-label">Case status</label>
+              <select id="status-select" class="field-input mt-1" style="width:auto">
               ${Object.entries(STATUS_LABEL).map(([v, l]) => `<option value="${v}" ${k.status === v ? 'selected' : ''}>${l}</option>`).join('')}
-            </select>
+              </select>
+            </div>
+            ${isManager ? `<button id="archive-btn" class="text-xs px-2.5 py-2 rounded-md border border-slate-300 text-slate-600 hover:text-slate-900" title="${k.archived_at ? 'Restore to the queue' : 'Archive (keeps everything, hides from queue)'}">${k.archived_at ? '<i class="fas fa-box-open mr-1"></i>Unarchive' : '<i class="fas fa-box-archive mr-1"></i>Archive'}</button>` : ''}
           </div>
         </header>
 
@@ -985,6 +989,76 @@
             <h2 class="font-semibold mb-3">Customer tone (open)</h2>
             ${toneCounts.map(([t, n]) => `<div class="flex items-center gap-2 mb-2 text-xs">${toneChip(t)}<div class="flex-1 h-2 rounded bg-slate-100 overflow-hidden"><div class="h-2 tone-${t}" style="width:${Math.round((n / total) * 100)}%;background:currentColor"></div></div><span class="w-6 text-right text-slate-600">${n}</span></div>`).join('')}
             <p class="text-[10px] text-slate-400 mt-2">${cases.filter((k) => !k.tone).length} unlabelled</p>
+          </div>
+        </div>
+      </section>`
+  }
+
+
+  // ---------- REPLY POLICY (read-only view of reply_instructions.md — the exact text the AI follows) ----------
+  async function renderPolicy() {
+    app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading policy…</p>`
+    let d
+    try { ;({ data: d } = await axios.get('/api/policy')) } catch (err) { return renderError(err) }
+    const html = window.marked ? marked.parse(d.markdown) : `<pre class="whitespace-pre-wrap">${esc(d.markdown)}</pre>`
+    app.innerHTML = `
+      <section id="policy">
+        <div class="rounded-xl bg-gradient-to-r from-indigo-900 to-violet-700 text-white p-6 mb-4">
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-white/20">Policy reference</span>
+          <h1 class="text-2xl font-bold mt-2">Reply policy</h1>
+          <p class="text-sm text-indigo-100">This is <code>reply_instructions.md</code> exactly as sent to <strong>${esc(d.model)}</strong> for every draft. The guardrail checks mirror its "Never" list. Edit the file in the repo to change behaviour — the UI cannot change it.</p>
+        </div>
+        <article class="bg-white rounded-xl shadow-sm p-6 prose prose-sm max-w-none policy-doc">${html}</article>
+      </section>`
+  }
+
+  // ---------- SETTINGS (status only — secrets never leave the server) ----------
+  async function renderSettings() {
+    app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>`
+    let st, gm
+    try { ;[{ data: st }, { data: gm }] = await Promise.all([axios.get('/api/settings'), axios.get('/api/gmail/status')]) } catch (err) { return renderError(err) }
+    const row = (k, v) => `<div class="flex justify-between gap-4 py-2 border-b border-slate-100 text-sm"><span class="text-slate-500">${k}</span><span class="text-right font-medium">${v}</span></div>`
+    const ok = (b, y = 'Configured', n = 'Not configured') => (b ? `<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>${y}</span>` : `<span class="text-red-700"><i class="fas fa-circle-xmark mr-1"></i>${n}</span>`)
+    app.innerHTML = `
+      <section id="settings">
+        <h1 class="text-2xl font-bold">Settings</h1>
+        <p class="text-sm text-slate-500 mb-4">System configuration and integrations. Keys are stored as Cloudflare secrets and are never shown here.</p>
+        <div class="grid lg:grid-cols-2 gap-4">
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <h2 class="font-semibold mb-2"><i class="fas fa-robot mr-2 text-slate-400"></i>AI</h2>
+            ${row('OpenAI API key', ok(st.openai_configured))}
+            ${row('Draft model', `<code>${esc(st.draft_model)}</code>`)}
+            ${row('Tone model', `<code>${esc(st.tone_model)}</code>`)}
+            ${row('Data retention at OpenAI', `<code>store: ${st.openai_store}</code> — nothing kept`)}
+            ${row('Sent to the model', 'first name, redacted thread, case fields, Amazon events')}
+            ${row('Never sent', 'surname, email, phone, address, internal notes, attachments')}
+          </div>
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <h2 class="font-semibold mb-2"><i class="fas fa-paper-plane mr-2 text-slate-400"></i>Sending controls</h2>
+            <div class="flex items-center justify-between py-2 border-b border-slate-100 text-sm"><span><strong>Auto-send</strong><br><span class="text-xs text-slate-500">AI sends replies without a human</span></span><span class="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 text-xs font-semibold">OFF — by design</span></div>
+            <ul class="mt-3 text-sm space-y-1 text-slate-700">
+              <li><i class="fas fa-check text-emerald-600 mr-1"></i>Only <em>approved</em> drafts can be sent</li>
+              <li><i class="fas fa-check text-emerald-600 mr-1"></i>Drafts flagged <em>needs manager</em> require a manager's approval</li>
+              <li><i class="fas fa-check text-emerald-600 mr-1"></i>Text must match the approved version exactly</li>
+              <li><i class="fas fa-check text-emerald-600 mr-1"></i>All guardrail checks must pass</li>
+              <li><i class="fas fa-check text-emerald-600 mr-1"></i>Seller Central / chargeback statements can never be emailed</li>
+              <li><i class="fas fa-check text-emerald-600 mr-1"></i>One send per draft, logged with who/when</li>
+            </ul>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <h2 class="font-semibold mb-2"><i class="fab fa-google mr-2 text-slate-400"></i>Gmail</h2>
+            ${row('Mailbox', gm.connected ? esc(gm.connection.email_address) : ok(false, '', 'Not connected'))}
+            ${row('Last sync', gm.connection?.last_sync_at ? dayjs(gm.connection.last_sync_at).fromNow() : '—')}
+            ${row('Polling', `every ${gm.poll_interval_minutes} min`)}
+            ${row('Scopes', gm.scopes.map((x) => `<code class="text-xs">${esc(x.split('/').pop())}</code>`).join(' '))}
+            <a href="/gmail" data-link class="inline-block mt-3 text-sm text-sky-700 hover:underline">Manage connection →</a>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm p-5">
+            <h2 class="font-semibold mb-2"><i class="fas fa-server mr-2 text-slate-400"></i>Platform</h2>
+            ${row('Hosting', esc(st.hosting))}
+            ${row('Database', esc(st.database))}
+            ${row('Attachments (Amazon rules)', `${st.attachments.types.join(', ')} · ≤${st.attachments.max_files} files · ≤${st.attachments.max_message_mb} MB/message`)}
+            ${row('Case deletion', 'Disabled at database level — archive only')}
           </div>
         </div>
       </section>`

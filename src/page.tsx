@@ -37,7 +37,10 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
         <a href="/atoz" data-link data-nav="atoz" class="nav-tab"><i class="fas fa-scale-balanced w-5"></i>A-to-Z claims <span class="nav-badge" data-badge="atoz"></span></a>
         <a href="/returns" data-link data-nav="returns" class="nav-tab"><i class="fas fa-rotate-left w-5"></i>Returns <span class="nav-badge" data-badge="returns"></span></a>
         <a href="/chargebacks" data-link data-nav="chargebacks" class="nav-tab"><i class="fas fa-credit-card w-5"></i>Chargebacks <span class="nav-badge" data-badge="chargebacks"></span></a>
+        <div class="px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Reference</div>
+        <a href="/policy" data-link data-nav="policy" class="nav-tab"><i class="fas fa-book w-5"></i>Reply policy</a>
         <div class="px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Setup</div>
+        <a href="/settings" data-link data-nav="settings" class="nav-tab"><i class="fas fa-gear w-5"></i>Settings</a>
         <a href="/gmail" data-link data-nav="gmail" class="nav-tab"><i class="fab fa-google w-5"></i>Gmail</a>
         ${user.role === 'manager' ? `<a href="/staff" data-link data-nav="staff" class="nav-tab"><i class="fas fa-users w-5"></i>Team</a>` : ''}
         <div class="mt-6 px-3 pt-3 border-t border-slate-800 flex items-center gap-2">
@@ -66,6 +69,7 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
 
   <script>window.CURRENT_USER = ${JSON.stringify({ id: user.id, name: user.name, role: user.role, email: user.email })};</script>
   <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/plugin/relativeTime.js"></script>
   <script>dayjs.extend(window.dayjs_plugin_relativeTime)</script>
@@ -101,6 +105,7 @@ export const loginPage = () => `${HEAD('Sign in · ReplyIQ')}
     <p class="mt-2 text-xs text-slate-400 text-center"><a href="/privacy" class="underline hover:text-slate-600">Privacy policy</a> · Saigates Ltd</p>
   </main>
   <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
   <script>
     const form = document.getElementById('login-form'), err = document.getElementById('login-error'), btn = document.getElementById('login-btn');
     form.addEventListener('submit', async (e) => {
@@ -139,6 +144,7 @@ export const setupPage = () => `${HEAD('First-run setup · ReplyIQ')}
     </form>
   </main>
   <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
   <script>
     const form = document.getElementById('setup-form'), err = document.getElementById('setup-error'), btn = document.getElementById('setup-btn');
     form.addEventListener('submit', async (e) => {
