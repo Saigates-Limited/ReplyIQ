@@ -172,7 +172,7 @@ curl "http://localhost:3000/__scheduled?cron=*/15+*+*+*+*"   # fire the cron loc
 
 ## Phase 8 (in progress) — Amazon notices, tabs, tone, tickets, draft modes
 
-**Done in code (commit after 9b8ef43), NOT yet deployed to production:**
+**Deployed to production 2026-10-12 (migrations 0006 + 0007 applied by Saigates; 0008 pending):**
 - Gmail sync also reads `atoz-guarantee-no-reply@amazon.co.uk`, `cb-seller-notification@amazon.co.uk`, and
   `donotreply@amazon.com` (Return authorisation notifications + "Your email to <Name>" Seller Central reply copies).
 - `amazon_events` table: A-to-Z claims (3-day deadline once info is requested), return requests, chargebacks (7-day deadline).
@@ -190,8 +190,9 @@ curl "http://localhost:3000/__scheduled?cron=*/15+*+*+*+*"   # fire the cron loc
 `PATCH /api/messages/:id/tone`, `POST /api/gmail/tone-backfill` (manager), `PATCH /api/cases/:id` now accepts `assigned_to, internal_notes, tone, chargeback_open, battery_flag`,
 `POST /api/cases/:id/drafts {mode}`.
 
-**To go live:** run `db/migrations/0006_events_tickets_tone.sql` and `0007_draft_mode.sql` in Supabase SQL Editor, deploy the Worker,
-run "Import history → 7 days" on the Gmail page, then `POST /api/gmail/tone-backfill` until `remaining = 0`.
+**Post-deploy steps (manager, in the live app):** Gmail page → *Import history → Last 7 days* (pulls Seller Central copies and A-to-Z/return/chargeback notices); then tone backfill (button on the Gmail page, repeat until 0 remaining).
+
+**Migration 0008_integrity.sql (pending in prod):** CHECK on `amazon_events.status` per kind; `updated_at` triggers on cases/drafts/amazon_events; BEFORE DELETE trigger on `cases` — cases are archived (`status='resolved'`), never deleted. The app has no delete route for cases.
 
 **Still to do (Step C):** R2 bucket + attachments (Gmail attachments in chat, agent uploads: PDF/JPG/JPEG/PNG/XML, ≤10 MB per message incl. attachments, ≤5 files),
 chargeback email send only after real Reply-To verified.
