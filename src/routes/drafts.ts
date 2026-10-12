@@ -32,7 +32,10 @@ draftsApi.post('/cases/:id/drafts', async (c) => {
   try {
     const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${caseId}`
     if (!kase) return c.json({ error: 'Case not found' }, 404)
-    const messages = await sql<MessageRow[]>`SELECT direction, body, sent_at, sender, kind FROM messages WHERE case_id = ${caseId} ORDER BY sent_at ASC`
+    const messages = await sql<MessageRow[]>`SELECT direction, body, sent_at, sender, kind, id FROM messages WHERE case_id = ${caseId} ORDER BY sent_at ASC`
+    // Attachment METADATA only (filename/type/size) so the model knows photos exist; bytes never leave Gmail/R2.
+    const atts = await sql<{ message_id: number; filename: string; mime_type: string; size_bytes: number }[]>`SELECT message_id, filename, mime_type, size_bytes FROM attachments WHERE case_id = ${caseId}`.catch(() => [] as any[])
+    for (const m of messages as any[]) m.attachments = atts.filter((a) => a.message_id === m.id)
     const events = await sql<EventRow[]>`
       SELECT kind, status, amount, currency, received_at, deadline_at, return_reason, customer_comment, authorisation, policy_check, item_description
       FROM amazon_events WHERE case_id = ${caseId} ORDER BY received_at ASC`

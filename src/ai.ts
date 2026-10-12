@@ -2,6 +2,7 @@
 // and runs deterministic guardrail checks on the result.
 import instructions from '../reply_instructions.md?raw'
 import type { Bindings } from './db'
+import { assertNoAttachmentContent, attachmentSummaryForModel, type AttachmentMeta } from './attachments'
 
 export const MODEL = 'gpt-5.5'
 
@@ -35,6 +36,7 @@ export type MessageRow = {
   sent_at: string
   sender?: string | null
   kind?: 'message' | 'seller_central_copy' | 'event' | string | null
+  attachments?: AttachmentMeta[] // metadata only; file content NEVER enters the payload
 }
 /** Amazon notice (A-to-Z / return / chargeback) linked to the order. Only non-PII fields are used. */
 export type EventRow = {
@@ -158,6 +160,7 @@ export function buildPayload(kase: CaseRow, messages: MessageRow[], opts: { even
     from: fromOf(m),
     sent_at: stamp(m.sent_at),
     text: redactPii(m.body, kase).slice(0, 4000),
+    ...(m.attachments?.length ? { attachments: attachmentSummaryForModel(m.attachments) } : {}),
   }))
   const events = (opts.events ?? []).map((e) => ({
     kind: e.kind,
@@ -190,6 +193,9 @@ export async function generateDraft(
   const userMsg = `${modeBlock}CASE INPUT:\n${JSON.stringify(payload.caseInput, null, 2)}\n\n${eventsBlock}ORDER TIMELINE (oldest first):\n${payload.thread
     .map((m) => `[${m.from} @ ${m.sent_at}]\n${m.text}`)
     .join('\n\n')}\n\nReturn the JSON object described under "## Output" and nothing else.`
+
+  // Hard guard: attachments are summarised as counts only. If any file content ever reaches this point, abort.
+  assertNoAttachmentContent(userMsg)
 
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',

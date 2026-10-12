@@ -55,8 +55,9 @@ eventsApi.get('/', async (c) => {
   const closed = kind === 'return' ? ['refunded', 'closed'] : ['won', 'lost', 'closed']
   const sql = getDb(c.env)
   try {
+    const extra = (await sql`SELECT 1 FROM information_schema.columns WHERE table_name='amazon_events' AND column_name='reply_to_status'`).length ? ', e.reply_to_status, e.reply_to_checked_at' : ''
     const rows = await sql.unsafe(
-      `SELECT ${EVENT_SELECT} ${EVENT_FROM}
+      `SELECT ${EVENT_SELECT}${extra} ${EVENT_FROM}
        WHERE e.kind = ANY(string_to_array($1, ',')) AND (${await archFilter(sql)})
          AND ($2 = 'all' OR NOT (e.status = ANY(string_to_array($3, ','))))
        ORDER BY

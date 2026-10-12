@@ -5,6 +5,8 @@ import { authUrl, exchangeCode, encryptToken, decryptToken, revokeToken, getProf
 import { runSync } from '../sync'
 import { serverChecks, redactPii, type CaseRow } from '../ai'
 import { classifyTone } from '../tone'
+import { getAttachment } from '../gmail'
+import { AMAZON_ATTACHMENT_RULES, checkAttachments } from '../attachments'
 
 // Protected (mounted behind requireAuth)
 export const gmailApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -107,6 +109,45 @@ gmailApi.post('/tone-backfill', requireManager, async (c) => {
   }
 })
 
+// GET /api/gmail/attachments/:id — stream a customer attachment from Gmail to a logged-in member of staff.
+// Bytes go Gmail → Worker → browser only. Nothing is cached, stored, or sent to OpenAI.
+gmailApi.get('/attachments/:id', async (c) => {
+  const id = Number(c.req.param('id'))
+  const sql = getDb(c.env)
+  try {
+    const [a] = await sql`SELECT * FROM attachments WHERE id = ${id}`
+    if (!a) return c.json({ error: 'Attachment not found' }, 404)
+    if (a.source !== 'gmail' || !a.gmail_message_id || !a.gmail_attachment_id) return c.json({ error: 'Not available yet (R2 storage not enabled)' }, 501)
+    const token = await accessToken(c.env, sql)
+    const bytes = await getAttachment(token, a.gmail_message_id, a.gmail_attachment_id)
+    const safeType = /^(image\/(jpeg|png|gif|webp)|application\/pdf)$/.test(a.mime_type) ? a.mime_type : 'application/octet-stream'
+    const disposition = safeType === 'application/octet-stream' ? 'attachment' : 'inline'
+    return new Response(bytes, {
+      headers: {
+        'Content-Type': safeType,
+        'Content-Disposition': `${disposition}; filename="${String(a.filename).replace(/[^\w.\- ]/g, '_')}"`,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+      },
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 502)
+  } finally {
+    await sql.end()
+  }
+})
+
+// GET /api/gmail/attachment-rules — the limits the UI enforces (same constants the server uses)
+gmailApi.get('/attachment-rules', (c) => c.json(AMAZON_ATTACHMENT_RULES))
+
+// POST /api/gmail/attachment-check {files:[{filename,mime_type,size_bytes}], body?} — pre-flight validation for uploads
+gmailApi.post('/attachment-check', async (c) => {
+  const b = (await c.req.json().catch(() => ({}))) as { files?: any[]; body?: string }
+  const files = (b.files ?? []).map((f) => ({ filename: String(f.filename ?? ''), mime_type: String(f.mime_type ?? ''), size_bytes: Number(f.size_bytes) || 0 }))
+  return c.json(checkAttachments(files, b.body ?? ''))
+})
+
 export const sendApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 // POST /api/drafts/:id/send — the ONLY place in the system that sends email.
 // Gates: approved status, manager approval honoured, text unchanged since approval, server checks clean,
@@ -122,9 +163,20 @@ sendApi.post('/drafts/:id/send', async (c) => {
     if (d.status === 'sent') return c.json({ error: 'This draft has already been sent' }, 409)
     if (d.status !== 'approved') return c.json({ error: 'Only approved drafts can be sent' }, 403)
     if (d.needs_manager && !d.approved_by) return c.json({ error: 'Manager approval missing' }, 403)
-    // Seller Central / chargeback statements are never emailed: Amazon's no-reply addresses do not receive mail.
-    if (d.mode && d.mode !== 'customer')
-      return c.json({ error: 'This draft is for Seller Central / Amazon, not an email to the customer. Use Copy and paste it into Seller Central, then Mark as sent.' }, 400)
+    // Seller Central / chargeback statements are never emailed to the customer.
+    // Chargeback evidence MAY be emailed to Amazon's chargeback mailbox, but only when:
+    //   (a) CHARGEBACK_EMAIL_ENABLED=true is set as a Worker secret (manual switch after verifying a real notice), and
+    //   (b) the notice's Reply-To was classified as a real Amazon mailbox (not a no-reply address).
+    if (d.mode && d.mode !== 'customer') {
+      if (d.mode !== 'chargeback_evidence')
+        return c.json({ error: 'This draft is for Seller Central, not an email. Use Copy and paste it into Seller Central, then Mark as sent.' }, 400)
+      if (String((c.env as any).CHARGEBACK_EMAIL_ENABLED ?? '').toLowerCase() !== 'true')
+        return c.json({ error: 'Emailing chargeback evidence is switched off until the Amazon Reply-To address has been verified on a real notice. Copy the text into Seller Central instead.' }, 400)
+      const [ev] = await sql`SELECT reply_to, reply_to_status FROM amazon_events WHERE case_id = ${d.case_id} AND kind = 'chargeback' ORDER BY received_at DESC LIMIT 1`
+      if (!ev || ev.reply_to_status !== 'mailbox')
+        return c.json({ error: `Amazon's Reply-To on this chargeback notice is ${ev?.reply_to_status === 'noreply' ? 'a no-reply address' : 'unverified'} (${ev?.reply_to || 'unknown'}). It cannot be emailed — paste the evidence into Seller Central.` }, 400)
+      return c.json({ error: 'Chargeback email delivery is not wired yet (Step C part 2). Paste into Seller Central.' }, 501)
+    }
     if ((body.confirm_text ?? '').trim() !== String(d.draft_text).trim())
       return c.json({ error: 'The text on screen differs from the approved draft. Reload and try again.' }, 409)
 

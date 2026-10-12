@@ -287,7 +287,7 @@
               </div>
             </div>
             <div class="chat p-3 sm:p-4 flex flex-col gap-2 max-h-[60vh] overflow-auto" id="chat-scroll">
-              ${chatItems(data.messages, data.events)}
+              ${chatItems(data.messages, data.events, data.attachments || [])}
             </div>
             ${k.battery_flag ? '<div class="px-5 py-2 text-xs bg-red-600 text-white rounded-b-xl"><i class="fas fa-fire mr-1"></i><strong>Battery / heat flag:</strong> stop using &amp; charging, Royal Mail label with UN3481 marking, manager approval, high urgency.</div>' : ''}
           </article>
@@ -381,7 +381,22 @@
   }
 
   // WhatsApp-style items: customer left (white), Saigates right (green), Seller Central copies right (dashed), Amazon notices centred.
-  function chatItems(messages, events) {
+  function attachmentChips(list) {
+    if (!list.length) return ''
+    const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB')
+    return `<div class="mt-2 flex flex-wrap gap-2">${list.map((a) => {
+      const url = `/api/gmail/attachments/${a.id}`
+      const img = /^image\/(jpeg|png|gif|webp)$/.test(a.mime_type)
+      const warn = a.amazon_allowed ? '' : '<span class="ml-1 text-[9px] px-1 rounded bg-amber-100 text-amber-800" title="Amazon would not accept this type if sent back">not Amazon-allowed</span>'
+      return img
+        ? `<a href="${url}" target="_blank" rel="noopener" class="block"><img src="${url}" alt="${esc(a.filename)}" loading="lazy" class="max-h-40 max-w-[220px] rounded-md border border-slate-200 object-cover bg-slate-100"><div class="text-[10px] text-slate-500 mt-0.5">${esc(a.filename)} · ${fmtSize(a.size_bytes)}${warn}</div></a>`
+        : `<a href="${url}" target="_blank" rel="noopener" class="attachment-chip"><i class="fas ${a.mime_type === 'application/pdf' ? 'fa-file-pdf text-red-600' : 'fa-paperclip'}"></i>${esc(a.filename)} <span class="text-slate-400">${fmtSize(a.size_bytes)}</span>${warn}</a>`
+    }).join('')}</div><div class="text-[9px] text-slate-400 mt-1"><i class="fas fa-lock"></i> Attachments are shown to staff only — never sent to the AI</div>`
+  }
+
+  function chatItems(messages, events, attachments) {
+    const attsByMsg = {}
+    for (const a of attachments || []) (attsByMsg[a.message_id] ||= []).push(a)
     const evById = Object.fromEntries((events || []).map((e) => [e.id, e]))
     let lastDay = ''
     return messages.map((m) => {
@@ -400,6 +415,7 @@
       return `${sep}<div class="bubble ${cls}">
         <div class="text-[11px] font-semibold ${inbound ? 'text-sky-700' : 'text-emerald-800'}">${esc(m.sender || (inbound ? 'Customer' : 'Saigates'))}${sc ? ' <span class="font-normal text-orange-700">· sent via Seller Central</span>' : ''}</div>
         <div class="message-body">${esc(m.body)}</div>
+        ${attachmentChips(attsByMsg[m.id] || [])}
         <div class="bubble-meta">${tone}<span>${dayjs(m.sent_at).format('HH:mm')}</span>${!inbound ? '<i class="fas fa-check-double text-sky-500"></i>' : ''}</div>
       </div>`
     }).join('')
@@ -1064,6 +1080,13 @@
       </section>`
   }
 
+  function replyToBadge(e) {
+    const st = e.reply_to_status || 'unverified'
+    const cls = st === 'mailbox' ? 'bg-emerald-100 text-emerald-800' : st === 'noreply' ? 'bg-slate-200 text-slate-700' : 'bg-amber-100 text-amber-800'
+    const label = st === 'mailbox' ? 'Reply-To is a real Amazon mailbox' : st === 'noreply' ? 'Reply-To is no-reply — paste into Seller Central' : 'Reply-To unverified — paste into Seller Central'
+    return `<span class="pill ${cls}" title="${esc(e.reply_to || '')}"><i class="fas fa-at mr-1"></i>${label}</span>`
+  }
+
   // ---------- TRACKERS: A-to-Z / Returns / Chargebacks ----------
   const TRACKER = {
     atoz: { title: 'A-to-Z Guarantee claims', icon: 'fa-scale-balanced', hint: 'Respond within 3 days once Amazon asks for information. Responses are pasted into Seller Central — never emailed to the no-reply address.' },
@@ -1094,7 +1117,7 @@
               return `<tr class="border-b border-slate-100 ${dl ? dl.row : ''}" data-event-id="${e.id}">
                 <td class="px-4 py-3 whitespace-nowrap">${dl ? `<div class="${dl.cls}">${esc(dl.label)}</div><div class="text-xs text-slate-400">${fmtDateTime(e.deadline_at)}</div>` : `<span class="text-slate-400 text-xs">${e.deadline_at ? fmtDateTime(e.deadline_at) : 'none'}</span>`}</td>
                 <td class="px-4 py-3"><a href="/cases/${e.case_id}" data-link class="font-mono text-xs text-sky-700 hover:underline">${esc(e.order_id)}</a><div class="text-xs text-slate-500">${esc(e.case_ref || '')} · ${esc(e.customer_first_name || '')} ${esc(e.customer_last_name || '')} ${toneChip(e.case_tone)}${e.battery_flag ? ' <span class="px-1.5 rounded bg-red-600 text-white text-[10px] font-semibold"><i class="fas fa-fire"></i> BATTERY</span>' : ''}</div><div class="text-xs text-slate-400">${esc(EVENT_LABEL[e.kind] || e.kind)} · received ${fmtDateTime(e.received_at)}</div></td>
-                <td class="px-4 py-3 hidden md:table-cell text-xs text-slate-600 max-w-md">${kind === 'return' ? `<div><strong>${esc(e.product || e.item_description || '')}</strong></div><div>${esc(e.return_reason || '')}${e.policy_check ? ` · ${esc(e.policy_check)}` : ''}${e.authorisation ? ` · ${esc(e.authorisation)}` : ''}</div>${e.customer_comment ? `<div class="italic text-slate-500">“${esc(e.customer_comment)}”</div>` : ''}` : kind === 'chargeback' ? `<div><strong>${esc(e.item_description || '')}</strong></div><div>Ordered ${e.order_date ? fmtDate(e.order_date) : '—'}</div>` : `<div class="message-body">${esc(e.raw_excerpt || '')}</div>`}</td>
+                <td class="px-4 py-3 hidden md:table-cell text-xs text-slate-600 max-w-md">${kind === 'return' ? `<div><strong>${esc(e.product || e.item_description || '')}</strong></div><div>${esc(e.return_reason || '')}${e.policy_check ? ` · ${esc(e.policy_check)}` : ''}${e.authorisation ? ` · ${esc(e.authorisation)}` : ''}</div>${e.customer_comment ? `<div class="italic text-slate-500">“${esc(e.customer_comment)}”</div>` : ''}` : kind === 'chargeback' ? `<div><strong>${esc(e.item_description || '')}</strong></div><div>Ordered ${e.order_date ? fmtDate(e.order_date) : '—'}</div><div class="mt-1">${replyToBadge(e)}</div>` : `<div class="message-body">${esc(e.raw_excerpt || '')}</div>`}</td>
                 <td class="px-4 py-3 whitespace-nowrap">${e.amount ? `£${Number(e.amount).toFixed(2)}` : '—'}</td>
                 <td class="px-4 py-3"><select data-status class="field-input py-1 text-xs mt-0" style="width:auto">${data.statuses.map((s) => `<option value="${s}" ${e.status === s ? 'selected' : ''}>${s.replace('_', ' ')}</option>`).join('')}</select>${e.responded_at ? `<div class="text-[10px] text-slate-400 mt-1">responded ${fmtDateTime(e.responded_at)} by ${esc(e.responded_by_name || '')}</div>` : ''}</td>
                 <td class="px-4 py-3 hidden lg:table-cell text-xs">${e.assigned_to_name ? `<i class="far fa-user mr-1 text-slate-400"></i>${esc(e.assigned_to_name)}` : '<span class="text-slate-300">unassigned</span>'}<div class="mt-1">${draftBadge(e.latest_draft_status, false)}</div></td>

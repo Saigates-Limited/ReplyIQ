@@ -141,7 +141,7 @@ export async function listThreadIds(token: string, q: string, max = 50) {
 }
 
 export type GmailHeader = { name: string; value: string }
-export type GmailPart = { mimeType: string; body?: { data?: string; size?: number }; parts?: GmailPart[]; headers?: GmailHeader[] }
+export type GmailPart = { partId?: string; mimeType: string; filename?: string; body?: { data?: string; size?: number; attachmentId?: string }; parts?: GmailPart[]; headers?: GmailHeader[] }
 export type GmailMessage = {
   id: string
   threadId: string
@@ -208,4 +208,25 @@ export async function sendReply(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ raw: rawUrl, threadId: args.threadId }),
   })
+}
+
+/** Attachment parts of a message (anything with a filename and an attachmentId). Inline images included. */
+export function listAttachments(m: GmailMessage) {
+  const out: { attachmentId: string; filename: string; mimeType: string; size: number; inline: boolean }[] = []
+  const walk = (p: GmailPart) => {
+    if (p.filename && p.body?.attachmentId) {
+      const disp = p.headers?.find((h) => h.name.toLowerCase() === 'content-disposition')?.value ?? ''
+      out.push({ attachmentId: p.body.attachmentId, filename: p.filename, mimeType: p.mimeType || 'application/octet-stream', size: p.body.size ?? 0, inline: /inline/i.test(disp) })
+    }
+    p.parts?.forEach(walk)
+  }
+  walk(m.payload)
+  return out
+}
+
+/** Fetch attachment bytes from Gmail (gmail.readonly scope). Returned as a Uint8Array. */
+export async function getAttachment(token: string, messageId: string, attachmentId: string): Promise<Uint8Array> {
+  const data = await gapi<{ data: string; size: number }>(token, `/messages/${messageId}/attachments/${attachmentId}`)
+  const bin = atob(data.data.replace(/-/g, '+').replace(/_/g, '/'))
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0))
 }

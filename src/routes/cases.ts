@@ -100,6 +100,7 @@ casesApi.get('/:id', async (c) => {
       SELECT e.*, ru.name AS responded_by_name FROM amazon_events e LEFT JOIN users ru ON ru.id = e.responded_by
       WHERE e.case_id = ${id} ORDER BY e.received_at ASC`
     const staff = await sql`SELECT id, name, role FROM users WHERE is_active = TRUE ORDER BY name`
+    const attachments = await sql`SELECT id, message_id, filename, mime_type, size_bytes, inline, source, amazon_allowed, created_at FROM attachments WHERE case_id = ${id} ORDER BY id`.catch(() => [] as any[])
     const drafts = await sql`
       SELECT d.*, cu.name AS created_by_name, eu.name AS edited_by_name, au.name AS approved_by_name, su.name AS sent_recorded_by_name
       FROM drafts d
@@ -108,7 +109,7 @@ casesApi.get('/:id', async (c) => {
       LEFT JOIN users au ON au.id = d.approved_by
       LEFT JOIN users su ON su.id = d.sent_recorded_by
       WHERE d.case_id = ${id} ORDER BY d.created_at DESC`
-    return c.json({ case: kase, messages, events, drafts, staff, tone_meta: TONE_META, now: new Date().toISOString() })
+    return c.json({ case: kase, messages, events, drafts, staff, attachments, tone_meta: TONE_META, now: new Date().toISOString() })
   } finally {
     await sql.end()
   }

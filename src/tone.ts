@@ -22,8 +22,11 @@ const SYSTEM = `Classify the tone of a customer message to an Amazon UK seller. 
 - happy: thanks, satisfied, positive.
 If both angry and dispute apply, choose dispute.`
 
+import { assertNoAttachmentContent } from './attachments'
+
 export async function classifyTone(env: Bindings, redactedText: string): Promise<{ label: Tone; model: string } | null> {
   if (!env.OPENAI_API_KEY || !redactedText.trim()) return null
+  assertNoAttachmentContent(redactedText) // attachments never reach the model, even for tone
   const base = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',

@@ -4,6 +4,8 @@ import { redactPii } from './ai'
 import { accessToken, listThreadIds, getThread, header, messageBody, type GmailMessage } from './gmail'
 import { classifyNotice, parseSellerReplyCopy, parseAtoz, parseReturnAuth, parseChargeback, redactChargebackPii } from './amazon'
 import { classifyTone } from './tone'
+import { listAttachments } from './gmail'
+import { isAllowedType } from './attachments'
 
 const AMAZON_DOMAIN = 'marketplace.amazon.co.uk'
 const DEFAULT_LOOKBACK = 'newer_than:1h' // generous relative to the 15-min cron so a missed run cannot drop mail
@@ -204,6 +206,7 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
                   ${header(m, 'Subject') || null}, ${m.id}, ${header(m, 'Message-ID') || null}, ${new Date(Number(m.internalDate))})
           RETURNING id`
         result.messagesNew++
+        await recordAttachments(sql, m, ins.id, kase.id)
         if (!ours) pendingTone.push({ messageId: ins.id, caseId: kase.id, text: body })
         if (!ours && /\b(hot|heat|heating|overheat|burn|smok|swell|swollen|bulg)/i.test(body)) await sql`UPDATE cases SET battery_flag = TRUE WHERE id = ${kase.id}`
       }
@@ -242,6 +245,25 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
     await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = 'error', last_sync_error = ${msg} WHERE id = 1`
     throw e
   }
+}
+
+/** Store attachment metadata only — bytes stay in Gmail and are proxied on demand. Never sent to OpenAI. */
+async function recordAttachments(sql: Sql, m: GmailMessage, messageId: number, caseId: number) {
+  for (const a of listAttachments(m)) {
+    // Tolerates a DB without migration 0009 (table missing) — the message itself is still saved.
+    await sql`INSERT INTO attachments (message_id, case_id, filename, mime_type, size_bytes, inline, source, gmail_message_id, gmail_attachment_id, amazon_allowed)
+              VALUES (${messageId}, ${caseId}, ${a.filename.slice(0, 255)}, ${a.mimeType}, ${a.size}, ${a.inline}, 'gmail', ${m.id}, ${a.attachmentId}, ${isAllowedType(a.filename, a.mimeType)})
+              ON CONFLICT (gmail_message_id, gmail_attachment_id) DO NOTHING`.catch((e: Error) => console.error('attachment record skipped:', e.message))
+  }
+}
+
+/** Is Amazon's Reply-To on a chargeback notice a real mailbox we may answer, or a no-reply address? */
+export function classifyReplyTo(replyTo: string): 'noreply' | 'mailbox' | 'unverified' {
+  const addr = (replyTo.match(/<([^>]+)>/)?.[1] ?? replyTo).trim().toLowerCase()
+  if (!addr || !addr.includes('@')) return 'unverified'
+  if (/no-?reply|donotreply|do-not-reply|notification|noreply/.test(addr)) return 'noreply'
+  if (/@(?:[\w-]+\.)*amazon\.(?:co\.uk|com|de|fr|it|es)$/.test(addr)) return 'mailbox'
+  return 'unverified'
 }
 
 async function markSeenFor(sql: Sql, tid: string) {
@@ -321,8 +343,10 @@ export async function ingestNotice(sql: Sql, m: GmailMessage, kind: NonNullable<
     const k = await caseForOrder(sql, r.orderId, { subject: `Chargeback${r.amount ? ` ${r.currency} ${r.amount.toFixed(2)}` : ''}`, firstName: nameParts[0] || null, lastName: nameParts.slice(1).join(' ') || null, address: r.customerAddress, product: r.itemDescription, at })
     const deadline = new Date(at.getTime() + 7 * 86400_000)
     const excerptRedacted = redactChargebackPii(`Chargeback dispute on ${r.itemDescription ?? 'order'} for ${r.currency} ${r.amount?.toFixed(2) ?? '?'}. Amazon requires: ${r.checklist.join('; ')}`, r)
-    const [ev] = await sql`INSERT INTO amazon_events (case_id, order_id, kind, status, amount, currency, received_at, deadline_at, order_date, item_description, reply_to, product, gmail_message_id, gmail_thread_id, raw_excerpt)
-              VALUES (${k.id}, ${r.orderId}, 'chargeback', 'open', ${r.amount}, ${r.currency}, ${at}, ${deadline}, ${r.orderDate}, ${r.itemDescription}, ${replyTo}, ${r.itemDescription}, ${m.id}, ${m.threadId}, ${excerptRedacted}) RETURNING id`
+    const [ev] = await sql`INSERT INTO amazon_events (case_id, order_id, kind, status, amount, currency, received_at, deadline_at, order_date, item_description, reply_to, reply_to_status, reply_to_checked_at, product, gmail_message_id, gmail_thread_id, raw_excerpt)
+              VALUES (${k.id}, ${r.orderId}, 'chargeback', 'open', ${r.amount}, ${r.currency}, ${at}, ${deadline}, ${r.orderDate}, ${r.itemDescription}, ${replyTo}, ${classifyReplyTo(replyTo)}, now(), ${r.itemDescription}, ${m.id}, ${m.threadId}, ${excerptRedacted}) RETURNING id`
+      .catch(() => sql`INSERT INTO amazon_events (case_id, order_id, kind, status, amount, currency, received_at, deadline_at, order_date, item_description, reply_to, product, gmail_message_id, gmail_thread_id, raw_excerpt)
+              VALUES (${k.id}, ${r.orderId}, 'chargeback', 'open', ${r.amount}, ${r.currency}, ${at}, ${deadline}, ${r.orderDate}, ${r.itemDescription}, ${replyTo}, ${r.itemDescription}, ${m.id}, ${m.threadId}, ${excerptRedacted}) RETURNING id`)
     await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id)
               VALUES (${k.id}, 'inbound', 'Amazon Chargebacks', ${excerptRedacted}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id})`
     await sql`UPDATE cases SET chargeback_open = TRUE, updated_at = now() WHERE id = ${k.id}`
