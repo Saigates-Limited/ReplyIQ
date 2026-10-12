@@ -3,7 +3,8 @@ import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
 import { authUrl, exchangeCode, encryptToken, decryptToken, revokeToken, getProfile, getConnection, accessToken, sendReply, requireGoogleConfig, GMAIL_SCOPES } from '../gmail'
 import { runSync } from '../sync'
-import { serverChecks, type CaseRow } from '../ai'
+import { serverChecks, redactPii, type CaseRow } from '../ai'
+import { classifyTone } from '../tone'
 
 // Protected (mounted behind requireAuth)
 export const gmailApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -77,6 +78,35 @@ gmailApi.post('/sync', async (c) => {
   }
 })
 
+// POST /api/gmail/tone-backfill {limit?} (manager) → label existing customer messages that have no tone yet.
+// Runs in batches of up to 20 per call (OpenAI subrequests); call repeatedly until remaining = 0.
+gmailApi.post('/tone-backfill', requireManager, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { limit?: number }
+  const limit = Math.min(Math.max(Number(body.limit) || 20, 1), 20)
+  const sql = getDb(c.env)
+  try {
+    const rows = await sql<any[]>`
+      SELECT c.*, m.id AS message_id, m.case_id, m.body AS message_body, m.sent_at AS message_sent_at
+      FROM messages m JOIN cases c ON c.id = m.case_id
+      WHERE m.direction = 'inbound' AND m.kind <> 'event' AND m.tone IS NULL
+      ORDER BY m.sent_at DESC LIMIT ${limit}`
+    let labelled = 0
+    for (const r of rows) {
+      const kase = { ...r, id: r.case_id } as CaseRow
+      const res = await classifyTone(c.env, redactPii(String(r.message_body), kase)).catch(() => null)
+      if (!res) continue
+      await sql`UPDATE messages SET tone = ${res.label}, tone_source = 'ai', tone_model = ${res.model} WHERE id = ${r.message_id} AND tone IS NULL`
+      await sql`UPDATE cases SET tone = ${res.label}, updated_at = now() WHERE id = ${r.case_id}
+                AND ${r.message_id} = (SELECT id FROM messages WHERE case_id = ${r.case_id} AND direction = 'inbound' AND kind <> 'event' ORDER BY sent_at DESC LIMIT 1)`
+      labelled++
+    }
+    const [{ remaining }] = await sql`SELECT COUNT(*)::int AS remaining FROM messages WHERE direction = 'inbound' AND kind <> 'event' AND tone IS NULL`
+    return c.json({ ok: true, labelled, remaining })
+  } finally {
+    await sql.end()
+  }
+})
+
 export const sendApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 // POST /api/drafts/:id/send — the ONLY place in the system that sends email.
 // Gates: approved status, manager approval honoured, text unchanged since approval, server checks clean,
@@ -92,6 +122,9 @@ sendApi.post('/drafts/:id/send', async (c) => {
     if (d.status === 'sent') return c.json({ error: 'This draft has already been sent' }, 409)
     if (d.status !== 'approved') return c.json({ error: 'Only approved drafts can be sent' }, 403)
     if (d.needs_manager && !d.approved_by) return c.json({ error: 'Manager approval missing' }, 403)
+    // Seller Central / chargeback statements are never emailed: Amazon's no-reply addresses do not receive mail.
+    if (d.mode && d.mode !== 'customer')
+      return c.json({ error: 'This draft is for Seller Central / Amazon, not an email to the customer. Use Copy and paste it into Seller Central, then Mark as sent.' }, 400)
     if ((body.confirm_text ?? '').trim() !== String(d.draft_text).trim())
       return c.json({ error: 'The text on screen differs from the approved draft. Reload and try again.' }, 409)
 

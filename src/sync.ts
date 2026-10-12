@@ -1,6 +1,9 @@
 // Gmail → cases sync. Read-only against Gmail. Runs from the cron trigger and from a manual button.
 import type { Bindings, Sql } from './db'
+import { redactPii } from './ai'
 import { accessToken, listThreadIds, getThread, header, messageBody, type GmailMessage } from './gmail'
+import { classifyNotice, parseSellerReplyCopy, parseAtoz, parseReturnAuth, parseChargeback, redactChargebackPii } from './amazon'
+import { classifyTone } from './tone'
 
 const AMAZON_DOMAIN = 'marketplace.amazon.co.uk'
 const DEFAULT_LOOKBACK = 'newer_than:1h' // generous relative to the 15-min cron so a missed run cannot drop mail
@@ -120,7 +123,8 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
     const { token, conn } = await accessToken(env, sql)
     const ourEmail = conn.email_address
     const lookback = opts.lookbackDays ? `newer_than:${opts.lookbackDays}d` : DEFAULT_LOOKBACK
-    const q = `(from:${AMAZON_DOMAIN} OR to:${AMAZON_DOMAIN}) ${lookback}`
+    // Customer messages + Seller Central reply copies + A-to-Z + returns + chargebacks
+    const q = `(from:${AMAZON_DOMAIN} OR to:${AMAZON_DOMAIN} OR from:atoz-guarantee-no-reply@amazon.co.uk OR from:cb-seller-notification@amazon.co.uk OR (from:donotreply@amazon.com (subject:"Return authorisation notification" OR subject:"Your email to"))) ${lookback}`
     result.query = q
     const allIds = await listThreadIds(token, q, opts.lookbackDays ? 500 : 60)
     // Skip threads we already have fully (cheap DB check) so repeated imports make progress
@@ -136,9 +140,22 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
     result.threadsSeen = allIds.length
     result.remaining = Math.max(0, todo.length - threadIds.length)
 
+    const pendingTone: { messageId: number; caseId: number; text: string }[] = []
     for (const tid of threadIds) {
       const thread = await getThread(token, tid)
       const msgs = thread.messages.sort((a, b) => Number(a.internalDate) - Number(b.internalDate))
+      // ── Amazon notices (not customer messages): handle and move on
+      const first0 = msgs[0]
+      const kind0 = classifyNotice(header(first0, 'From'), header(first0, 'Subject'))
+      if (kind0) {
+        for (const m of msgs) {
+          const r = await ingestNotice(sql, m, classifyNotice(header(m, 'From'), header(m, 'Subject')) ?? kind0, result)
+          if (r === 'new') result.messagesNew++
+        }
+        await markSeenFor(sql, tid)
+        continue
+      }
+
       const inbound = msgs.filter((m) => !isOurs(m, ourEmail) && parseAddress(header(m, 'From')).address.endsWith(`@${AMAZON_DOMAIN}`))
       // Amazon also sends non-customer notices from this domain (e.g. order confirmations). Skip threads with no customer text.
       if (inbound.length && !parseAmazonBody(messageBody(inbound[inbound.length - 1])).text) { result.skipped.push({ thread: tid, reason: `no customer text parsed; subject="${header(inbound[0], 'Subject').slice(0, 80)}"` }); await markSeen(); continue }
@@ -181,11 +198,14 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
         const body = ours ? stripQuoted(messageBody(m)) : parseAmazonBody(messageBody(m)).text
         if (!body) continue
         const sender = ours ? 'Saigates Support' : isAmazonCsRelay(body) ? 'Amazon Customer Service (on behalf of customer)' : 'Customer'
-        await sql`
+        const [ins] = await sql`
           INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, rfc_message_id, sent_at)
           VALUES (${kase.id}, ${ours ? 'outbound' : 'inbound'}, ${sender}, ${body.slice(0, 20000)},
-                  ${header(m, 'Subject') || null}, ${m.id}, ${header(m, 'Message-ID') || null}, ${new Date(Number(m.internalDate))})`
+                  ${header(m, 'Subject') || null}, ${m.id}, ${header(m, 'Message-ID') || null}, ${new Date(Number(m.internalDate))})
+          RETURNING id`
         result.messagesNew++
+        if (!ours) pendingTone.push({ messageId: ins.id, caseId: kase.id, text: body })
+        if (!ours && /\b(hot|heat|heating|overheat|burn|smok|swell|swollen|bulg)/i.test(body)) await sql`UPDATE cases SET battery_flag = TRUE WHERE id = ${kase.id}`
       }
 
       // New customer message → reset the 24h clock and reopen if we were waiting on them
@@ -201,6 +221,17 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
       await markSeen()
     }
 
+    // Tone labels for new customer messages (small model, redacted text, non-fatal)
+    for (const p of pendingTone.slice(0, 20)) {
+      try {
+        const [k] = await sql`SELECT * FROM cases WHERE id = ${p.caseId}`
+        const tone = await classifyTone(env, redactPii(p.text, k as any))
+        if (tone) {
+          await sql`UPDATE messages SET tone = ${tone.label}, tone_source = 'ai', tone_model = ${tone.model} WHERE id = ${p.messageId} AND tone_source IS DISTINCT FROM 'staff'`
+          await sql`UPDATE cases SET tone = ${tone.label} WHERE id = ${p.caseId} AND (SELECT id FROM messages WHERE case_id = ${p.caseId} AND direction = 'inbound' ORDER BY sent_at DESC LIMIT 1) = ${p.messageId}`
+        }
+      } catch (e) { console.error('tone failed', e) }
+    }
     const note = result.skipped.length ? `skipped ${result.skipped.length}: ` + result.skipped.slice(0, 5).map((x) => x.reason).join(' | ') : null
     await sql`UPDATE sync_runs SET finished_at = now(), status = 'ok', threads_seen = ${result.threadsSeen}, messages_new = ${result.messagesNew}, cases_new = ${result.casesNew}, error = ${note} WHERE id = ${run.id}`
     await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = 'ok', last_sync_error = NULL, last_sync_new_msgs = ${result.messagesNew} WHERE id = 1`
@@ -211,4 +242,91 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
     await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = 'error', last_sync_error = ${msg} WHERE id = 1`
     throw e
   }
+}
+
+async function markSeenFor(sql: Sql, tid: string) {
+  await sql`INSERT INTO gmail_threads_seen (thread_id) VALUES (${tid}) ON CONFLICT (thread_id) DO UPDATE SET seen_at = now()`
+}
+
+/** Find or create the case for an order referenced by an Amazon notice. */
+async function caseForOrder(sql: Sql, orderId: string, opts: { firstName?: string | null; lastName?: string | null; address?: string | null; product?: string | null; subject: string; at: Date }) {
+  let [k] = await sql`SELECT id, status FROM cases WHERE order_id = ${orderId} ORDER BY id LIMIT 1`
+  if (k) {
+    if (opts.lastName || opts.address) await sql`UPDATE cases SET customer_last_name = COALESCE(customer_last_name, ${opts.lastName ?? null}), customer_address = COALESCE(customer_address, ${opts.address ?? null}) WHERE id = ${k.id}`
+    if (opts.product) await sql`UPDATE cases SET device_model = COALESCE(device_model, ${opts.product}) WHERE id = ${k.id}`
+    return k
+  }
+  const ref = await nextCaseRef(sql)
+  ;[k] = await sql`
+    INSERT INTO cases (case_ref, subject, status, customer_first_name, customer_last_name, customer_address, order_id, device_model, source, last_customer_message_at)
+    VALUES (${ref}, ${opts.subject.slice(0, 300)}, 'open', ${opts.firstName || 'Customer'}, ${opts.lastName ?? null}, ${opts.address ?? null}, ${orderId}, ${opts.product ?? null}, 'amazon_notice', ${opts.at})
+    RETURNING id, status`
+  return k
+}
+
+/** Ingest one Amazon notice email. Returns 'new' | 'dup' | 'skip'. */
+export async function ingestNotice(sql: Sql, m: GmailMessage, kind: NonNullable<ReturnType<typeof classifyNotice>>, result: SyncResult): Promise<'new' | 'dup' | 'skip'> {
+  const [dup] = await sql`SELECT 1 FROM messages WHERE gmail_message_id = ${m.id} UNION ALL SELECT 1 FROM amazon_events WHERE gmail_message_id = ${m.id} LIMIT 1`
+  if (dup) return 'dup'
+  const at = new Date(Number(m.internalDate))
+  const body = messageBody(m)
+  const subject = header(m, 'Subject')
+  const replyTo = header(m, 'Reply-To') || header(m, 'From')
+
+  if (kind === 'seller_reply_copy') {
+    const r = parseSellerReplyCopy(body, subject)
+    if (!r.orderId || !r.text) { result.skipped.push({ thread: m.threadId, reason: 'reply copy without order/text' }); return 'skip' }
+    // De-dupe against a reply we sent from ReplyIQ (same case, same text, within 10 minutes)
+    const k = await caseForOrder(sql, r.orderId, { subject: `Message to ${r.recipient ?? 'customer'}`, at })
+    const [same] = await sql`SELECT 1 FROM messages WHERE case_id = ${k.id} AND direction = 'outbound' AND body = ${r.text} AND abs(extract(epoch from (sent_at - ${at}))) < 600`
+    if (same) return 'dup'
+    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, rfc_message_id, sent_at, kind)
+              VALUES (${k.id}, 'outbound', 'Saigates Support (via Seller Central)', ${r.text.slice(0, 20000)}, ${subject}, ${m.id}, ${header(m, 'Message-ID') || null}, ${at}, 'seller_central_copy')`
+    await sql`UPDATE cases SET status = CASE WHEN status = 'open' THEN 'awaiting_customer' ELSE status END, updated_at = now() WHERE id = ${k.id} AND last_customer_message_at < ${at}`
+    return 'new'
+  }
+
+  if (kind.startsWith('atoz')) {
+    const r = parseAtoz(body)
+    if (!r.orderId) { result.skipped.push({ thread: m.threadId, reason: 'A-to-Z without order id' }); return 'skip' }
+    const k = await caseForOrder(sql, r.orderId, { subject: `A-to-Z claim${r.amount ? ` £${r.amount.toFixed(2)}` : ''}`, at })
+    const evKind = kind === 'atoz_claim' && r.infoRequested ? 'atoz_info_request' : kind
+    const deadline = evKind === 'atoz_info_request' ? new Date(at.getTime() + 3 * 86400_000) : null
+    const status = evKind === 'atoz_decision' ? (r.decision === 'granted' ? 'lost' : r.decision === 'denied' ? 'won' : 'open') : 'open'
+    const [ev] = await sql`INSERT INTO amazon_events (case_id, order_id, kind, status, amount, received_at, deadline_at, gmail_message_id, gmail_thread_id, raw_excerpt, reply_to)
+              VALUES (${k.id}, ${r.orderId}, ${evKind}, ${status}, ${r.amount}, ${at}, ${deadline}, ${m.id}, ${m.threadId}, ${r.excerpt}, ${replyTo}) RETURNING id`
+    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id)
+              VALUES (${k.id}, 'inbound', 'Amazon A-to-z Guarantee', ${r.excerpt}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id})`
+    if (evKind !== 'atoz_decision') await sql`UPDATE cases SET a_to_z_open = TRUE, updated_at = now() WHERE id = ${k.id}`
+    if (evKind === 'atoz_decision') await sql`UPDATE cases SET a_to_z_open = FALSE, updated_at = now() WHERE id = ${k.id}`
+    return 'new'
+  }
+
+  if (kind === 'return_request') {
+    const r = parseReturnAuth(body)
+    if (!r.orderId) { result.skipped.push({ thread: m.threadId, reason: 'return auth without order id' }); return 'skip' }
+    const k = await caseForOrder(sql, r.orderId, { subject: `Return: ${r.reason ?? 'requested'}`, product: r.product, at })
+    const [ev] = await sql`INSERT INTO amazon_events (case_id, order_id, kind, status, received_at, return_request_date, policy_check, authorisation, asin, sku, quantity, return_reason, customer_comment, product, gmail_message_id, gmail_thread_id, raw_excerpt)
+              VALUES (${k.id}, ${r.orderId}, 'return_request', 'requested', ${at}, ${r.requestDate}, ${r.policyCheck}, ${r.authorisation}, ${r.asin}, ${r.sku}, ${r.quantity}, ${r.reason}, ${r.comment}, ${r.product}, ${m.id}, ${m.threadId}, ${r.excerpt}) RETURNING id`
+    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id)
+              VALUES (${k.id}, 'inbound', 'Amazon Returns', ${r.excerpt + (r.comment ? `\nCustomer comment: ${r.comment}` : '')}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id})`
+    if (r.heat) await sql`UPDATE cases SET battery_flag = TRUE, updated_at = now() WHERE id = ${k.id}`
+    return 'new'
+  }
+
+  if (kind === 'chargeback') {
+    const r = parseChargeback(body)
+    if (!r.orderId) { result.skipped.push({ thread: m.threadId, reason: 'chargeback without order id' }); return 'skip' }
+    const nameParts = (r.customerName ?? '').trim().split(/\s+/)
+    const k = await caseForOrder(sql, r.orderId, { subject: `Chargeback${r.amount ? ` ${r.currency} ${r.amount.toFixed(2)}` : ''}`, firstName: nameParts[0] || null, lastName: nameParts.slice(1).join(' ') || null, address: r.customerAddress, product: r.itemDescription, at })
+    const deadline = new Date(at.getTime() + 7 * 86400_000)
+    const excerptRedacted = redactChargebackPii(`Chargeback dispute on ${r.itemDescription ?? 'order'} for ${r.currency} ${r.amount?.toFixed(2) ?? '?'}. Amazon requires: ${r.checklist.join('; ')}`, r)
+    const [ev] = await sql`INSERT INTO amazon_events (case_id, order_id, kind, status, amount, currency, received_at, deadline_at, order_date, item_description, reply_to, product, gmail_message_id, gmail_thread_id, raw_excerpt)
+              VALUES (${k.id}, ${r.orderId}, 'chargeback', 'open', ${r.amount}, ${r.currency}, ${at}, ${deadline}, ${r.orderDate}, ${r.itemDescription}, ${replyTo}, ${r.itemDescription}, ${m.id}, ${m.threadId}, ${excerptRedacted}) RETURNING id`
+    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id)
+              VALUES (${k.id}, 'inbound', 'Amazon Chargebacks', ${excerptRedacted}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id})`
+    await sql`UPDATE cases SET chargeback_open = TRUE, updated_at = now() WHERE id = ${k.id}`
+    return 'new'
+  }
+  return 'skip'
 }

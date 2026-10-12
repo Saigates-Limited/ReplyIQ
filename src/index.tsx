@@ -3,6 +3,7 @@ import { casesApi } from './routes/cases'
 import { authApi, authPublic } from './routes/auth'
 import { draftsApi } from './routes/drafts'
 import { gmailApi, gmailCallback, sendApi } from './routes/gmail'
+import { eventsApi, messagesApi } from './routes/events'
 import { runSync } from './sync'
 import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
@@ -80,12 +81,17 @@ app.route('/api/cases', casesApi)
 app.route('/api', draftsApi)
 app.route('/api/gmail', gmailApi)
 app.route('/api', sendApi) // POST /api/drafts/:id/send
+app.route('/api/events', eventsApi) // A-to-Z / Returns / Chargebacks trackers
+app.route('/api/messages', messagesApi) // tone override
 
 // SPA pages
 app.get('/', (c) => c.html(page(c.get('user'))))
 app.get('/cases/:id', (c) => c.html(page(c.get('user'))))
 app.get('/staff', (c) => c.html(page(c.get('user'))))
 app.get('/gmail', (c) => c.html(page(c.get('user'))))
+app.get('/atoz', (c) => c.html(page(c.get('user'))))
+app.get('/returns', (c) => c.html(page(c.get('user'))))
+app.get('/chargebacks', (c) => c.html(page(c.get('user'))))
 
 app.onError((err, c) => {
   console.error(err)

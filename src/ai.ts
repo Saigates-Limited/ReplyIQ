@@ -24,8 +24,51 @@ export type CaseRow = {
   repair_quote_accepted: boolean | null
   tracking_number: string | null
   carrier: string | null
+  // Ticket / event flags (never sent raw to the model except the two booleans below)
+  chargeback_open?: boolean | null
+  battery_flag?: boolean | null
+  internal_notes?: string | null // NEVER included in the payload
 }
-export type MessageRow = { direction: 'inbound' | 'outbound'; body: string; sent_at: string }
+export type MessageRow = {
+  direction: 'inbound' | 'outbound'
+  body: string
+  sent_at: string
+  sender?: string | null
+  kind?: 'message' | 'seller_central_copy' | 'event' | string | null
+}
+/** Amazon notice (A-to-Z / return / chargeback) linked to the order. Only non-PII fields are used. */
+export type EventRow = {
+  kind: string
+  status: string | null
+  amount: string | null
+  currency: string | null
+  received_at: string
+  deadline_at: string | null
+  return_reason?: string | null
+  customer_comment?: string | null
+  authorisation?: string | null
+  policy_check?: string | null
+  item_description?: string | null
+  raw_excerpt?: string | null
+}
+
+/** What kind of text the agent is asking for. Only 'customer' may ever be emailed. */
+export type DraftMode = 'customer' | 'seller_central_atoz' | 'seller_central_return' | 'chargeback_evidence'
+export const DRAFT_MODES: DraftMode[] = ['customer', 'seller_central_atoz', 'seller_central_return', 'chargeback_evidence']
+
+const MODE_INSTRUCTIONS: Record<Exclude<DraftMode, 'customer'>, string> = {
+  seller_central_atoz: `MODE: A-TO-Z CLAIM RESPONSE (for pasting into Seller Central — NOT an email to the customer).
+Write a short, factual statement addressed to Amazon about this order. Use the ORDER TIMELINE and AMAZON EVENTS as evidence.
+State: what was ordered, dispatch/delivery with carrier and tracking (use [TRACKING NUMBER] or [DATE] placeholders if unknown — never invent), what the customer reported, what we offered and when, and what we ask Amazon to do.
+No greeting to the customer, no sign-off to the customer. Plain text, under 250 words. Set needs_manager to true. Put any missing facts the agent must fill in under staff_notes.`,
+  seller_central_return: `MODE: RETURN REQUEST HANDLING (for pasting into Seller Central / internal handling notes — NOT an email to the customer).
+Using the return reason and comment in AMAZON EVENTS, write: (1) a one-paragraph note for Seller Central authorising or commenting on the return, and (2) under staff_notes the internal checklist (expected condition, inspection points, refund timing).
+If the case input shows battery_flag = yes or the return reason mentions heat/overheating/swelling, apply the Battery rule: the customer must be told to stop using and charging, the parcel needs the Royal Mail label with the UN3481 lithium battery marking, set needs_manager true and urgency high.
+Plain text. No invented facts.`,
+  chargeback_evidence: `MODE: CHARGEBACK EVIDENCE (a representation to Amazon for a card chargeback — NOT an email to the customer).
+Write a factual evidence statement in this order: order shipped (yes/no), ship date, carrier, tracking number and proof of delivery, our policy that applies, the return address we gave, and a summary of the customer contact from the ORDER TIMELINE.
+Where a fact is missing write [MISSING: <field>] — never guess. Sign off as "Saigates Ltd". Plain text, under 300 words. Set needs_manager to true.`,
+}
 
 export type AiResult = {
   lane: string
@@ -50,7 +93,12 @@ const STREET_INLINE = new RegExp(`\\b\\d{1,4}[a-z]?\\s+[A-Z][a-z'’]+(?:\\s+[A-
 
 /** Redact known and pattern-matched PII from free text before it leaves the server. */
 export function redactPii(text: string, kase: CaseRow): string {
-  let out = text
+  // Protect Amazon order IDs (ddd-ddddddd-ddddddd) — they are not PII and the phone regex would mangle them.
+  const orders: string[] = []
+  let out = text.replace(/\b\d{3}-\d{7}-\d{7}\b/g, (m) => {
+    orders.push(m)
+    return `\u0000ORDER${orders.length - 1}\u0000`
+  })
   // Known values for this customer
   const known = [kase.customer_last_name, kase.customer_email, kase.customer_phone, kase.customer_address].filter(
     (v): v is string => !!v && v.trim().length > 1
@@ -64,6 +112,8 @@ export function redactPii(text: string, kase: CaseRow): string {
   if (kase.customer_last_name) {
     out = out.replace(new RegExp(`${escapeRe(kase.customer_first_name)}\\s+${escapeRe(kase.customer_last_name)}`, 'gi'), kase.customer_first_name)
   }
+  // Amazon notice blocks that carry a full name + address
+  out = out.replace(/(?:^|\n)[ \t]*shipping address:?[ \t]*\n(?:[^\n]+\n?){1,6}/gi, '\n[shipping address redacted]\n')
   // Generic patterns
   out = out.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email redacted]')
   // Any UK-style number: +44 or leading 0, then 9-10 more digits allowing spaces/dashes/brackets
@@ -71,11 +121,12 @@ export function redactPii(text: string, kase: CaseRow): string {
   out = out.replace(STREET_LINE, '\n[address redacted]')
   out = out.replace(STREET_INLINE, '[address redacted]')
   out = out.replace(/\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/g, '[postcode redacted]')
+  out = out.replace(/\u0000ORDER(\d+)\u0000/g, (_, i) => orders[Number(i)])
   return out
 }
 
 /** Explicit allow-list of what the model may see. Nothing else is included. */
-export function buildPayload(kase: CaseRow, messages: MessageRow[]) {
+export function buildPayload(kase: CaseRow, messages: MessageRow[], opts: { events?: EventRow[] } = {}) {
   const daysSinceDelivery = kase.delivery_date
     ? Math.floor((Date.now() - new Date(kase.delivery_date).getTime()) / 86400_000)
     : null
@@ -93,21 +144,50 @@ export function buildPayload(kase: CaseRow, messages: MessageRow[]) {
     repair_quote_accepted: yn(kase.repair_quote_accepted),
     tracking_number: kase.tracking_number ?? 'none',
     carrier: kase.carrier ?? 'unknown',
+    chargeback_open: yn(kase.chargeback_open ?? null),
+    battery_flag: yn(kase.battery_flag ?? null),
   }
-  const thread = messages.map((m) => ({
-    from: m.direction === 'inbound' ? 'customer' : 'saigates',
-    sent_at: new Date(m.sent_at).toISOString().slice(0, 16).replace('T', ' '),
+  const stamp = (v: string | null | undefined) => (v ? new Date(v).toISOString().slice(0, 16).replace('T', ' ') : 'unknown')
+  const fromOf = (m: MessageRow) => {
+    if (m.kind === 'event') return 'amazon_event'
+    if (m.direction === 'inbound') return /amazon customer service|on behalf of/i.test(m.sender ?? '') ? 'amazon_cs_on_behalf_of_customer' : 'customer'
+    return 'saigates'
+  }
+  // Order timeline: everything on this order (customer, our replies incl. Seller Central copies, Amazon notices), oldest first, last 40.
+  const thread = messages.slice(-40).map((m) => ({
+    from: fromOf(m),
+    sent_at: stamp(m.sent_at),
     text: redactPii(m.body, kase).slice(0, 4000),
   }))
-  return { caseInput, thread }
+  const events = (opts.events ?? []).map((e) => ({
+    kind: e.kind,
+    status: e.status ?? 'open',
+    amount: e.amount ? `${e.currency ?? 'GBP'} ${e.amount}` : 'unknown',
+    received_at: stamp(e.received_at),
+    deadline_at: e.deadline_at ? stamp(e.deadline_at) : 'none',
+    return_reason: e.return_reason ? redactPii(e.return_reason, kase).slice(0, 300) : undefined,
+    customer_comment: e.customer_comment ? redactPii(e.customer_comment, kase).slice(0, 1000) : undefined,
+    authorisation: e.authorisation ?? undefined,
+    policy_check: e.policy_check ?? undefined,
+    item: e.item_description ? redactPii(e.item_description, kase).slice(0, 200) : undefined,
+  }))
+  return { caseInput, thread, events }
 }
 
-export async function generateDraft(env: Bindings, kase: CaseRow, messages: MessageRow[]): Promise<{ result: AiResult; payload: ReturnType<typeof buildPayload> }> {
+export async function generateDraft(
+  env: Bindings,
+  kase: CaseRow,
+  messages: MessageRow[],
+  opts: { events?: EventRow[]; mode?: DraftMode } = {}
+): Promise<{ result: AiResult; payload: ReturnType<typeof buildPayload>; mode: DraftMode }> {
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured on the server')
-  const payload = buildPayload(kase, messages)
+  const mode: DraftMode = opts.mode && DRAFT_MODES.includes(opts.mode) ? opts.mode : 'customer'
+  const payload = buildPayload(kase, messages, { events: opts.events })
   const base = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
 
-  const userMsg = `CASE INPUT:\n${JSON.stringify(payload.caseInput, null, 2)}\n\nTHREAD (oldest first):\n${payload.thread
+  const modeBlock = mode === 'customer' ? '' : `${MODE_INSTRUCTIONS[mode]}\nIn this mode the "reply" field holds the text to paste, not an email to the customer.\n\n`
+  const eventsBlock = payload.events.length ? `AMAZON EVENTS ON THIS ORDER:\n${JSON.stringify(payload.events, null, 2)}\n\n` : ''
+  const userMsg = `${modeBlock}CASE INPUT:\n${JSON.stringify(payload.caseInput, null, 2)}\n\n${eventsBlock}ORDER TIMELINE (oldest first):\n${payload.thread
     .map((m) => `[${m.from} @ ${m.sent_at}]\n${m.text}`)
     .join('\n\n')}\n\nReturn the JSON object described under "## Output" and nothing else.`
 
@@ -145,7 +225,12 @@ export async function generateDraft(env: Bindings, kase: CaseRow, messages: Mess
     urgency,
   }
   if (!result.draft) throw new Error('Model returned an empty draft')
-  return { result, payload }
+  if (mode !== 'customer') result.needs_manager = true // Seller Central / Amazon statements always need a manager
+  if (kase.battery_flag === true) {
+    result.needs_manager = true
+    result.urgency = 'high'
+  }
+  return { result, payload, mode }
 }
 
 export type ServerFinding = { rule: string; severity: 'fail' | 'warn'; detail: string }
@@ -160,15 +245,18 @@ const escapeReLocal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * reply_instructions.md. Anything the file allows is allowed here.
  * A `fail` blocks approval; a `warn` is shown to the agent only.
  */
-export function serverChecks(draft: string, kase: CaseRow): ServerFinding[] {
+export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'customer'): ServerFinding[] {
   const f: ServerFinding[] = []
   const d = draft.toLowerCase()
   const add = (rule: string, severity: 'fail' | 'warn', detail: string) => f.push({ rule, severity, detail })
+  const toAmazon = mode !== 'customer'
 
   // ── PII must never appear in a reply
   if (kase.customer_last_name && d.includes(kase.customer_last_name.toLowerCase())) add('pii', 'fail', 'Contains the customer surname')
   if (kase.customer_email && d.includes(kase.customer_email.toLowerCase())) add('pii', 'fail', 'Contains the customer email address')
-  if (/(?:\+44[\s-]?\(?0?\)?|\(?0)\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}\b/.test(draft) && !paidRepairApproved(kase))
+  // Amazon order IDs (ddd-ddddddd-ddddddd) look like phone numbers to the regex — strip them first.
+  const draftNoOrders = draft.replace(/\b\d{3}-\d{7}-\d{7}\b/g, '[order]')
+  if (/(?:\+44[\s-]?\(?0?\)?|\(?0)\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}\b/.test(draftNoOrders) && !paidRepairApproved(kase))
     add('pii', 'fail', 'Repeats a phone number in the reply')
   if (kase.customer_address) {
     const street = kase.customer_address.split(',')[0].trim()
@@ -209,7 +297,9 @@ export function serverChecks(draft: string, kase: CaseRow): ServerFinding[] {
     add('never_refund_issued', 'fail', 'Says a refund has been issued but refund_issued is not Yes')
 
   // ── Never mention reviews/feedback in exchange for anything (any mention of reviews is flagged)
-  if (/\b(review|feedback|star rating|5[- ]star|five[- ]star)\b/.test(d)) add('never_reviews', 'fail', 'Mentions reviews or feedback')
+  // (In statements to Amazon, "we ask Amazon to review the evidence" is normal — only flag product-review/feedback wording there.)
+  if (toAmazon ? /\b(product review|seller feedback|leave (?:a |us )?(?:review|feedback)|star rating|5[- ]star|five[- ]star)\b/.test(d) : /\b(review|feedback|star rating|5[- ]star|five[- ]star)\b/.test(d))
+    add('never_reviews', 'fail', 'Mentions reviews or feedback')
 
   // ── Never "no rights" / "no claim"
   if (/\bno (?:legal )?rights?\b|\bno (?:valid )?claim\b|\bnot entitled\b/.test(d)) add('never_no_rights', 'fail', 'Tells the customer they have no rights / no claim')
@@ -228,7 +318,8 @@ export function serverChecks(draft: string, kase: CaseRow): ServerFinding[] {
   )
   const prices = (draft.match(/£\s?\d+(?:\.\d{2})?/g) ?? []).map((p) => Number(p.replace(/[£\s]/g, '')))
   const nonSmall = prices.filter((p) => p > 15 && !refundAmountSet.has(p))
-  if (nonSmall.length && !kase.approved_repair_price) add('price_unapproved', 'fail', `Quotes ${nonSmall.map((p) => '£' + p.toFixed(2)).join(', ')} but no approved repair price is set`)
+  // Statements to Amazon legitimately quote the order/claim value; only customer replies are quoting a price *to* someone.
+  if (nonSmall.length && !kase.approved_repair_price && !toAmazon) add('price_unapproved', 'fail', `Quotes ${nonSmall.map((p) => '£' + p.toFixed(2)).join(', ')} but no approved repair price is set`)
   if (kase.approved_repair_price) {
     const approved = Number(kase.approved_repair_price)
     const other = nonSmall.filter((p) => p !== approved)
@@ -238,10 +329,12 @@ export function serverChecks(draft: string, kase: CaseRow): ServerFinding[] {
   // ── Refunds above £15 need a manager (warn: the needs_manager flag is enforced separately)
   if ([...refundAmountSet].some((a) => a > 15)) add('refund_over_15', 'warn', 'Offers a refund above £15 — manager approval required')
 
-  // ── Battery: stop using/charging is mandatory; RM label + UN3481 are expected and allowed
-  const batteryCase = /\b(battery|batteries|swollen|swelling|bulging|overheat(?:ing|s)?|very hot|too hot|burning smell|smoke|smoking)\b/.test(d)
+  // ── Battery: stop using/charging is mandatory; RM label + UN3481 are expected and allowed.
+  // battery_flag (set from a return reason mentioning heat/overheating) forces the rule even if the draft avoids the words.
+  const batteryCase = kase.battery_flag === true || /\b(battery|batteries|swollen|swelling|bulging|overheat(?:ing|s)?|very hot|too hot|burning smell|smoke|smoking)\b/.test(d)
   if (batteryCase) {
-    if (!/\bstop (?:using|charging)\b|\bdo not (?:use|charge)\b|\bdon't (?:use|charge)\b/.test(d)) add('battery_stop_using', 'fail', 'Battery case does not tell the customer to stop using and charging the phone')
+    if (!/\bstop (?:using|charging)\b|\bdo not (?:use|charge)\b|\bdon't (?:use|charge)\b|\bstopped? (?:using|charging)\b|\bnot (?:to )?(?:use|charge)\b/.test(d))
+      add('battery_stop_using', toAmazon ? 'warn' : 'fail', 'Battery/heat case does not tell the customer to stop using and charging the phone')
     if (!/un\s?3481/i.test(draft)) add('battery_un3481', 'warn', 'Battery case does not mention the UN3481 lithium battery label')
     if (!/royal mail/.test(d)) add('battery_rm_label', 'warn', 'Battery case does not mention the Royal Mail return label')
   }
@@ -261,9 +354,18 @@ export function serverChecks(draft: string, kase: CaseRow): ServerFinding[] {
   // ── Off-platform (bank transfer for accepted repair handled above)
   if (/\b(paypal|outside (?:of )?amazon|off[- ]amazon|our website|direct(?:ly)? (?:from|with) us\b)/.test(d)) add('off_platform', 'fail', 'References off-platform dealings')
 
-  // ── Format
-  if (!new RegExp(`\\b${escapeReLocal(kase.customer_first_name)}\\b`, 'i').test(draft)) add('greeting', 'warn', 'Does not address the customer by first name')
-  if (!/saigates customer care/i.test(draft)) add('signoff', 'warn', 'Missing the "Saigates Customer Care" sign-off')
+  // ── Format (customer emails only)
+  if (!toAmazon) {
+    if (!new RegExp(`\\b${escapeReLocal(kase.customer_first_name)}\\b`, 'i').test(draft)) add('greeting', 'warn', 'Does not address the customer by first name')
+    if (!/saigates customer care/i.test(draft)) add('signoff', 'warn', 'Missing the "Saigates Customer Care" sign-off')
+  } else {
+    // Seller Central / Amazon statements: placeholders must be filled before use
+    const missing = draft.match(/\[MISSING:[^\]]*\]/gi) ?? []
+    if (missing.length) add('placeholders', 'warn', `Fill in before pasting: ${[...new Set(missing)].join(', ')}`)
+    const ph = [...new Set(draft.match(/\[[A-Z][A-Z /]{2,30}\]/g) ?? [])]
+    if (ph.length) add('placeholders', 'warn', `Contains placeholders — replace with the real values: ${ph.join(', ')}`)
+    if (mode === 'chargeback_evidence' && !/saigates ltd/i.test(draft)) add('signoff', 'warn', 'Chargeback evidence should be signed "Saigates Ltd"')
+  }
 
   return f
 }

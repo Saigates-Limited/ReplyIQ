@@ -49,7 +49,14 @@ CREATE TABLE IF NOT EXISTS cases (
   -- Gmail source (NULL for manually created cases)
   gmail_thread_id       TEXT,                           -- latest thread for this case (Amazon opens one thread per message)
   customer_reply_to     TEXT,                          -- anonymised @marketplace.amazon.co.uk address; server only
-  source                TEXT NOT NULL DEFAULT 'manual', -- manual | gmail
+  source                TEXT NOT NULL DEFAULT 'manual', -- manual | gmail | amazon_notice
+
+  -- Ticket fields
+  assigned_to           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  internal_notes        TEXT,                          -- never sent to customer or OpenAI
+  tone                  TEXT CHECK (tone IN ('angry','dispute','frustrated','worried','neutral','happy')),
+  chargeback_open       BOOLEAN NOT NULL DEFAULT FALSE,
+  battery_flag          BOOLEAN NOT NULL DEFAULT FALSE,
 
   -- reply_deadline is derived in queries as last_customer_message_at + 24h
   last_customer_message_at TIMESTAMPTZ NOT NULL,
@@ -67,6 +74,11 @@ CREATE TABLE IF NOT EXISTS messages (
   subject     TEXT,
   gmail_message_id TEXT UNIQUE,
   rfc_message_id   TEXT,          -- Message-ID header, for In-Reply-To / References
+  tone        TEXT CHECK (tone IN ('angry','dispute','frustrated','worried','neutral','happy')),
+  tone_source TEXT,               -- ai | staff
+  tone_model  TEXT,
+  kind        TEXT NOT NULL DEFAULT 'message', -- message | seller_central_copy | event
+  event_id    INTEGER,            -- FK to amazon_events added below
   sent_at     TIMESTAMPTZ NOT NULL DEFAULT now()  -- Gmail internalDate for ingested mail
 );
 
@@ -137,3 +149,45 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs(started_at DESC);
 CREATE SEQUENCE IF NOT EXISTS case_ref_seq;
 CREATE TABLE IF NOT EXISTS gmail_threads_seen (thread_id TEXT PRIMARY KEY, history_id TEXT, seen_at TIMESTAMPTZ NOT NULL DEFAULT now());
+
+-- ───────── Amazon notices ─────────
+CREATE TABLE IF NOT EXISTS amazon_events (
+  id                SERIAL PRIMARY KEY,
+  case_id           INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+  order_id          TEXT NOT NULL,
+  kind              TEXT NOT NULL CHECK (kind IN ('atoz_claim','atoz_info_request','atoz_decision','return_request','chargeback')),
+  status            TEXT NOT NULL DEFAULT 'open',    -- atoz/chargeback: open | response_sent | won | lost ; return: requested | received | inspected | refunded | closed
+  amount            NUMERIC(10,2),
+  currency          TEXT DEFAULT 'GBP',
+  received_at       TIMESTAMPTZ NOT NULL,            -- Gmail internalDate of the notice
+  deadline_at       TIMESTAMPTZ,                     -- chargeback: +7d ; atoz_info_request: +3d ; otherwise NULL
+  -- return-specific
+  return_request_date DATE,
+  policy_check      TEXT,
+  authorisation     TEXT,
+  asin              TEXT,
+  sku               TEXT,
+  quantity          INTEGER,
+  return_reason     TEXT,
+  customer_comment  TEXT,
+  -- chargeback-specific
+  order_date        TIMESTAMPTZ,
+  item_description  TEXT,
+  reply_to          TEXT,                            -- Reply-To header of the notice (checked before any send is enabled)
+  -- generic
+  product           TEXT,
+  gmail_message_id  TEXT UNIQUE,
+  gmail_thread_id   TEXT,
+  raw_excerpt       TEXT,                            -- redacted excerpt for the timeline
+  response_text     TEXT,                            -- what staff pasted into Seller Central / emailed
+  responded_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  responded_at      TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_events_case ON amazon_events(case_id);
+CREATE INDEX IF NOT EXISTS idx_events_kind_status ON amazon_events(kind, status);
+CREATE INDEX IF NOT EXISTS idx_events_deadline ON amazon_events(deadline_at);
+
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS event_id INTEGER REFERENCES amazon_events(id) ON DELETE CASCADE;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'customer';
