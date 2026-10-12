@@ -357,3 +357,26 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS trg_cases_no_delete ON cases;
 CREATE TRIGGER trg_cases_no_delete BEFORE DELETE ON cases FOR EACH ROW EXECUTE FUNCTION guard_case_delete();
+ALTER TABLE amazon_events DROP CONSTRAINT IF EXISTS amazon_events_status_check;
+ALTER TABLE amazon_events ADD CONSTRAINT amazon_events_status_check
+  CHECK (status IN ('open','info_requested','response_sent','won','lost','closed',
+                    'requested','received','inspected','refunded'));
+
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_cases_updated_at ON cases;
+CREATE TRIGGER trg_cases_updated_at BEFORE UPDATE ON cases FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_drafts_updated_at ON drafts;
+CREATE TRIGGER trg_drafts_updated_at BEFORE UPDATE ON drafts FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_events_updated_at ON amazon_events;
+CREATE TRIGGER trg_events_updated_at BEFORE UPDATE ON amazon_events FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_cases_archived ON cases(archived_at) WHERE archived_at IS NOT NULL;

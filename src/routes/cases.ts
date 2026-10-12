@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
-import type { Vars } from '../auth'
+import { requireManager, type Vars } from '../auth'
 import { TONES, TONE_META } from '../tone'
 
 export const casesApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -13,7 +13,7 @@ const CASE_COLUMNS = `
   customer_first_name, customer_last_name, customer_email, customer_phone, customer_address,
   order_id, device_model, delivery_date, refund_issued, a_to_z_open, in_stock,
   approved_repair_price, repair_quote_accepted, tracking_number, carrier,
-  chargeback_open, battery_flag, tone, assigned_to, internal_notes, source,
+  chargeback_open, battery_flag, tone, assigned_to, internal_notes, source, archived_at,
   last_customer_message_at,
   (last_customer_message_at + INTERVAL '24 hours') AS reply_deadline,
   created_at, updated_at
@@ -24,7 +24,7 @@ const CASE_COLUMNS_Q = `
   cases.customer_first_name, cases.customer_last_name, cases.customer_email, cases.customer_phone, cases.customer_address,
   cases.order_id, cases.device_model, cases.delivery_date, cases.refund_issued, cases.a_to_z_open, cases.in_stock,
   cases.approved_repair_price, cases.repair_quote_accepted, cases.tracking_number, cases.carrier,
-  cases.chargeback_open, cases.battery_flag, cases.tone, cases.assigned_to, cases.internal_notes, cases.source,
+  cases.chargeback_open, cases.battery_flag, cases.tone, cases.assigned_to, cases.internal_notes, cases.source, cases.archived_at,
   cases.last_customer_message_at,
   (cases.last_customer_message_at + INTERVAL '24 hours') AS reply_deadline,
   cases.created_at, cases.updated_at
@@ -57,9 +57,10 @@ casesApi.get('/', async (c) => {
               (SELECT needs_manager FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_needs_manager,
               ${DEADLINE_EXPR} AS effective_deadline
        FROM cases LEFT JOIN users u ON u.id = cases.assigned_to
-       WHERE CASE WHEN $1 = 'all' THEN TRUE
-                  WHEN $1 = 'active' THEN cases.status <> 'resolved'
-                  ELSE cases.status = $1 END
+       WHERE CASE WHEN $1 = 'archived' THEN cases.archived_at IS NOT NULL
+                  WHEN $1 = 'all' THEN cases.archived_at IS NULL
+                  WHEN $1 = 'active' THEN cases.status <> 'resolved' AND cases.archived_at IS NULL
+                  ELSE cases.status = $1 AND cases.archived_at IS NULL END
        ORDER BY
          CASE WHEN cases.status <> 'resolved' AND ${DEADLINE_EXPR} < now() THEN 0 ELSE 1 END,
          CASE WHEN cases.tone IN ('angry','dispute') THEN 0 ELSE 1 END,
@@ -192,6 +193,31 @@ casesApi.patch('/:id', async (c) => {
       [id]
     )
     return c.json({ case: full ?? row })
+  } finally {
+    await sql.end()
+  }
+})
+
+// POST /api/cases/:id/archive  (manager) -> soft-archive; nothing is ever deleted
+casesApi.post('/:id/archive', requireManager, async (c) => {
+  const id = Number(c.req.param('id'))
+  const sql = getDb(c.env)
+  try {
+    const [row] = await sql`UPDATE cases SET archived_at = now(), archived_by = ${c.get('user').id} WHERE id = ${id} AND archived_at IS NULL RETURNING id`
+    if (!row) return c.json({ error: 'Case not found or already archived' }, 404)
+    return c.json({ ok: true })
+  } finally {
+    await sql.end()
+  }
+})
+// POST /api/cases/:id/unarchive  (manager)
+casesApi.post('/:id/unarchive', requireManager, async (c) => {
+  const id = Number(c.req.param('id'))
+  const sql = getDb(c.env)
+  try {
+    const [row] = await sql`UPDATE cases SET archived_at = NULL, archived_by = NULL WHERE id = ${id} RETURNING id`
+    if (!row) return c.json({ error: 'Case not found' }, 404)
+    return c.json({ ok: true })
   } finally {
     await sql.end()
   }

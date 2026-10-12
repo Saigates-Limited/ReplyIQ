@@ -48,7 +48,7 @@ eventsApi.get('/', async (c) => {
   try {
     const rows = await sql.unsafe(
       `SELECT ${EVENT_SELECT} ${EVENT_FROM}
-       WHERE e.kind = ANY(string_to_array($1, ','))
+       WHERE e.kind = ANY(string_to_array($1, ',')) AND (c.archived_at IS NULL)
          AND ($2 = 'all' OR NOT (e.status = ANY(string_to_array($3, ','))))
        ORDER BY
          CASE WHEN e.deadline_at IS NOT NULL AND e.deadline_at < now() AND NOT (e.status = ANY(string_to_array($3, ','))) THEN 0 ELSE 1 END,
@@ -67,10 +67,10 @@ eventsApi.get('/counts', async (c) => {
   try {
     const [r] = await sql`
       SELECT
-        (SELECT COUNT(*) FROM amazon_events WHERE kind LIKE 'atoz%' AND status NOT IN ('won','lost','closed'))::int AS atoz,
-        (SELECT COUNT(*) FROM amazon_events WHERE kind = 'return_request' AND status NOT IN ('refunded','closed'))::int AS returns,
-        (SELECT COUNT(*) FROM amazon_events WHERE kind = 'chargeback' AND status NOT IN ('won','lost','closed'))::int AS chargebacks,
-        (SELECT COUNT(*) FROM cases WHERE status <> 'resolved')::int AS messages`
+        (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE c.archived_at IS NULL AND e.kind LIKE 'atoz%' AND e.status NOT IN ('won','lost','closed'))::int AS atoz,
+        (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE c.archived_at IS NULL AND e.kind = 'return_request' AND e.status NOT IN ('refunded','closed'))::int AS returns,
+        (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE c.archived_at IS NULL AND e.kind = 'chargeback' AND e.status NOT IN ('won','lost','closed'))::int AS chargebacks,
+        (SELECT COUNT(*) FROM cases WHERE status <> 'resolved' AND archived_at IS NULL)::int AS messages`
     return c.json(r)
   } finally {
     await sql.end()

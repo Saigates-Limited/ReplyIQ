@@ -130,7 +130,7 @@
     const urgent = cases.filter((k) => k.status !== 'resolved' && dlOf(k) && !dayjs(dlOf(k)).isBefore(now) && dayjs(dlOf(k)).diff(now, 'minute') < 240).length
     const hot = cases.filter((k) => k.status !== 'resolved' && (k.tone === 'angry' || k.tone === 'dispute')).length
 
-    const filters = [['active', 'Active'], ['open', 'Open'], ['awaiting_customer', 'Awaiting customer'], ['resolved', 'Resolved'], ['all', 'All']]
+    const filters = [['active', 'Active'], ['open', 'Open'], ['awaiting_customer', 'Awaiting customer'], ['resolved', 'Resolved'], ['all', 'All'], ...(isManager ? [['archived', 'Archived']] : [])]
 
     app.innerHTML = `
       <section id="case-list-section">
@@ -249,6 +249,8 @@
             </div>
           </div>
           <div class="text-right text-sm">
+            ${k.archived_at ? `<div class="mb-2 text-xs px-2 py-1 rounded bg-slate-200 text-slate-700 inline-block"><i class="fas fa-box-archive mr-1"></i>Archived ${fmtDateTime(k.archived_at)}</div>` : ''}
+            ${isManager ? `<button id="archive-btn" class="mb-2 ml-2 text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:text-slate-900">${k.archived_at ? 'Unarchive' : '<i class="fas fa-box-archive mr-1"></i>Archive'}</button>` : ''}
             <label class="field-label">Case status</label>
             <select id="status-select" class="field-input mt-1" style="width:auto">
               ${Object.entries(STATUS_LABEL).map(([v, l]) => `<option value="${v}" ${k.status === v ? 'selected' : ''}>${l}</option>`).join('')}
@@ -394,6 +396,11 @@
     document.getElementById('assigned-select')?.addEventListener('change', (e) => save({ assigned_to: e.target.value || null }, 'Assignment saved'))
     let nt
     document.getElementById('internal-notes')?.addEventListener('input', (e) => { clearTimeout(nt); nt = setTimeout(() => axios.patch(`/api/cases/${id}`, { internal_notes: e.target.value }).catch(() => toast('Could not save notes', 'err')), 800) })
+    document.getElementById('archive-btn')?.addEventListener('click', async () => {
+      const un = !!k.archived_at
+      if (!un && !confirm('Archive this case? It leaves the queue but every message, draft and Amazon event is kept. Nothing is deleted.')) return
+      try { await axios.post(`/api/cases/${id}/${un ? 'unarchive' : 'archive'}`); toast(un ? 'Case restored' : 'Case archived'); un ? renderCase(id) : navigate('/') } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+    })
     document.getElementById('tone-select')?.addEventListener('change', (e) => { if (e.target.value) save({ tone: e.target.value }, 'Tone label updated') })
     document.querySelectorAll('[data-msg-tone]').forEach((el) => {
       el.onclick = async () => {
