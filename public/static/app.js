@@ -508,8 +508,9 @@
       modal.innerHTML = `
         <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6">
           <h3 class="font-bold text-lg mb-1"><i class="fas fa-paper-plane mr-2 text-emerald-700"></i>Send this reply now?</h3>
-          <p class="text-sm text-slate-600 mb-3">This will email the customer through Amazon's messaging system from the connected Saigates mailbox. It cannot be recalled.</p>
+          <p class="text-sm text-slate-600 mb-3">This will email the customer through Amazon's messaging system from the connected mailbox. It cannot be recalled.</p>
           <dl class="text-sm grid grid-cols-4 gap-y-1 mb-3">
+            <dt class="text-slate-500">From</dt><dd class="col-span-3 font-mono text-xs" id="send-from">connected mailbox</dd>
             <dt class="text-slate-500">To</dt><dd class="col-span-3 font-mono text-xs break-all">${esc(kase.customer_reply_to)}</dd>
             <dt class="text-slate-500">Case</dt><dd class="col-span-3">${esc(kase.case_ref)} · ${esc(kase.subject)}</dd>
             <dt class="text-slate-500">Approved by</dt><dd class="col-span-3">${esc(d.approved_by_name || '—')} ${d.needs_manager ? '<span class="text-violet-700">(manager)</span>' : ''}</dd>
@@ -521,6 +522,7 @@
           </div>
         </div>`
       document.body.appendChild(modal)
+      axios.get('/api/gmail/status').then(({ data }) => { const el = modal.querySelector('#send-from'); if (el && data.connection) el.textContent = data.connection.email_address }).catch(() => {})
       modal.querySelector('#send-cancel').onclick = () => modal.remove()
       modal.querySelector('#send-now').onclick = async () => {
         const b = modal.querySelector('#send-now'); b.disabled = true; b.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Sending…'

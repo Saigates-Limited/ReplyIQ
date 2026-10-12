@@ -5,7 +5,7 @@ AI-assisted reply drafting for **Saigates Ltd** Amazon UK customer service.
 - **Goal**: answer Amazon UK customer messages inside the 24-hour window with AI drafts that a human always reviews, edits and approves. **Nothing is ever sent to customers automatically.**
 - **Stack**: Hono (TypeScript) on Cloudflare Pages/Workers · PostgreSQL (Supabase via Cloudflare Hyperdrive in production) via postgres.js · OpenAI `gpt-5.5` server-side · Tailwind + vanilla JS
 - **Production**: https://replyiq.saigateslimited.workers.dev (Cloudflare **Worker** `replyiq` with 15-min cron, Saigates' own account)
-- **Previous**: https://replyiq.pages.dev (Pages deployment, superseded — delete once the Worker URL is confirmed)
+- **Old URL**: https://replyiq.pages.dev now 301-redirects every path to the Worker (redirect-only deployment; no app code runs there)
 - **Sandbox preview**: https://3000-id2nlba4e4s5y3pr1acd5-02b9cc79.sandbox.novita.ai
   - No demo accounts. On a fresh database the app shows **`/setup`** once, to create the first manager; after that it is permanently disabled.
 
@@ -135,6 +135,8 @@ npm run build && npx wrangler deploy      # or: npm run deploy
 `wrangler.jsonc` carries the cron (`*/15 * * * *`), the Hyperdrive binding and the assets binding. Check the cron fired: **Workers & Pages → replyiq → Logs** (observability is on) or **Gmail page → Recent sync runs** (`trigger = cron`).
 
 ## Gmail
+
+**Mailbox**: the Amazon Seller Central inbox `bijalshah.cc@gmail.com` — whichever Google account completes *Connect Gmail* becomes the sending mailbox; it is shown on the Gmail page and in the Send confirmation.
 
 **Google Cloud setup** (done by Saigates): OAuth client type *Web application*; redirect URI `https://replyiq.saigateslimited.workers.dev/auth/google/callback` (plus any custom domain later); scopes `gmail.readonly` and `gmail.send`; consent screen in *Testing* with the Saigates mailbox as a test user until Google verification passes. Branding: home page `/login`, privacy policy `/privacy`.
 

@@ -164,7 +164,7 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
       <section>
         <h2 class="font-semibold text-lg mb-2">What data we process and why</h2>
         <ul class="list-disc pl-5 space-y-1">
-          <li><strong>Customer messages.</strong> ReplyIQ reads Amazon customer messages that arrive in our Gmail inbox (Gmail read permission) so that our staff can see and reply to them in one place, and sends staff-approved replies from that inbox (Gmail send permission).</li>
+          <li><strong>Customer messages.</strong> ReplyIQ reads Amazon customer messages that arrive in our Amazon Seller Central Gmail inbox (Gmail read permission) so that our staff can see and reply to them in one place, and sends staff-approved replies from that same inbox (Gmail send permission).</li>
           <li><strong>Order details</strong> that our staff enter about a case (order number, product, delivery date, tracking) so that replies are accurate.</li>
           <li><strong>Staff accounts</strong> (name, work email, hashed password) so that only authorised staff can use the tool.</li>
         </ul>
@@ -178,7 +178,7 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
 
       <section>
         <h2 class="font-semibold text-lg mb-2">Where data is stored</h2>
-        <p>Case data is stored in our Supabase (PostgreSQL) database hosted in London, United Kingdom, and accessed through Cloudflare. Access requires a staff login. Google account tokens used for the Gmail connection are stored as encrypted secrets and are never shown in the browser.</p>
+        <p>Case data is stored in our Supabase (PostgreSQL) database hosted in London, United Kingdom, and accessed through Cloudflare. Access requires a staff login. The Google sign-in token for the connected mailbox is stored encrypted (AES-256) and is never shown in the browser. Only a manager can connect or disconnect the mailbox.</p>
       </section>
 
       <section>
