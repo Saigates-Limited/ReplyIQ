@@ -793,6 +793,7 @@
               <div class="mt-4 flex gap-2">
                 <button id="sync-now" class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-rotate mr-1"></i>Sync now</button>
                 ${isManager ? `<select id="import-days" class="field-input py-1 text-sm" style="width:auto"><option value="">Import history…</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>` : ''}
+                ${isManager ? '<button id="tone-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Label older customer messages with a tone (AI, gpt-6-luna)"><i class="fas fa-tags mr-1"></i>Label tones</button>' : ''}
                 ${isManager ? '<button id="disconnect" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm text-red-700">Disconnect</button>' : ''}
               </div>` : `
               <p class="text-sm text-slate-600 mb-4">No mailbox connected.</p>
@@ -830,6 +831,20 @@
         toast(`Import complete: ${total.c} new case(s), ${total.m} new message(s)`)
       } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
       history.replaceState({}, '', '/gmail'); renderGmail()
+    })
+    app.querySelector('#tone-backfill')?.addEventListener('click', async (e) => {
+      e.target.disabled = true; e.target.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Labelling…'
+      let total = 0, rounds = 0
+      try {
+        for (;;) {
+          const { data } = await axios.post('/api/gmail/tone-backfill', { limit: 20 }, { timeout: 120000 })
+          total += data.labelled; rounds++
+          toast(`Labelled ${total} so far, ${data.remaining} left`)
+          if (!data.remaining || !data.labelled || rounds > 30) break
+        }
+        toast(`Tone labels done: ${total} message(s) labelled`)
+      } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      renderGmail()
     })
     app.querySelector('#sync-now')?.addEventListener('click', async (e) => {
       e.target.disabled = true; e.target.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Syncing…'
