@@ -191,10 +191,13 @@ CREATE INDEX IF NOT EXISTS idx_events_deadline ON amazon_events(deadline_at);
 
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS event_id INTEGER REFERENCES amazon_events(id) ON DELETE CASCADE;
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'customer';
--- Integrity follow-ups (additive / constraint-only; no data rewritten).
 
--- 1. amazon_events.status limited to the agreed values.
---    A-to-Z & chargebacks: open -> info_requested/response_sent -> won / lost / closed
+-- 0008 — follow-ups from the 0006/0007 review.
+-- Additive / protective only: no data is deleted, rewritten or updated.
+-- Safe to re-run (every statement is IF NOT EXISTS / OR REPLACE / DROP-IF-EXISTS-then-CREATE on constraints & triggers).
+
+-- 1. amazon_events.status limited to the agreed values, per tracker:
+--    A-to-Z & chargebacks: open -> info_requested -> response_sent -> won / lost / closed
 --    Returns:              requested -> received -> inspected -> refunded / closed
 ALTER TABLE amazon_events DROP CONSTRAINT IF EXISTS amazon_events_status_check;
 ALTER TABLE amazon_events ADD CONSTRAINT amazon_events_status_check CHECK (
@@ -205,7 +208,8 @@ ALTER TABLE amazon_events ADD CONSTRAINT amazon_events_status_check CHECK (
      AND status IN ('requested','received','inspected','refunded','closed'))
 );
 
--- 2. updated_at maintained by the database on every UPDATE (not left to application code).
+-- 2. updated_at maintained by the database on every UPDATE (cases, drafts, amazon_events),
+--    so no code path can forget it.
 CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   NEW.updated_at := now();
@@ -224,159 +228,20 @@ DROP TRIGGER IF EXISTS trg_events_updated_at ON amazon_events;
 CREATE TRIGGER trg_events_updated_at BEFORE UPDATE ON amazon_events
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- 3. Cases are archived (status = 'resolved'), never deleted.
---    The application has no delete route; this trigger makes the database refuse it too,
---    so a mistaken query or a future bug cannot cascade into messages, drafts or amazon_events.
-CREATE OR REPLACE FUNCTION prevent_case_delete() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  RAISE EXCEPTION 'Cases are archived, not deleted. Set status = ''resolved'' instead (case id %).', OLD.id;
-END $$;
-
-DROP TRIGGER IF EXISTS trg_cases_no_delete ON cases;
-CREATE TRIGGER trg_cases_no_delete BEFORE DELETE ON cases
-  FOR EACH ROW EXECUTE FUNCTION prevent_case_delete();
--- Follow-ups from the 0006 review: status CHECK on amazon_events, automatic updated_at,
--- and cases are archived (status = 'resolved'), never deleted.
--- Additive / protective only: no DROP, DELETE, UPDATE or data rewrite.
-
--- 1. Restrict amazon_events.status to the agreed values.
---    A-to-Z & chargeback: open -> info_requested -> response_sent -> won / lost / closed
---    Returns:             requested -> received -> inspected -> refunded / closed
-ALTER TABLE amazon_events DROP CONSTRAINT IF EXISTS amazon_events_status_check;
-ALTER TABLE amazon_events ADD CONSTRAINT amazon_events_status_check
-  CHECK (status IN ('open','info_requested','response_sent','won','lost','closed',
-                    'requested','received','inspected','refunded'));
-
--- 2. updated_at maintained by the database, not by application code.
-CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END $$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_amazon_events_updated ON amazon_events;
-CREATE TRIGGER trg_amazon_events_updated BEFORE UPDATE ON amazon_events
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-DROP TRIGGER IF EXISTS trg_cases_updated ON cases;
-CREATE TRIGGER trg_cases_updated BEFORE UPDATE ON cases
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-DROP TRIGGER IF EXISTS trg_drafts_updated ON drafts;
-CREATE TRIGGER trg_drafts_updated BEFORE UPDATE ON drafts
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
--- 3. Cases are archived, never deleted. The application has no delete route; this guard
---    makes the database refuse a DELETE on cases unless the session explicitly opts in
---    (SET LOCAL replyiq.allow_case_delete = 'on'), which only a manager-run maintenance
---    script would ever do. Protects the amazon_events / messages / drafts history.
-CREATE OR REPLACE FUNCTION prevent_case_delete() RETURNS trigger AS $$
-BEGIN
-  IF current_setting('replyiq.allow_case_delete', true) IS DISTINCT FROM 'on' THEN
-    RAISE EXCEPTION 'Cases are archived (status = resolved), not deleted. Case % blocked.', OLD.id
-      USING HINT = 'A manager maintenance script may SET LOCAL replyiq.allow_case_delete = ''on'' inside a transaction.';
-  END IF;
-  RETURN OLD;
-END $$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_cases_no_delete ON cases;
-CREATE TRIGGER trg_cases_no_delete BEFORE DELETE ON cases
-  FOR EACH ROW EXECUTE FUNCTION prevent_case_delete();
--- Hardening follow-ups (additive / constraint only; no data changes).
-
--- 1. amazon_events.status limited to the agreed values.
---    A-to-Z & chargeback: open -> info_requested -> response_sent -> won / lost / closed
---    Returns:             requested -> received -> inspected -> refunded / closed
-ALTER TABLE amazon_events DROP CONSTRAINT IF EXISTS amazon_events_status_check;
-ALTER TABLE amazon_events ADD CONSTRAINT amazon_events_status_check
-  CHECK (status IN ('open','info_requested','response_sent','won','lost','closed',
-                    'requested','received','inspected','refunded'));
-
--- 2. updated_at is set automatically whenever a row changes (cases, messages-free tables with updated_at).
-CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  NEW.updated_at := now();
-  RETURN NEW;
-END $$;
-
-DROP TRIGGER IF EXISTS trg_amazon_events_updated_at ON amazon_events;
-CREATE TRIGGER trg_amazon_events_updated_at BEFORE UPDATE ON amazon_events
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-DROP TRIGGER IF EXISTS trg_cases_updated_at ON cases;
-CREATE TRIGGER trg_cases_updated_at BEFORE UPDATE ON cases
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-DROP TRIGGER IF EXISTS trg_drafts_updated_at ON drafts;
-CREATE TRIGGER trg_drafts_updated_at BEFORE UPDATE ON drafts
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
--- 3. Cases are never deleted by the application (there is no delete endpoint; cases are
---    archived via status = 'resolved'). This trigger makes that a database rule too:
---    a case row can only be deleted by a role-bypassing superuser, never by the app connection.
-CREATE OR REPLACE FUNCTION prevent_case_delete() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  RAISE EXCEPTION 'Cases are archived (status = resolved), not deleted. Case % blocked.', OLD.id;
-END $$;
-DROP TRIGGER IF EXISTS trg_cases_no_delete ON cases;
-CREATE TRIGGER trg_cases_no_delete BEFORE DELETE ON cases
-  FOR EACH ROW EXECUTE FUNCTION prevent_case_delete();
--- Hardening follow-ups from the 0006 review. Additive only: adds a CHECK, triggers and a delete guard.
--- Nothing is dropped, deleted or rewritten.
-
--- 1. amazon_events.status limited to the agreed values
---    A-to-Z / chargeback: open | info_requested | response_sent | won | lost | closed
---    Returns:             requested | received | inspected | refunded | closed
-ALTER TABLE amazon_events DROP CONSTRAINT IF EXISTS amazon_events_status_check; -- no-op on first run (constraint does not exist yet)
-ALTER TABLE amazon_events ADD CONSTRAINT amazon_events_status_check
-  CHECK (status IN ('open','info_requested','response_sent','won','lost','closed','requested','received','inspected','refunded'));
-
--- 2. updated_at is set automatically whenever a row changes
-CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  NEW.updated_at := now();
-  RETURN NEW;
-END $$;
-
-DROP TRIGGER IF EXISTS trg_cases_updated_at ON cases;           -- re-runnable; only replaces the trigger definition
-CREATE TRIGGER trg_cases_updated_at BEFORE UPDATE ON cases FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-DROP TRIGGER IF EXISTS trg_drafts_updated_at ON drafts;
-CREATE TRIGGER trg_drafts_updated_at BEFORE UPDATE ON drafts FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-DROP TRIGGER IF EXISTS trg_events_updated_at ON amazon_events;
-CREATE TRIGGER trg_events_updated_at BEFORE UPDATE ON amazon_events FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
--- 3. Cases are archived (status = 'resolved'), never deleted.
---    ReplyIQ has no delete endpoint; this trigger makes the database refuse a delete from any client
---    (including the SQL Editor) unless the session explicitly opts in with:
---      SET LOCAL replyiq.allow_case_delete = 'on';   -- manager-only, run deliberately inside a transaction
-CREATE OR REPLACE FUNCTION guard_case_delete() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF current_setting('replyiq.allow_case_delete', true) IS DISTINCT FROM 'on' THEN
-    RAISE EXCEPTION 'Cases are archived, not deleted. Set status = ''resolved'' instead. (case % / %)', OLD.id, OLD.case_ref
-      USING ERRCODE = 'restrict_violation';
-  END IF;
-  RETURN OLD;
-END $$;
-DROP TRIGGER IF EXISTS trg_cases_no_delete ON cases;
-CREATE TRIGGER trg_cases_no_delete BEFORE DELETE ON cases FOR EACH ROW EXECUTE FUNCTION guard_case_delete();
-ALTER TABLE amazon_events DROP CONSTRAINT IF EXISTS amazon_events_status_check;
-ALTER TABLE amazon_events ADD CONSTRAINT amazon_events_status_check
-  CHECK (status IN ('open','info_requested','response_sent','won','lost','closed',
-                    'requested','received','inspected','refunded'));
-
-CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END $$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_cases_updated_at ON cases;
-CREATE TRIGGER trg_cases_updated_at BEFORE UPDATE ON cases FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-DROP TRIGGER IF EXISTS trg_drafts_updated_at ON drafts;
-CREATE TRIGGER trg_drafts_updated_at BEFORE UPDATE ON drafts FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-DROP TRIGGER IF EXISTS trg_events_updated_at ON amazon_events;
-CREATE TRIGGER trg_events_updated_at BEFORE UPDATE ON amazon_events FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
+-- 3. Cases are archived, never deleted.
+--    3a. Soft-archive columns (managers only; enforced in the API). Archived cases leave the queue
+--        but keep every message, draft and Amazon event.
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_cases_archived ON cases(archived_at) WHERE archived_at IS NOT NULL;
+
+--    3b. The database itself refuses DELETE on cases, so the ON DELETE CASCADE on amazon_events / messages
+--        can never fire from a mistaken query or a future bug. (The application has no delete route.)
+CREATE OR REPLACE FUNCTION prevent_case_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'Cases are archived, not deleted (case id %). Use POST /api/cases/:id/archive.', OLD.id;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_cases_no_delete ON cases;
+CREATE TRIGGER trg_cases_no_delete BEFORE DELETE ON cases
+  FOR EACH ROW EXECUTE FUNCTION prevent_case_delete();
