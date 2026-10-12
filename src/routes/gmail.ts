@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
 import { authUrl, exchangeCode, encryptToken, decryptToken, revokeToken, getProfile, getConnection, accessToken, sendReply, requireGoogleConfig, GMAIL_SCOPES } from '../gmail'
-import { runSync } from '../sync'
+import { runSync, backfillAttachments } from '../sync'
 import { serverChecks, redactPii, type CaseRow } from '../ai'
 import { classifyTone } from '../tone'
 import { getAttachment } from '../gmail'
@@ -107,6 +107,14 @@ gmailApi.post('/tone-backfill', requireManager, async (c) => {
   } finally {
     await sql.end()
   }
+})
+
+// POST /api/gmail/attachment-backfill (manager) — one-off after migration 0009; call until remaining = 0
+gmailApi.post('/attachment-backfill', requireManager, async (c) => {
+  const sql = getDb(c.env)
+  try { return c.json({ ok: true, ...(await backfillAttachments(c.env, sql)) }) }
+  catch (e: any) { return c.json({ error: e.message }, 502) }
+  finally { await sql.end() }
 })
 
 // GET /api/gmail/attachments/:id — stream a customer attachment from Gmail to a logged-in member of staff.

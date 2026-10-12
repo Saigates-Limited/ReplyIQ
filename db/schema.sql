@@ -266,3 +266,4 @@ CREATE INDEX IF NOT EXISTS idx_attachments_message ON public.attachments(message
 ALTER TABLE public.amazon_events ADD COLUMN IF NOT EXISTS reply_to_status TEXT;  -- unverified | noreply | mailbox
 ALTER TABLE public.amazon_events ADD COLUMN IF NOT EXISTS reply_to_checked_at TIMESTAMPTZ;
 
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS attachments_checked_at TIMESTAMPTZ;

@@ -207,6 +207,7 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
           RETURNING id`
         result.messagesNew++
         await recordAttachments(sql, m, ins.id, kase.id)
+        await sql`UPDATE messages SET attachments_checked_at = now() WHERE id = ${ins.id}`.catch(() => {})
         if (!ours) pendingTone.push({ messageId: ins.id, caseId: kase.id, text: body })
         if (!ours && /\b(hot|heat|heating|overheat|burn|smok|swell|swollen|bulg)/i.test(body)) await sql`UPDATE cases SET battery_flag = TRUE WHERE id = ${kase.id}`
       }
@@ -245,6 +246,34 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
     await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = 'error', last_sync_error = ${msg} WHERE id = 1`
     throw e
   }
+}
+
+/** One-off backfill after migration 0009: attachment metadata for already-imported messages + Reply-To status on
+ *  existing chargeback events. Idempotent; processes up to `limit` messages per call (Gmail subrequest budget). */
+export async function backfillAttachments(env: Bindings, sql: Sql, limit = 25) {
+  const { accessToken, getMessage } = await import('./gmail')
+  // Reply-To status on chargeback events imported before 0009 (same classifier as live sync)
+  const pending = await sql<{ id: number; reply_to: string }[]>`SELECT id, reply_to FROM amazon_events WHERE kind = 'chargeback' AND reply_to_status IS NULL AND reply_to IS NOT NULL`
+  for (const e of pending) await sql`UPDATE amazon_events SET reply_to_status = ${classifyReplyTo(e.reply_to)}, reply_to_checked_at = now() WHERE id = ${e.id}`
+  const rows = await sql<{ id: number; case_id: number; gmail_message_id: string }[]>`
+    SELECT m.id, m.case_id, m.gmail_message_id FROM messages m
+    WHERE m.gmail_message_id IS NOT NULL AND m.kind = 'message' AND m.direction = 'inbound' AND m.attachments_checked_at IS NULL
+    ORDER BY m.sent_at DESC LIMIT ${limit}`
+  if (!rows.length) return { checked: 0, attachments: 0, remaining: 0 }
+  const token = await accessToken(env, sql)
+  let found = 0
+  for (const r of rows) {
+    try {
+      const gm = await getMessage(token, r.gmail_message_id)
+      const before = (await sql`SELECT COUNT(*)::int AS n FROM attachments WHERE message_id = ${r.id}`)[0].n
+      await recordAttachments(sql, gm, r.id, r.case_id)
+      const after = (await sql`SELECT COUNT(*)::int AS n FROM attachments WHERE message_id = ${r.id}`)[0].n
+      found += after - before
+    } catch (e) { console.error('backfill message', r.gmail_message_id, (e as Error).message) }
+    await sql`UPDATE messages SET attachments_checked_at = now() WHERE id = ${r.id}`
+  }
+  const [{ remaining }] = await sql`SELECT COUNT(*)::int AS remaining FROM messages WHERE gmail_message_id IS NOT NULL AND kind = 'message' AND direction = 'inbound' AND attachments_checked_at IS NULL`
+  return { checked: rows.length, attachments: found, remaining }
 }
 
 /** Store attachment metadata only — bytes stay in Gmail and are proxied on demand. Never sent to OpenAI. */

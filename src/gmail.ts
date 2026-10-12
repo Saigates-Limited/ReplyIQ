@@ -150,6 +150,7 @@ export type GmailMessage = {
   snippet?: string
   payload: GmailPart
 }
+export const getMessage = (token: string, id: string) => gapi<GmailMessage>(token, `/messages/${id}?format=full`)
 export const getThread = (token: string, id: string) =>
   gapi<{ id: string; messages: GmailMessage[] }>(token, `/threads/${id}?format=full`)
 

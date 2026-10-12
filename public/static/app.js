@@ -834,6 +834,7 @@
                 ${isManager ? `<select id="import-days" class="field-input py-1 text-sm" style="width:auto"><option value="">Import history…</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>` : ''}
                 ${isManager ? '<button id="tone-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Label older customer messages with a tone (AI, gpt-6-luna)"><i class="fas fa-tags mr-1"></i>Label tones</button>' : ''}
                 ${isManager ? '<button id="tone-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Label customer messages that have no tone yet"><i class="fas fa-tags mr-1"></i>Label tones</button>' : ''}
+                ${isManager ? '<button id="att-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="One-off: record photo/PDF attachments on messages imported before attachments were tracked"><i class="fas fa-paperclip mr-1"></i>Scan attachments</button>' : ''}
                 ${isManager ? '<button id="disconnect" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm text-red-700">Disconnect</button>' : ''}
               </div>` : `
               <p class="text-sm text-slate-600 mb-4">No mailbox connected.</p>
@@ -896,6 +897,20 @@
           total += data.labelled; rounds++
           if (!data.remaining || !data.labelled || rounds > 40) { toast(`Tone labels: ${total} message(s) labelled, ${data.remaining} remaining`); break }
         }
+      } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      renderGmail()
+    })
+    app.querySelector('#att-backfill')?.addEventListener('click', async (e) => {
+      e.target.disabled = true
+      let total = 0, rounds = 0
+      try {
+        for (;;) {
+          const { data } = await axios.post('/api/gmail/attachment-backfill', {}, { timeout: 120000 })
+          total += data.attachments; rounds++
+          toast(`Scanning… ${total} attachment(s) found, ${data.remaining} message(s) left`)
+          if (!data.remaining || rounds > 40) break
+        }
+        toast(`Scan complete: ${total} attachment(s) recorded`)
       } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
       renderGmail()
     })
