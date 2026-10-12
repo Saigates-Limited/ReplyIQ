@@ -17,36 +17,50 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '
 // HTML shell for the ReplyIQ single-page UI. All data comes from /api/*.
 export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
 <body class="bg-slate-100 text-slate-800 min-h-screen">
-  <header id="app-header" class="bg-slate-900 text-white">
-    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-3" data-link>
-        <span class="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-amber-400 text-slate-900"><i class="fas fa-reply-all"></i></span>
-        <span>
-          <span class="font-bold text-lg leading-tight block">ReplyIQ</span>
-          <span class="text-xs text-slate-300 block">Saigates Ltd · Amazon UK Customer Service</span>
-        </span>
-      </a>
-      <nav class="text-sm text-slate-300 flex items-center gap-3 flex-wrap justify-end">
-        <span id="header-clock" class="font-mono hidden xl:inline"></span>
-        <a href="/" data-link data-nav="messages" class="nav-tab hover:text-white"><i class="fas fa-comments mr-1"></i>Messages <span class="nav-badge" data-badge="messages"></span></a>
-        <a href="/atoz" data-link data-nav="atoz" class="nav-tab hover:text-white"><i class="fas fa-scale-balanced mr-1"></i>A-to-Z <span class="nav-badge" data-badge="atoz"></span></a>
-        <a href="/returns" data-link data-nav="returns" class="nav-tab hover:text-white"><i class="fas fa-rotate-left mr-1"></i>Returns <span class="nav-badge" data-badge="returns"></span></a>
-        <a href="/chargebacks" data-link data-nav="chargebacks" class="nav-tab hover:text-white"><i class="fas fa-credit-card mr-1"></i>Chargebacks <span class="nav-badge" data-badge="chargebacks"></span></a>
-        <a href="/gmail" data-link data-nav="gmail" class="nav-tab hover:text-white"><i class="fab fa-google mr-1"></i>Gmail</a>
-        ${user.role === 'manager' ? `<a href="/staff" data-link data-nav="staff" class="nav-tab hover:text-white"><i class="fas fa-users mr-1"></i>Staff</a>` : ''}
-        <span class="text-slate-500">|</span>
-        <span id="current-user" class="flex items-center gap-2">
-          <span class="inline-flex items-center justify-center w-7 h-7 rounded-full ${user.role === 'manager' ? 'bg-violet-500' : 'bg-sky-600'} text-white text-xs font-bold" title="${esc(user.role)}">${esc(user.name.replace(/[^\p{L}\s]/gu, '').trim().split(/\s+/).map((p) => p[0] || '').join('').slice(0, 2).toUpperCase())}</span>
-          <span class="hidden sm:inline">${esc(user.name)} <span class="text-xs text-slate-400">· ${user.role}</span></span>
-        </span>
-        <button id="logout-btn" class="hover:text-white" title="Sign out"><i class="fas fa-right-from-bracket"></i></button>
+  <div id="shell" class="min-h-screen lg:flex">
+    <!-- Sidebar (dark, collapsible on small screens) -->
+    <aside id="sidebar" class="sidebar bg-slate-950 text-slate-300 lg:w-60 lg:flex-shrink-0 lg:min-h-screen">
+      <div class="flex items-center justify-between px-4 py-3 lg:py-4">
+        <a href="/" class="flex items-center gap-2" data-link>
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-sky-500 text-white"><i class="fas fa-reply-all"></i></span>
+          <span class="font-bold text-white text-lg">ReplyIQ</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-violet-600 text-white font-semibold">v2</span>
+        </a>
+        <button id="sidebar-toggle" class="lg:hidden text-slate-300 text-xl px-2" aria-label="Menu"><i class="fas fa-bars"></i></button>
+      </div>
+      <div class="px-4 pb-3 hidden lg:block">
+        <div class="rounded-md bg-slate-800 px-3 py-2 text-xs text-slate-200 flex items-center gap-2"><span class="text-[10px] font-bold px-1 rounded bg-slate-700">GB</span> Saigates Ltd <span class="text-slate-500">· Amazon UK</span></div>
+      </div>
+      <nav id="side-nav" class="side-nav hidden lg:block px-2 pb-4 text-sm">
+        <a href="/" data-link data-nav="dashboard" class="nav-tab"><i class="fas fa-gauge w-5"></i>Dashboard</a>
+        <a href="/inbox" data-link data-nav="messages" class="nav-tab"><i class="fas fa-inbox w-5"></i>Inbox <span class="nav-badge" data-badge="messages"></span></a>
+        <a href="/atoz" data-link data-nav="atoz" class="nav-tab"><i class="fas fa-scale-balanced w-5"></i>A-to-Z claims <span class="nav-badge" data-badge="atoz"></span></a>
+        <a href="/returns" data-link data-nav="returns" class="nav-tab"><i class="fas fa-rotate-left w-5"></i>Returns <span class="nav-badge" data-badge="returns"></span></a>
+        <a href="/chargebacks" data-link data-nav="chargebacks" class="nav-tab"><i class="fas fa-credit-card w-5"></i>Chargebacks <span class="nav-badge" data-badge="chargebacks"></span></a>
+        <div class="px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Setup</div>
+        <a href="/gmail" data-link data-nav="gmail" class="nav-tab"><i class="fab fa-google w-5"></i>Gmail</a>
+        ${user.role === 'manager' ? `<a href="/staff" data-link data-nav="staff" class="nav-tab"><i class="fas fa-users w-5"></i>Team</a>` : ''}
+        <div class="mt-6 px-3 pt-3 border-t border-slate-800 flex items-center gap-2">
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-full ${user.role === 'manager' ? 'bg-violet-500' : 'bg-sky-600'} text-white text-xs font-bold">${esc(user.name.replace(/[^\p{L}\s]/gu, '').trim().split(/\s+/).map((p) => p[0] || '').join('').slice(0, 2).toUpperCase())}</span>
+          <span class="min-w-0"><span class="block text-white text-sm truncate">${esc(user.name)}</span><span class="block text-[10px] text-emerald-400 uppercase">● ${esc(user.role)}</span></span>
+          <button id="logout-btn" class="ml-auto text-slate-400 hover:text-white" title="Sign out"><i class="fas fa-right-from-bracket"></i></button>
+        </div>
       </nav>
-    </div>
-  </header>
+    </aside>
 
-  <main id="app" class="max-w-7xl mx-auto px-4 py-6">
-    <p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>
-  </main>
+    <div class="flex-1 min-w-0 flex flex-col">
+      <header id="app-header" class="bg-white border-b border-slate-200 px-4 py-2 flex items-center gap-3">
+        <div class="relative flex-1 max-w-md">
+          <i class="fas fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+          <input id="global-search" class="w-full rounded-md border border-slate-200 bg-slate-50 pl-8 pr-3 py-1.5 text-sm" placeholder="Search order ID, name, subject…">
+        </div>
+        <span id="header-clock" class="font-mono text-xs text-slate-500 hidden md:inline ml-auto"></span>
+      </header>
+      <main id="app" class="flex-1 min-w-0 p-3 sm:p-5">
+        <p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>
+      </main>
+    </div>
+  </div>
 
   <div id="toast" class="fixed bottom-4 right-4 hidden px-4 py-2 rounded-lg shadow-lg text-sm text-white z-50"></div>
 
