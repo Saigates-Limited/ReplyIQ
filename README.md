@@ -170,29 +170,26 @@ curl "http://localhost:3000/__scheduled?cron=*/15+*+*+*+*"   # fire the cron loc
 - **Platform**: Cloudflare Worker (cron */15) on Saigates' account + Hyperdrive → Supabase · **Status**: ✅ live at https://replyiq.saigateslimited.workers.dev; awaiting Worker secrets (`OPENAI_API_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) and Gmail connection · **Last updated**: 2026-10-11
 
 
-## Phase 8 (in progress) — Amazon notices, tabs, tone, tickets, draft modes
+## Phase 8 — Amazon notices, trackers, tone, tickets, draft modes, UI v2 (LIVE 2026-10-12)
 
-**Deployed to production 2026-10-12 (migrations 0006 + 0007 applied by Saigates; 0008 pending):**
-- Gmail sync also reads `atoz-guarantee-no-reply@amazon.co.uk`, `cb-seller-notification@amazon.co.uk`, and
-  `donotreply@amazon.com` (Return authorisation notifications + "Your email to <Name>" Seller Central reply copies).
-- `amazon_events` table: A-to-Z claims (3-day deadline once info is requested), return requests, chargebacks (7-day deadline).
-  Statuses — A-to-Z/Chargeback: open → response_sent → won/lost/closed; Returns: requested → received → inspected → refunded/closed.
-- Return reason/comment mentioning heat/overheating/swelling sets `cases.battery_flag` → battery rule forced in checks,
-  `needs_manager`, urgency high.
-- Tone labels per customer message (`gpt-6-luna`), case-level tone, staff override. Queue sort: overdue → angry/dispute → deadline.
-- Tickets: `assigned_to`, `internal_notes` (never sent / never to OpenAI).
-- Draft modes: `customer` | `seller_central_atoz` | `seller_central_return` | `chargeback_evidence`. Non-customer modes
-  can never be emailed (`/send` refuses); "Mark as sent" marks the matching event `response_sent`.
-- UI: tabs Messages | A-to-Z | Returns | Chargebacks (with counts), WhatsApp-style chat view, tone chips, ticket panel, mode buttons.
-- PII: order IDs protected from the phone-number redactor; "Shipping address:" blocks redacted.
+**Production:** https://replyiq.saigateslimited.workers.dev · Worker version `3dc27e1e` · DB migrations applied through **0008 + 0008b** (verified: 4 triggers + status CHECK + archive columns).
 
-**API added:** `GET /api/events?kind=atoz|return|chargeback&status=open|all`, `GET /api/events/counts`, `PATCH /api/events/:id {status,response_text}`,
-`PATCH /api/messages/:id/tone`, `POST /api/gmail/tone-backfill` (manager), `PATCH /api/cases/:id` now accepts `assigned_to, internal_notes, tone, chargeback_open, battery_flag`,
-`POST /api/cases/:id/drafts {mode}`.
+### Features
+- Gmail sync reads customer messages **and** Amazon notices: `atoz-guarantee-no-reply@`, `cb-seller-notification@`, `donotreply@amazon.com` (Return authorisation notifications + "Your email to <Name>" Seller Central reply copies).
+- `amazon_events`: A-to-Z (3-day deadline when info requested), returns, chargebacks (7-day deadline). Statuses: A-to-Z/chargeback `open → info_requested → response_sent → won/lost/closed`; returns `requested → received → inspected → refunded/closed` (DB CHECK).
+- Return reason/comment mentioning heat/overheating/swelling → `battery_flag` → battery rule forced, needs_manager, urgency high.
+- Tone per customer message (`gpt-6-luna`), staff override; queue sort: overdue → angry/dispute → deadline.
+- Tickets: assignee, internal notes (never sent / never to OpenAI). Archive (manager only; DB refuses DELETE on cases).
+- Draft modes: customer | seller_central_atoz | seller_central_return | chargeback_evidence. Non-customer modes can never be emailed.
+- UI v2: dark sidebar, Dashboard, 3-pane Inbox with search, A-to-Z/Returns/Chargebacks trackers, Reply policy (renders `reply_instructions.md`), Settings (status only). Responsive (phone list/detail toggle).
+- PII: order IDs protected from redaction; "Shipping address:" blocks redacted; chargeback name/address never reach OpenAI.
 
-**Post-deploy steps (manager, in the live app):** Gmail page → *Import history → Last 7 days* (pulls Seller Central copies and A-to-Z/return/chargeback notices); then tone backfill (button on the Gmail page, repeat until 0 remaining).
+### Routes
+Pages: `/` dashboard · `/inbox` · `/cases/:id` · `/atoz` · `/returns` · `/chargebacks` · `/policy` · `/settings` · `/gmail` · `/staff` (manager).
+API additions: `GET /api/events?kind=&status=` · `GET /api/events/counts` · `PATCH /api/events/:id` · `PATCH /api/messages/:id/tone` · `POST /api/gmail/tone-backfill` · `POST /api/cases/:id/archive|unarchive` (manager) · `GET /api/policy` · `GET /api/settings` · `POST /api/cases/:id/drafts {mode}`.
 
-**Migration 0008_integrity.sql (pending in prod):** CHECK on `amazon_events.status` per kind; `updated_at` triggers on cases/drafts/amazon_events; BEFORE DELETE trigger on `cases` — cases are archived (`status='resolved'`), never deleted. The app has no delete route for cases.
+### Migrations (run in order in Supabase SQL Editor)
+`0006_events_tickets_tone.sql` → `0007_draft_mode.sql` → `0008_hardening.sql` → `0008b_archive_columns.sql`. All additive; `db/schema.sql` is the from-scratch equivalent (validated).
 
-**Still to do (Step C):** R2 bucket + attachments (Gmail attachments in chat, agent uploads: PDF/JPG/JPEG/PNG/XML, ≤10 MB per message incl. attachments, ≤5 files),
-chargeback email send only after real Reply-To verified.
+### Next — Step C
+R2 bucket (token needs "Workers R2 Storage: Edit"), Gmail attachments shown in chat, agent uploads limited to Amazon's rules (PDF/JPG/JPEG/PNG/XML, ≤5 files, ≤10 MB per message), attachments never sent to OpenAI, chargeback email only after Reply-To verified on a real notice.
