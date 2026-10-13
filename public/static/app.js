@@ -920,7 +920,7 @@
         <div class="font-medium text-sm break-all">${esc(m.email_address)}</div>
         <dl class="text-xs text-slate-500 mt-1 space-y-0.5">
           <div>Connected ${fmtDateTime(m.connected_at)} by ${esc(m.connected_by_name || '—')}</div>
-          <div>Last sync: ${m.last_sync_at ? dayjs(m.last_sync_at).fromNow() : 'never'} ${m.last_sync_status === 'error' ? `<span class="text-red-700">— ${esc(m.last_sync_error || 'error')}</span>` : m.last_sync_status === 'ok' ? `<span class="text-emerald-700">OK${m.last_sync_new_msgs ? ` · ${m.last_sync_new_msgs} new` : ''}</span>` : ''}</div>
+          <div>Last sync: ${m.last_sync_at ? dayjs(m.last_sync_at).fromNow() : 'never'} ${m.last_sync_status === 'error' ? `<span class="text-red-700">— ${esc(m.last_sync_error || 'error')}</span>` : m.last_sync_status === 'partial' ? `<span class="text-amber-700">— ${esc(m.last_sync_error || 'partial')}</span>` : m.last_sync_status === 'ok' ? `<span class="text-emerald-700">OK${m.last_sync_new_msgs ? ` · ${m.last_sync_new_msgs} new` : ''}</span>` : ''}</div>
         </dl>
         <div class="mt-3 flex flex-wrap gap-2 text-xs">
           <button data-act="sync" class="px-2 py-1 rounded-md bg-slate-900 text-white"><i class="fas fa-rotate mr-1"></i>Sync this mailbox</button>
@@ -972,7 +972,7 @@
             <div class="px-5 py-3 border-b border-slate-100 font-semibold">Recent sync runs</div>
             <table class="w-full text-sm">
               <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-4 py-2">When</th><th class="px-4 py-2">Mailbox</th><th class="px-4 py-2">Trigger</th><th class="px-4 py-2">Threads</th><th class="px-4 py-2">New msgs</th><th class="px-4 py-2">New cases</th><th class="px-4 py-2">Result</th></tr></thead>
-              <tbody>${st.recent_runs.length ? st.recent_runs.map((r) => `<tr class="border-b border-slate-100"><td class="px-4 py-2 whitespace-nowrap">${fmtDateTime(r.started_at)}</td><td class="px-4 py-2 text-xs">${r.mailbox_label ? `<span class="font-medium">${esc(r.mailbox_label)}</span><div class="text-slate-400">${esc(r.mailbox_email || '')}</div>` : '<span class="text-slate-400">—</span>'}</td><td class="px-4 py-2">${esc(r.trigger)}</td><td class="px-4 py-2">${r.threads_seen ?? '—'}</td><td class="px-4 py-2">${r.messages_new ?? '—'}</td><td class="px-4 py-2">${r.cases_new ?? '—'}</td><td class="px-4 py-2 ${r.status === 'error' ? 'text-red-700' : 'text-emerald-700'}" title="${esc(r.error || '')}">${esc(r.status || 'running')}</td></tr>`).join('') : '<tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">No runs yet</td></tr>'}</tbody>
+              <tbody>${st.recent_runs.length ? st.recent_runs.map((r) => `<tr class="border-b border-slate-100"><td class="px-4 py-2 whitespace-nowrap">${fmtDateTime(r.started_at)}</td><td class="px-4 py-2 text-xs">${r.mailbox_label ? `<span class="font-medium">${esc(r.mailbox_label)}</span><div class="text-slate-400">${esc(r.mailbox_email || '')}</div>` : '<span class="text-slate-400">—</span>'}</td><td class="px-4 py-2">${esc(r.trigger)}</td><td class="px-4 py-2">${r.threads_seen ?? '—'}</td><td class="px-4 py-2">${r.messages_new ?? '—'}</td><td class="px-4 py-2">${r.cases_new ?? '—'}</td><td class="px-4 py-2 ${r.status === 'error' ? 'text-red-700' : r.status === 'partial' ? 'text-amber-700' : 'text-emerald-700'}" title="${esc(r.error || '')}">${esc(r.status || 'running')}${r.status === 'partial' ? ' <span class="text-[10px]">(rate limited, resumes)</span>' : ''}</td></tr>`).join('') : '<tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">No runs yet</td></tr>'}</tbody>
             </table>
           </div>
         </div>
@@ -988,8 +988,14 @@
         for (;;) {
           const { data } = await axios.post('/api/gmail/sync', { days, ...(mailboxId ? { mailbox_id: mailboxId } : {}) }, { timeout: 120000 })
           total.c += data.casesNew; total.m += data.messagesNew; rounds++
-          toast(`Importing… ${total.c} case(s), ${total.m} message(s) so far, ${data.remaining} thread(s) left`)
-          if (!data.remaining || rounds > 60) break
+          if (!data.remaining || rounds > 80) { toast(`Importing… ${total.c} case(s), ${total.m} message(s) so far, ${data.remaining} thread(s) left`); break }
+          if (data.rateLimited) {
+            // Gmail allows a fixed number of units per minute per user; wait it out rather than fail the import.
+            for (let w = 65; w > 0; w -= 5) { toast(`Gmail per-minute limit reached — waiting ${w}s, then continuing (${total.c} case(s) so far, ${data.remaining} thread(s) left)`); await new Promise((r) => setTimeout(r, 5000)) }
+          } else {
+            toast(`Importing… ${total.c} case(s), ${total.m} message(s) so far, ${data.remaining} thread(s) left`)
+            await new Promise((r) => setTimeout(r, 1500)) // ~12 threads per round → stay well under the per-minute quota
+          }
         }
         toast(`Import complete: ${total.c} new case(s), ${total.m} new message(s)`)
       } catch (err) { toast(err.response?.data?.error || err.message, 'err') }

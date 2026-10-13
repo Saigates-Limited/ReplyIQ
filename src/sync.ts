@@ -1,7 +1,7 @@
 // Gmail → cases sync. Read-only against Gmail. Runs from the cron trigger and from a manual button.
 import type { Bindings, Sql } from './db'
 import { redactPii } from './ai'
-import { accessToken, listConnections, hasMultiMailbox, listThreadIds, getThread, header, messageBody, type GmailMessage, type GmailConnection } from './gmail'
+import { accessToken, listConnections, hasMultiMailbox, listThreadIds, getThread, header, messageBody, GmailQuotaError, type GmailMessage, type GmailConnection } from './gmail'
 import { classifyNotice, parseSellerReplyCopy, parseAtoz, parseReturnAuth, parseChargeback, redactChargebackPii } from './amazon'
 import { classifyTone } from './tone'
 import { listAttachments } from './gmail'
@@ -10,7 +10,7 @@ import { isAllowedType } from './attachments'
 const AMAZON_DOMAIN = 'marketplace.amazon.co.uk'
 const DEFAULT_LOOKBACK = 'newer_than:1h' // generous relative to the 15-min cron so a missed run cannot drop mail
 
-export type SyncResult = { threadsSeen: number; messagesNew: number; casesNew: number; skipped: { thread: string; reason: string }[]; query: string; remaining: number; mailboxes?: { id: number; label: string; email: string; messagesNew: number; casesNew: number; remaining: number; error?: string }[] }
+export type SyncResult = { threadsSeen: number; messagesNew: number; casesNew: number; skipped: { thread: string; reason: string }[]; query: string; remaining: number; rateLimited?: boolean; mailboxes?: { id: number; label: string; email: string; messagesNew: number; casesNew: number; remaining: number; error?: string }[] }
 
 const ORDER_RE = /\b(\d{3}-\d{7}-\d{7})\b/
 
@@ -131,7 +131,7 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
     try {
       const r = await syncMailbox(env, sql, conn, ourEmails, trigger, opts)
       total.threadsSeen += r.threadsSeen; total.messagesNew += r.messagesNew; total.casesNew += r.casesNew; total.remaining += r.remaining
-      total.skipped.push(...r.skipped); total.query = r.query
+      total.skipped.push(...r.skipped); total.query = r.query; if (r.rateLimited) total.rateLimited = true
       total.mailboxes!.push({ id: conn.id, label: conn.label, email: conn.email_address, messagesNew: r.messagesNew, casesNew: r.casesNew, remaining: r.remaining })
     } catch (e: any) {
       firstError ??= e
@@ -175,8 +175,16 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
     result.remaining = Math.max(0, todo.length - threadIds.length)
 
     const pendingTone: { messageId: number; caseId: number; text: string }[] = []
+    let processed = 0
+    let quotaHit: string | null = null
     for (const tid of threadIds) {
-      const thread = await getThread(token, tid)
+      let thread
+      try { thread = await getThread(token, tid) } catch (e) {
+        // Quota burst: stop this round here. Everything before this thread is committed; unseen threads are picked up next time.
+        if (e instanceof GmailQuotaError) { quotaHit = e.message; break }
+        throw e
+      }
+      processed++
       const msgs = thread.messages.sort((a, b) => Number(a.internalDate) - Number(b.internalDate))
       // ── Amazon notices (not customer messages): handle and move on
       const first0 = msgs[0]
@@ -270,9 +278,12 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
         }
       } catch (e) { console.error('tone failed', e) }
     }
-    const note = result.skipped.length ? `skipped ${result.skipped.length}: ` + result.skipped.slice(0, 5).map((x) => x.reason).join(' | ') : null
-    await sql`UPDATE sync_runs SET finished_at = now(), status = 'ok', threads_seen = ${result.threadsSeen}, messages_new = ${result.messagesNew}, cases_new = ${result.casesNew}, error = ${note} WHERE id = ${run.id}`
-    await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = 'ok', last_sync_error = NULL, last_sync_new_msgs = ${result.messagesNew} WHERE id = ${conn.id}`
+    if (quotaHit) result.remaining = Math.max(0, todo.length - processed)
+    result.rateLimited = !!quotaHit
+    const note = quotaHit ? `rate limited after ${processed}/${threadIds.length} threads (resumes next sync)` + (result.skipped.length ? `; skipped ${result.skipped.length}` : '')
+      : result.skipped.length ? `skipped ${result.skipped.length}: ` + result.skipped.slice(0, 5).map((x) => x.reason).join(' | ') : null
+    await sql`UPDATE sync_runs SET finished_at = now(), status = ${quotaHit ? 'partial' : 'ok'}, threads_seen = ${result.threadsSeen}, messages_new = ${result.messagesNew}, cases_new = ${result.casesNew}, error = ${note} WHERE id = ${run.id}`
+    await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = ${quotaHit ? 'partial' : 'ok'}, last_sync_error = ${quotaHit ? 'Gmail per-minute limit reached — paused briefly, resumes automatically' : null}, last_sync_new_msgs = ${result.messagesNew} WHERE id = ${conn.id}`
     return result
   } catch (e: any) {
     const msg = String(e?.message ?? e).slice(0, 500)

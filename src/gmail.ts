@@ -143,13 +143,28 @@ export async function accessToken(env: Bindings, sql: Sql, mailboxId?: number | 
 }
 
 // ───────────── Gmail API ─────────────
+export class GmailQuotaError extends Error {
+  constructor(msg: string) { super(msg); this.name = 'GmailQuotaError' }
+}
+const isQuota = (status: number, txt: string) => status === 429 || (status === 403 && /quota|rateLimitExceeded|userRateLimitExceeded/i.test(txt))
+
+/** Gmail REST call. Per-user quota bursts (403 "Units per minute per user" / 429) are retried with backoff
+ *  (2s, 4s, 8s — ~14s total, within the Worker's time budget); if still limited, a GmailQuotaError is thrown
+ *  so the caller can stop cleanly and resume later instead of failing the whole run. Read-only GETs and the
+ *  idempotent send (threadId-scoped) are safe to retry; a 429 means the request was not processed. */
 async function gapi<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${API}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, ...(init.headers || {}) } })
-  if (!res.ok) {
-    const txt = await res.text()
-    throw new Error(`Gmail API ${res.status} on ${path.split('?')[0]}: ${txt.slice(0, 200)}`)
+  let lastTxt = ''
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await fetch(`${API}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, ...(init.headers || {}) } })
+    if (res.ok) return res.json() as Promise<T>
+    lastTxt = await res.text()
+    if (!isQuota(res.status, lastTxt) || attempt === 3) {
+      if (isQuota(res.status, lastTxt)) throw new GmailQuotaError(`Gmail rate limit reached (per-minute quota). Progress is saved; it resumes automatically on the next sync or when you press Sync again in a minute.`)
+      throw new Error(`Gmail API ${res.status} on ${path.split('?')[0]}: ${lastTxt.slice(0, 200)}`)
+    }
+    await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt))
   }
-  return res.json() as Promise<T>
+  throw new Error(`Gmail API error: ${lastTxt.slice(0, 200)}`)
 }
 
 export const getProfile = (token: string) => gapi<{ emailAddress: string }>(token, '/profile')
