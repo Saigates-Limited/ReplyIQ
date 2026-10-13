@@ -229,13 +229,14 @@ function encodeHeaderUtf8(v: string) {
   return /[^\x20-\x7e]/.test(v) ? `=?UTF-8?B?${btoa(unescape(encodeURIComponent(v)))}?=` : v
 }
 
-/** Plain text → minimal HTML that survives Amazon Buyer-Seller Messaging's sanitiser, which strips inline styles and
- *  collapses <p> margins. So: no CSS, single newline = <br>, blank line = <br><br> (an explicit empty line), URLs linked. */
+/** Plain text → minimal HTML that survives Amazon Buyer-Seller Messaging's sanitiser. Amazon strips inline styles,
+ *  collapses <p> margins AND merges consecutive <br>. So each paragraph is a <div> (block, no CSS needed) and the
+ *  gap between paragraphs is a <div> containing a non-breaking space: a line with real content cannot be collapsed. */
 export function textToHtml(text: string): string {
   const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
   const linkify = (t: string) => t.replace(/(https?:\/\/[^\s<]+[^\s<.,;:!?)\]])/g, (u) => `<a href="${u}">${u}</a>`)
   const paras = text.replace(/\r\n/g, '\n').trim().split(/\n{2,}/)
-  const html = paras.map((p) => p.split('\n').map((l) => linkify(esc(l))).join('<br>\n')).join('<br>\n<br>\n')
+  const html = paras.map((p) => `<div>${p.split('\n').map((l) => linkify(esc(l)) || '&nbsp;').join('<br>')}</div>`).join('\n<div>&nbsp;</div>\n')
   return `<html><body>${html}</body></html>`
 }
 
