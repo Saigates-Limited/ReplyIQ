@@ -5,7 +5,7 @@ import { authUrl, exchangeCode, encryptToken, decryptToken, revokeToken, getProf
 import { runSync, backfillAttachments } from '../sync'
 import { serverChecks, redactPii, type CaseRow } from '../ai'
 import { classifyTone } from '../tone'
-import { getAttachment } from '../gmail'
+import { getAttachment, getMessage } from '../gmail'
 import { AMAZON_ATTACHMENT_RULES, checkAttachments } from '../attachments'
 
 // Protected (mounted behind requireAuth)
@@ -115,6 +115,32 @@ gmailApi.post('/attachment-backfill', requireManager, async (c) => {
   try { return c.json({ ok: true, ...(await backfillAttachments(c.env, sql)) }) }
   catch (e: any) { return c.json({ error: e.message }, 502) }
   finally { await sql.end() }
+})
+
+// GET /api/gmail/messages/:id/structure (manager) — MIME structure of one stored message: part types, filenames,
+// sizes and link hosts only. No body text or file content. Used to diagnose how a client sent its photos.
+gmailApi.get('/messages/:id/structure', requireManager, async (c) => {
+  const id = Number(c.req.param('id'))
+  const sql = getDb(c.env)
+  try {
+    const [m] = await sql`SELECT gmail_message_id FROM messages WHERE id = ${id}`
+    if (!m?.gmail_message_id) return c.json({ error: 'No Gmail message for this id' }, 404)
+    const token = await accessToken(c.env, sql)
+    const gm = await getMessage(token, m.gmail_message_id)
+    const parts: any[] = []
+    const walk = (p: any, depth: number) => {
+      parts.push({ depth, mimeType: p.mimeType, filename: p.filename || null, size: p.body?.size ?? null, hasAttachmentId: !!p.body?.attachmentId,
+        disposition: p.headers?.find((h: any) => h.name.toLowerCase() === 'content-disposition')?.value ?? null,
+        contentId: p.headers?.find((h: any) => h.name.toLowerCase() === 'content-id')?.value ?? null })
+      ;(p.parts ?? []).forEach((x: any) => walk(x, depth + 1))
+    }
+    walk(gm.payload, 0)
+    let html = ''
+    const find = (p: any) => { if (p.mimeType === 'text/html' && p.body?.data && !html) html = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/')); (p.parts ?? []).forEach(find) }
+    find(gm.payload)
+    const linkHosts = [...new Set([...html.matchAll(/(?:href|src)="([^"]+)"/g)].map((x) => { try { const U = new URL(x[1]); return U.host + U.pathname.slice(0, 48) } catch { return x[1].slice(0, 48) } }))].slice(0, 20)
+    return c.json({ parts, linkHosts, sizeEstimate: (gm as any).sizeEstimate ?? null })
+  } catch (e: any) { return c.json({ error: e.message }, 502) } finally { await sql.end() }
 })
 
 // GET /api/gmail/attachments/:id — stream a customer attachment from Gmail to a logged-in member of staff.
