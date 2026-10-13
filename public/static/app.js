@@ -966,6 +966,7 @@
                 <button id="sync-now" class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-rotate mr-1"></i>Sync all now</button>
                 ${isManager ? '<button id="tone-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Label customer messages that have no tone yet"><i class="fas fa-tags mr-1"></i>Label tones</button>' : ''}
                 ${isManager ? '<button id="att-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Record photo/PDF attachments on messages imported before attachments were tracked"><i class="fas fa-paperclip mr-1"></i>Scan attachments</button>' : ''}
+                ${isManager && boxes.length > 1 ? '<button id="dedupe-btn" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="The same Amazon email arrives in every mailbox. Remove copies imported twice before cross-mailbox de-duplication was added."><i class="fas fa-clone mr-1"></i>Remove duplicates</button>' : ''}
               </div>
             </div>` : ''}
           </div>
@@ -1033,6 +1034,18 @@
           total += data.labelled; rounds++
           if (!data.remaining || !data.labelled || rounds > 40) { toast(`Tone labels: ${total} message(s) labelled, ${data.remaining} remaining`); break }
         }
+      } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      renderGmail()
+    })
+    app.querySelector('#dedupe-btn')?.addEventListener('click', async (e) => {
+      const b = e.currentTarget; b.disabled = true
+      try {
+        const { data } = await axios.post('/api/gmail/dedupe', { apply: false })
+        if (!data.duplicates) { toast('No duplicate messages found'); b.disabled = false; return }
+        const sample = data.sample.slice(0, 6).map((x) => `${x.case_ref}: "${x.preview}…" (${x.reason})`).join('\n')
+        if (!confirm(`Found ${data.duplicates} duplicate message(s) imported from two mailboxes.\n\nThe earliest copy is kept; the later copy is removed. Examples:\n${sample}\n\nRemove them now?`)) { b.disabled = false; return }
+        const r = await axios.post('/api/gmail/dedupe', { apply: true })
+        toast(`Removed ${r.data.removed} duplicate message(s)`)
       } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
       renderGmail()
     })

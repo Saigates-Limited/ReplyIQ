@@ -260,3 +260,7 @@ R2 bucket (token needs "Workers R2 Storage: Edit"), Gmail attachments shown in c
 - API: `GET /api/gmail/status` → `mailboxes[]`, `multi_mailbox` · `POST /api/gmail/connect {label}` · `POST /api/gmail/disconnect {mailbox_id}` ·
   `PATCH /api/gmail/mailboxes/:id {label, enabled, is_default}` · `POST /api/gmail/sync {days?, mailbox_id?}`.
 - App tolerates the migration not being applied yet (single-mailbox behaviour; the page shows a banner).
+- **Cross-mailbox de-duplication**: the same Amazon email reaches every connected mailbox with a different Gmail id. Sync now skips a
+  message whose RFC `Message-ID` header (or identical text within 2 min on the same case) is already stored; Amazon notices are
+  deduped the same way. One-off clean-up for copies imported before this: Gmail page → **Remove duplicates**
+  (`POST /api/gmail/dedupe {apply}`; preview first; keeps the earliest copy, re-points attachments, merges duplicate event rows).

@@ -159,6 +159,53 @@ gmailApi.post('/tone-backfill', requireManager, async (c) => {
 })
 
 // POST /api/gmail/attachment-backfill (manager) — one-off after migration 0009; call until remaining = 0
+// POST /api/gmail/dedupe {apply?: boolean} (manager)
+// One-off clean-up after connecting a second mailbox: the same Amazon email imported once per mailbox.
+// Duplicate = same case, same direction, same kind, identical Message-ID header (or identical body within 2 min).
+// Keeps the EARLIEST row (lowest id); re-points attachments; removes the later copies. Preview with apply=false.
+gmailApi.post('/dedupe', requireManager, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { apply?: boolean }
+  const sql = getDb(c.env)
+  try {
+    const dups = await sql<{ keep_id: number; drop_id: number; case_id: number; case_ref: string; reason: string; sent_at: string; preview: string }[]>`
+      WITH d AS (
+        SELECT b.id AS drop_id, a.id AS keep_id, a.case_id,
+               CASE WHEN a.rfc_message_id IS NOT NULL AND a.rfc_message_id = b.rfc_message_id THEN 'same Message-ID' ELSE 'same text within 2 min' END AS reason,
+               b.sent_at, left(b.body, 80) AS preview,
+               ROW_NUMBER() OVER (PARTITION BY b.id ORDER BY a.id) AS rn
+        FROM messages a JOIN messages b
+          ON b.case_id = a.case_id AND b.id > a.id AND b.direction = a.direction AND b.kind = a.kind
+         AND ( (a.rfc_message_id IS NOT NULL AND a.rfc_message_id = b.rfc_message_id)
+            OR (a.body = b.body AND abs(extract(epoch from (a.sent_at - b.sent_at))) < 120) )
+      )
+      SELECT d.drop_id, d.keep_id, d.case_id, c.case_ref, d.reason, d.sent_at, d.preview
+      FROM d JOIN cases c ON c.id = d.case_id WHERE d.rn = 1 ORDER BY d.case_id, d.drop_id`
+    if (!body.apply) return c.json({ apply: false, duplicates: dups.length, sample: dups.slice(0, 50) })
+    let removed = 0
+    for (const r of dups) {
+      await sql.begin(async (tx) => {
+        await tx`UPDATE attachments SET message_id = ${r.keep_id} WHERE message_id = ${r.drop_id}`.catch(() => {})
+        // If the kept row lacks tone/Message-ID that the duplicate has, carry them over before dropping.
+        await tx`UPDATE messages k SET rfc_message_id = COALESCE(k.rfc_message_id, d.rfc_message_id), tone = COALESCE(k.tone, d.tone), tone_source = COALESCE(k.tone_source, d.tone_source), tone_model = COALESCE(k.tone_model, d.tone_model)
+                 FROM messages d WHERE k.id = ${r.keep_id} AND d.id = ${r.drop_id}`.catch(() => {})
+        // Duplicate Amazon notice → duplicate event row too. Keep the event behind the kept message; if staff had
+        // already progressed the duplicate's status/response, carry that over first, then drop it.
+        await tx`UPDATE amazon_events k SET status = CASE WHEN k.status IN ('open','requested') AND d.status NOT IN ('open','requested') THEN d.status ELSE k.status END,
+                   response_text = COALESCE(k.response_text, d.response_text), responded_at = COALESCE(k.responded_at, d.responded_at), responded_by = COALESCE(k.responded_by, d.responded_by)
+                 FROM amazon_events d, messages mk, messages md
+                 WHERE mk.id = ${r.keep_id} AND md.id = ${r.drop_id} AND k.id = mk.event_id AND d.id = md.event_id AND k.id <> d.id`.catch(() => {})
+        await tx`DELETE FROM amazon_events WHERE id = (SELECT event_id FROM messages WHERE id = ${r.drop_id})
+                 AND EXISTS (SELECT 1 FROM messages mk WHERE mk.id = ${r.keep_id} AND mk.event_id IS NOT NULL AND mk.event_id <> amazon_events.id)`.catch(() => {})
+        const del = await tx`DELETE FROM messages WHERE id = ${r.drop_id} RETURNING id`
+        removed += del.length
+      })
+    }
+    return c.json({ apply: true, duplicates: dups.length, removed })
+  } finally {
+    await sql.end()
+  }
+})
+
 gmailApi.post('/attachment-backfill', requireManager, async (c) => {
   const sql = getDb(c.env)
   try { return c.json({ ok: true, ...(await backfillAttachments(c.env, sql)) }) }

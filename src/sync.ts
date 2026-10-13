@@ -101,6 +101,23 @@ function stripQuoted(raw: string) {
   return t.split('\n').filter((l) => !/^>/.test(l)).join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
+/** The same email lands in every connected mailbox with a DIFFERENT Gmail id per account. The RFC Message-ID header
+ *  is identical across copies, so that is the cross-mailbox duplicate key; emails without one fall back to
+ *  (same case, same direction, same text, sent within 2 minutes). Returns the existing message id or null. */
+async function alreadyImported(sql: Sql, m: GmailMessage, caseId: number | null, body: string, direction: 'inbound' | 'outbound'): Promise<number | null> {
+  const rfc = header(m, 'Message-ID') || null
+  if (rfc) {
+    const [r] = await sql`SELECT id FROM messages WHERE rfc_message_id = ${rfc} LIMIT 1`
+    if (r) return r.id
+  }
+  if (caseId != null && body) {
+    const at = new Date(Number(m.internalDate))
+    const [r] = await sql`SELECT id FROM messages WHERE case_id = ${caseId} AND direction = ${direction} AND body = ${body.slice(0, 20000)} AND abs(extract(epoch from (sent_at - ${at}))) < 120 LIMIT 1`
+    if (r) return r.id
+  }
+  return null
+}
+
 /** Sent by us = from any connected Saigates mailbox, or carrying Gmail's SENT label. */
 function isOurs(m: GmailMessage, ourEmails: string[]) {
   const from = parseAddress(header(m, 'From')).address
@@ -241,6 +258,8 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
         const ours = isOurs(m, ourEmails)
         const body = ours ? stripQuoted(messageBody(m)) : parseAmazonBody(messageBody(m)).text
         if (!body) continue
+        // Same email already imported through another mailbox → keep ONE message, not one per mailbox.
+        if (await alreadyImported(sql, m, kase.id, body, ours ? 'outbound' : 'inbound')) continue
         const sender = ours ? 'Saigates Support' : isAmazonCsRelay(body) ? 'Amazon Customer Service (on behalf of customer)' : 'Customer'
         const [ins] = await sql`
           INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, rfc_message_id, sent_at ${multi ? sql`, mailbox_id` : sql``})
@@ -377,6 +396,12 @@ export async function ingestNotice(sql: Sql, m: GmailMessage, kind: NonNullable<
 async function ingestNoticeInner(sql: Sql, m: GmailMessage, kind: NonNullable<ReturnType<typeof classifyNotice>>, result: SyncResult): Promise<'new' | 'dup' | 'skip'> {
   const [dup] = await sql`SELECT 1 FROM messages WHERE gmail_message_id = ${m.id} UNION ALL SELECT 1 FROM amazon_events WHERE gmail_message_id = ${m.id} LIMIT 1`
   if (dup) return 'dup'
+  // Same notice delivered to another connected mailbox (identical Message-ID header) → already have it.
+  const rfcId = header(m, 'Message-ID') || null
+  if (rfcId) {
+    const [dup2] = await sql`SELECT 1 FROM messages WHERE rfc_message_id = ${rfcId} LIMIT 1`
+    if (dup2) return 'dup'
+  }
   const at = new Date(Number(m.internalDate))
   const body = messageBody(m)
   const subject = header(m, 'Subject')
@@ -404,8 +429,8 @@ async function ingestNoticeInner(sql: Sql, m: GmailMessage, kind: NonNullable<Re
     const status = evKind === 'atoz_decision' ? (r.decision === 'granted' ? 'lost' : r.decision === 'denied' ? 'won' : 'open') : 'open'
     const [ev] = await sql`INSERT INTO amazon_events (case_id, order_id, kind, status, amount, received_at, deadline_at, gmail_message_id, gmail_thread_id, raw_excerpt, reply_to)
               VALUES (${k.id}, ${r.orderId}, ${evKind}, ${status}, ${r.amount}, ${at}, ${deadline}, ${m.id}, ${m.threadId}, ${r.excerpt}, ${replyTo}) RETURNING id`
-    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id)
-              VALUES (${k.id}, 'inbound', 'Amazon A-to-z Guarantee', ${r.excerpt}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id})`
+    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id, rfc_message_id)
+              VALUES (${k.id}, 'inbound', 'Amazon A-to-z Guarantee', ${r.excerpt}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id}, ${header(m, 'Message-ID') || null})`
     if (evKind !== 'atoz_decision') await sql`UPDATE cases SET a_to_z_open = TRUE, updated_at = now() WHERE id = ${k.id}`
     if (evKind === 'atoz_decision') await sql`UPDATE cases SET a_to_z_open = FALSE, updated_at = now() WHERE id = ${k.id}`
     return 'new'
@@ -417,8 +442,8 @@ async function ingestNoticeInner(sql: Sql, m: GmailMessage, kind: NonNullable<Re
     const k = await caseForOrder(sql, r.orderId, { subject: `Return: ${r.reason ?? 'requested'}`, product: r.product, at })
     const [ev] = await sql`INSERT INTO amazon_events (case_id, order_id, kind, status, received_at, return_request_date, policy_check, authorisation, asin, sku, quantity, return_reason, customer_comment, product, gmail_message_id, gmail_thread_id, raw_excerpt)
               VALUES (${k.id}, ${r.orderId}, 'return_request', 'requested', ${at}, ${r.requestDate}, ${r.policyCheck}, ${r.authorisation}, ${r.asin}, ${r.sku}, ${r.quantity}, ${r.reason}, ${r.comment}, ${r.product}, ${m.id}, ${m.threadId}, ${r.excerpt}) RETURNING id`
-    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id)
-              VALUES (${k.id}, 'inbound', 'Amazon Returns', ${r.excerpt + (r.comment ? `\nCustomer comment: ${r.comment}` : '')}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id})`
+    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id, rfc_message_id)
+              VALUES (${k.id}, 'inbound', 'Amazon Returns', ${r.excerpt + (r.comment ? `\nCustomer comment: ${r.comment}` : '')}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id}, ${header(m, 'Message-ID') || null})`
     if (r.heat) await sql`UPDATE cases SET battery_flag = TRUE, updated_at = now() WHERE id = ${k.id}`
     return 'new'
   }
@@ -434,8 +459,8 @@ async function ingestNoticeInner(sql: Sql, m: GmailMessage, kind: NonNullable<Re
               VALUES (${k.id}, ${r.orderId}, 'chargeback', 'open', ${r.amount}, ${r.currency}, ${at}, ${deadline}, ${r.orderDate}, ${r.itemDescription}, ${replyTo}, ${classifyReplyTo(replyTo)}, now(), ${r.itemDescription}, ${m.id}, ${m.threadId}, ${excerptRedacted}) RETURNING id`
       .catch(() => sql`INSERT INTO amazon_events (case_id, order_id, kind, status, amount, currency, received_at, deadline_at, order_date, item_description, reply_to, product, gmail_message_id, gmail_thread_id, raw_excerpt)
               VALUES (${k.id}, ${r.orderId}, 'chargeback', 'open', ${r.amount}, ${r.currency}, ${at}, ${deadline}, ${r.orderDate}, ${r.itemDescription}, ${replyTo}, ${r.itemDescription}, ${m.id}, ${m.threadId}, ${excerptRedacted}) RETURNING id`)
-    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id)
-              VALUES (${k.id}, 'inbound', 'Amazon Chargebacks', ${excerptRedacted}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id})`
+    await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id, rfc_message_id)
+              VALUES (${k.id}, 'inbound', 'Amazon Chargebacks', ${excerptRedacted}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id}, ${header(m, 'Message-ID') || null})`
     await sql`UPDATE cases SET chargeback_open = TRUE, updated_at = now() WHERE id = ${k.id}`
     return 'new'
   }
