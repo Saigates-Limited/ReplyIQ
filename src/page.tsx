@@ -6,7 +6,16 @@ const HEAD = (title: string) => `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
+  <script>
+    // Apply saved theme + sidebar state before first paint (no flash). Stored only in this browser.
+    try {
+      var t = localStorage.getItem('riq.theme');
+      if (t === 'dark') document.documentElement.classList.add('dark');
+      if (localStorage.getItem('riq.sidebar') === 'collapsed') document.documentElement.classList.add('sb-collapsed');
+    } catch (e) {}
+  </script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' }</script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link href="/static/style.css" rel="stylesheet">
@@ -20,33 +29,36 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
   <div id="shell" class="min-h-screen lg:flex">
     <!-- Sidebar (dark, collapsible on small screens) -->
     <aside id="sidebar" class="sidebar bg-slate-950 text-slate-300 lg:w-60 lg:flex-shrink-0 lg:min-h-screen">
-      <div class="flex items-center justify-between px-4 py-3 lg:py-4">
-        <a href="/" class="flex items-center gap-2" data-link>
-          <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-sky-500 text-white"><i class="fas fa-reply-all"></i></span>
-          <span class="font-bold text-white text-lg">ReplyIQ</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded bg-violet-600 text-white font-semibold">v2</span>
+      <div class="sb-head flex items-center justify-between px-4 py-3 lg:py-4">
+        <a href="/" class="flex items-center gap-2 min-w-0" data-link title="ReplyIQ">
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-sky-500 text-white flex-shrink-0"><i class="fas fa-reply-all"></i></span>
+          <span class="sb-label font-bold text-white text-lg">ReplyIQ</span>
+          <span class="sb-label text-[10px] px-1.5 py-0.5 rounded bg-violet-600 text-white font-semibold">v2</span>
         </a>
         <button id="sidebar-toggle" class="lg:hidden text-slate-300 text-xl px-2" aria-label="Menu"><i class="fas fa-bars"></i></button>
+        <button id="sidebar-collapse" class="hidden lg:inline-flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-white hover:bg-slate-800" aria-label="Collapse sidebar" title="Collapse sidebar"><i class="fas fa-angles-left text-xs"></i></button>
       </div>
-      <div class="px-4 pb-3 hidden lg:block">
+      <div class="sb-label px-4 pb-3 hidden lg:block">
         <div class="rounded-md bg-slate-800 px-3 py-2 text-xs text-slate-200 flex items-center gap-2"><span class="text-[10px] font-bold px-1 rounded bg-slate-700">GB</span> Saigates Ltd <span class="text-slate-500">· Amazon UK</span></div>
       </div>
       <nav id="side-nav" class="side-nav hidden lg:block px-2 pb-4 text-sm">
-        <a href="/" data-link data-nav="dashboard" class="nav-tab"><i class="fas fa-gauge w-5"></i>Dashboard</a>
-        <a href="/inbox" data-link data-nav="messages" class="nav-tab"><i class="fas fa-inbox w-5"></i>Inbox <span class="nav-badge" data-badge="messages"></span></a>
-        <a href="/atoz" data-link data-nav="atoz" class="nav-tab"><i class="fas fa-scale-balanced w-5"></i>A-to-Z claims <span class="nav-badge" data-badge="atoz"></span></a>
-        <a href="/returns" data-link data-nav="returns" class="nav-tab"><i class="fas fa-rotate-left w-5"></i>Returns <span class="nav-badge" data-badge="returns"></span></a>
-        <a href="/chargebacks" data-link data-nav="chargebacks" class="nav-tab"><i class="fas fa-credit-card w-5"></i>Chargebacks <span class="nav-badge" data-badge="chargebacks"></span></a>
-        <div class="px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Reference</div>
-        <a href="/policy" data-link data-nav="policy" class="nav-tab"><i class="fas fa-book w-5"></i>Reply policy</a>
-        <div class="px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Setup</div>
-        <a href="/settings" data-link data-nav="settings" class="nav-tab"><i class="fas fa-gear w-5"></i>Settings</a>
-        <a href="/gmail" data-link data-nav="gmail" class="nav-tab"><i class="fab fa-google w-5"></i>Gmail</a>
-        ${user.role === 'manager' ? `<a href="/staff" data-link data-nav="staff" class="nav-tab"><i class="fas fa-users w-5"></i>Team</a>` : ''}
-        <div class="mt-6 px-3 pt-3 border-t border-slate-800 flex items-center gap-2">
-          <span class="inline-flex items-center justify-center w-8 h-8 rounded-full ${user.role === 'manager' ? 'bg-violet-500' : 'bg-sky-600'} text-white text-xs font-bold">${esc(user.name.replace(/[^\p{L}\s]/gu, '').trim().split(/\s+/).map((p) => p[0] || '').join('').slice(0, 2).toUpperCase())}</span>
-          <span class="min-w-0"><span class="block text-white text-sm truncate">${esc(user.name)}</span><span class="block text-[10px] text-emerald-400 uppercase">● ${esc(user.role)}</span></span>
-          <button id="logout-btn" class="ml-auto text-slate-400 hover:text-white" title="Sign out"><i class="fas fa-right-from-bracket"></i></button>
+        <a href="/" data-link data-nav="dashboard" class="nav-tab" title="Dashboard"><i class="fas fa-gauge w-5"></i><span class="nav-label">Dashboard</span></a>
+        <a href="/inbox" data-link data-nav="messages" class="nav-tab" title="Inbox"><i class="fas fa-inbox w-5"></i><span class="nav-label">Inbox</span> <span class="nav-badge" data-badge="messages"></span></a>
+        <a href="/atoz" data-link data-nav="atoz" class="nav-tab" title="A-to-Z claims"><i class="fas fa-scale-balanced w-5"></i><span class="nav-label">A-to-Z claims</span> <span class="nav-badge" data-badge="atoz"></span></a>
+        <a href="/returns" data-link data-nav="returns" class="nav-tab" title="Returns"><i class="fas fa-rotate-left w-5"></i><span class="nav-label">Returns</span> <span class="nav-badge" data-badge="returns"></span></a>
+        <a href="/chargebacks" data-link data-nav="chargebacks" class="nav-tab" title="Chargebacks"><i class="fas fa-credit-card w-5"></i><span class="nav-label">Chargebacks</span> <span class="nav-badge" data-badge="chargebacks"></span></a>
+        <div class="nav-group px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Reference</div>
+        <a href="/policy" data-link data-nav="policy" class="nav-tab" title="Reply policy"><i class="fas fa-book w-5"></i><span class="nav-label">Reply policy</span></a>
+        <a href="/decision-trees" data-link data-nav="trees" class="nav-tab" title="Decision Trees"><i class="fas fa-sitemap w-5"></i><span class="nav-label">Decision Trees</span></a>
+        <a href="/knowledge" data-link data-nav="knowledge" class="nav-tab" title="Knowledge base"><i class="fas fa-brain w-5"></i><span class="nav-label">Knowledge base</span> <span class="nav-badge nav-badge-muted" data-badge="kb"></span></a>
+        <div class="nav-group px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Setup</div>
+        <a href="/settings" data-link data-nav="settings" class="nav-tab" title="Settings"><i class="fas fa-gear w-5"></i><span class="nav-label">Settings</span></a>
+        <a href="/gmail" data-link data-nav="gmail" class="nav-tab" title="Gmail"><i class="fab fa-google w-5"></i><span class="nav-label">Gmail</span></a>
+        ${user.role === 'manager' ? `<a href="/staff" data-link data-nav="staff" class="nav-tab" title="Team"><i class="fas fa-users w-5"></i><span class="nav-label">Team</span></a>` : ''}
+        <div class="sb-user mt-6 px-3 pt-3 border-t border-slate-800 flex items-center gap-2">
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-full flex-shrink-0 ${user.role === 'manager' ? 'bg-violet-500' : 'bg-sky-600'} text-white text-xs font-bold" title="${esc(user.name)} · ${esc(user.role)}">${esc(user.name.replace(/[^\p{L}\s]/gu, '').trim().split(/\s+/).map((p) => p[0] || '').join('').slice(0, 2).toUpperCase())}</span>
+          <span class="sb-label min-w-0"><span class="block text-white text-sm truncate">${esc(user.name)}</span><span class="block text-[10px] text-emerald-400 uppercase">● ${esc(user.role)}</span></span>
+          <button id="logout-btn" class="sb-label ml-auto text-slate-400 hover:text-white" title="Sign out"><i class="fas fa-right-from-bracket"></i></button>
         </div>
       </nav>
     </aside>
@@ -58,6 +70,7 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
           <input id="global-search" class="w-full rounded-md border border-slate-200 bg-slate-50 pl-8 pr-3 py-1.5 text-sm" placeholder="Search order ID, name, subject…">
         </div>
         <span id="header-clock" class="font-mono text-xs text-slate-500 hidden md:inline ml-auto"></span>
+        <button id="theme-toggle" class="inline-flex items-center justify-center w-8 h-8 rounded-md border border-slate-200 text-slate-500 hover:bg-slate-100" aria-label="Toggle dark mode" title="Dark / light mode"><i class="fas fa-moon"></i></button>
       </header>
       <main id="app" class="flex-1 min-w-0 p-3 sm:p-5">
         <p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>

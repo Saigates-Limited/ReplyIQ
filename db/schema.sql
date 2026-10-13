@@ -284,3 +284,30 @@ CREATE TABLE IF NOT EXISTS public.review_requests (
 );
 ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS delivery_date_source TEXT;   -- staff | amazon_actual | amazon_estimated
 ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS spapi_synced_at TIMESTAMPTZ;
+
+-- ── 0011 Knowledge base (staff rules appended to the AI system prompt after reply_instructions.md) ──
+CREATE TABLE IF NOT EXISTS public.kb_rules (
+  id           SERIAL PRIMARY KEY,
+  kind         TEXT NOT NULL DEFAULT 'rule' CHECK (kind IN ('rule','fact','example')),
+  category     TEXT NOT NULL DEFAULT 'general',
+  title        TEXT NOT NULL CHECK (length(title) BETWEEN 3 AND 120),
+  rule_text    TEXT NOT NULL CHECK (length(rule_text) BETWEEN 10 AND 1500),
+  modes        TEXT NOT NULL DEFAULT 'all' CHECK (modes IN ('all','customer','amazon')),
+  status       TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active','rejected','retired')),
+  sort_order   INTEGER NOT NULL DEFAULT 100,
+  created_by   INTEGER REFERENCES public.users(id) ON DELETE SET NULL,
+  approved_by  INTEGER REFERENCES public.users(id) ON DELETE SET NULL,
+  approved_at  TIMESTAMPTZ,
+  retired_at   TIMESTAMPTZ,
+  review_note  TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_kb_rules_status ON public.kb_rules(status, sort_order, id);
+ALTER TABLE public.drafts ADD COLUMN IF NOT EXISTS kb_rule_ids INTEGER[];
+DROP TRIGGER IF EXISTS trg_kb_rules_updated ON public.kb_rules;
+CREATE TRIGGER trg_kb_rules_updated BEFORE UPDATE ON public.kb_rules FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+CREATE OR REPLACE FUNCTION public.refuse_delete() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'Deleting % rows is disabled — retire/archive instead', TG_TABLE_NAME; END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_kb_rules_no_delete ON public.kb_rules;
+CREATE TRIGGER trg_kb_rules_no_delete BEFORE DELETE ON public.kb_rules FOR EACH ROW EXECUTE FUNCTION public.refuse_delete();

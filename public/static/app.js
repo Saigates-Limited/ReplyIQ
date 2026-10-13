@@ -68,7 +68,7 @@
   function route() {
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
     const p = location.pathname
-    setActiveNav(m || p === '/inbox' ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/settings' ? 'settings' : 'dashboard')
+    setActiveNav(m || p === '/inbox' ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/settings' ? 'settings' : 'dashboard')
     refreshBadges()
     document.getElementById('sidebar')?.classList.remove('open')
     if (m) renderInbox(Number(m[1]))
@@ -77,12 +77,33 @@
     else if (p === '/gmail') renderGmail()
     else if (p === '/policy') renderPolicy()
     else if (p === '/settings') renderSettings()
+    else if (p === '/decision-trees') renderDecisionTrees()
+    else if (p === '/knowledge') renderKnowledge()
     else if (p === '/atoz') renderTracker('atoz')
     else if (p === '/returns') renderTracker('return')
     else if (p === '/chargebacks') renderTracker('chargeback')
     else renderDashboard()
   }
   document.getElementById('sidebar-toggle')?.addEventListener('click', () => document.getElementById('sidebar').classList.toggle('open'))
+
+  // ---------- desktop sidebar collapse + dark/light theme (both remembered per browser) ----------
+  const html = document.documentElement
+  const collapseBtn = document.getElementById('sidebar-collapse')
+  const syncCollapse = () => { if (collapseBtn) collapseBtn.title = html.classList.contains('sb-collapsed') ? 'Expand sidebar' : 'Collapse sidebar' }
+  collapseBtn?.addEventListener('click', () => {
+    html.classList.toggle('sb-collapsed')
+    localStorage.setItem('riq.sidebar', html.classList.contains('sb-collapsed') ? 'collapsed' : 'expanded')
+    syncCollapse()
+  })
+  syncCollapse()
+  const themeBtn = document.getElementById('theme-toggle')
+  const syncTheme = () => { if (themeBtn) { const dark = html.classList.contains('dark'); themeBtn.innerHTML = dark ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>'; themeBtn.title = dark ? 'Switch to light mode' : 'Switch to dark mode' } }
+  themeBtn?.addEventListener('click', () => {
+    html.classList.toggle('dark')
+    localStorage.setItem('riq.theme', html.classList.contains('dark') ? 'dark' : 'light')
+    syncTheme()
+  })
+  syncTheme()
   let searchTerm = ''
   document.getElementById('global-search')?.addEventListener('input', (e) => {
     searchTerm = e.target.value.trim().toLowerCase()
@@ -99,6 +120,7 @@
       const { data } = await axios.get('/api/events/counts')
       const set = (k, v) => { const el = document.querySelector(`[data-badge="${k}"]`); if (el) el.textContent = v ? String(v) : '' }
       set('atoz', data.atoz); set('returns', data.returns); set('chargebacks', data.chargebacks); set('messages', data.messages)
+      if (data.kb_pending !== undefined) set('kb', data.kb_pending)
     } catch {}
     badgeTimer = setTimeout(refreshBadges, 120000)
   }
@@ -1199,6 +1221,7 @@
             ${row('Tone model', `<code>${esc(st.tone_model)}</code>`)}
             ${row('Data retention at OpenAI', `<code>store: ${st.openai_store}</code> — nothing kept`)}
             ${row('Sent to the model', 'first name, redacted thread, case fields, Amazon events')}
+            ${row('System prompt', `<code>reply_instructions.md</code> + <a href="/knowledge" data-link class="text-sky-700 hover:underline">active knowledge-base rules</a>`)}
             ${row('Never sent', 'surname, email, phone, address, internal notes, attachments')}
           </div>
           <div class="bg-white rounded-xl shadow-sm p-5">
@@ -1245,6 +1268,235 @@
       const out = document.getElementById('spapi-test-result'); e.target.disabled = true; out.textContent = 'testing…'
       try { const { data } = await axios.post('/api/spapi/test'); out.innerHTML = data.ok ? `<span class="text-emerald-700">✓ ${esc(data.detail)}</span>` : `<span class="text-red-700">✗ ${esc(data.detail)}</span>` } catch (err) { out.innerHTML = `<span class="text-red-700">${esc(err.response?.data?.error || err.message)}</span>` }
       e.target.disabled = false
+    })
+  }
+
+  // ---------- DECISION TREES (visual walk-through of the lanes in reply_instructions.md) ----------
+  // Node shapes: { q, branches:[{label, next}] } decision · { do:[...], flags:{manager,urgency}, note } outcome · { step, next } action step.
+  const CHECKLIST = ['Sign out of iCloud and turn off Find My', 'Factory reset the phone', 'Remove the SIM card', 'Pack it securely with any accessories that came with it']
+  const MGR = { manager: true }
+  const TREES = [
+    { id: 'step0', cat: 'Always first', title: 'Step 0 — check before any lane', icon: 'fa-shield-halved', section: 'Step 0 — check first', summary: 'Runs before every reply. Stops the draft or forces manager review.',
+      root: { q: 'Is refund_issued = Yes, or is an A-to-Z claim open?', branches: [
+        { label: 'Yes', next: { do: ['Short acknowledgement only: “Thank you, we are looking into this and will update you shortly.”', 'Stop — do not use any other lane'], flags: MGR } },
+        { label: 'No', next: { q: 'Does the customer mention the Consumer Rights Act, Trading Standards, legal action, a solicitor, a chargeback or an A-to-Z claim?', branches: [
+          { label: 'Yes', next: { do: ['Continue to the right lane below', 'Flag for manager'], flags: MGR } },
+          { label: 'No', next: { do: ['Continue to the right lane below'] } } ] } } ] } },
+    { id: 'fault', cat: 'Faults & defects', title: 'Fault reported — choose by days since delivery', icon: 'fa-screwdriver-wrench', section: 'Faults — warranty is 12 months from the delivery date', summary: 'Warranty is 12 months from the delivery date. The delivery date decides the lane.',
+      root: { q: 'How many days since delivery? (use the typed delivery date; Amazon “estimated” dates are a fallback)', branches: [
+        { label: '0–30 days', next: { do: ['Apologise', 'Offer a replacement OR a refund through Amazon’s returns process', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
+        { label: '31–90 days', next: { step: 'Give simple troubleshooting steps and ask for photos or a short video of the fault', next: { q: 'Does the fault continue?', branches: [
+          { label: 'Yes', next: { do: ['Offer a return for inspection', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
+          { label: 'No', next: { do: ['Close politely; invite them to come back if it recurs'] } } ] } } },
+        { label: '91–180 days', next: { step: 'Ask for clear photos of all six sides (front, back, top, bottom, left, right)', next: { q: 'Are the photos clear?', branches: [
+          { label: 'Clear', next: { do: ['Arrange a return for inspection — do not question the claim; the technician decides', 'Mention our Dr.Fone test report showed the phone fully working when sent', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
+          { label: 'Blurry', next: { do: ['Ask again politely for clear photos', 'If they still do not send photos, the return STILL goes ahead', 'staff_notes: “no photos before return”'] } },
+          { label: 'None sent', next: { do: ['The return still goes ahead', 'staff_notes: “no photos before return”', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } } ] } } },
+        { label: '181–365 days', next: { do: ['Ask for photos of all six sides', 'Arrange a return for inspection — the technician decides', 'Promise a report within 2 business days of receiving the phone', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
+        { label: 'Over 365 days', next: { step: 'Politely explain the 12-month warranty has ended; offer a paid repair if suitable (never say “no rights”)', next: { q: 'Do they mention the law, Trading Standards, legal action or A-to-Z?', branches: [
+          { label: 'Yes', next: { do: ['Keep the same polite wording', 'Flag for manager'], flags: MGR } },
+          { label: 'No', next: { do: ['Paid repair lane: price only if approved_repair_price is set'] } } ] } } } ] } },
+    { id: 'battery', cat: 'Faults & defects', title: 'Battery problem', icon: 'fa-battery-quarter', section: 'Battery', summary: 'Every battery case is a safety case. Heat, swelling or burning adds manager review and high urgency.',
+      root: { step: 'Tell the customer to stop using AND stop charging the phone', next: { step: 'Send the prepaid Royal Mail return label; ask them to put the UN3481 lithium battery label on the parcel', next: { q: 'Is the battery swollen, hot or burning (or battery_flag set on the order)?', branches: [
+        { label: 'Yes', next: { do: ['Same instructions, urgent tone', 'Manager must approve before sending'], flags: { manager: true, urgency: 'high' } } },
+        { label: 'No (e.g. drains fast)', next: { do: ['Arrange the return for inspection', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } } ] } } } },
+    { id: 'inr', cat: 'Item not received', title: 'Item not received', icon: 'fa-truck-ramp-box', section: 'Item not received', summary: 'Every phone is high value. Accessory-only orders skip the police reference line.',
+      root: { step: 'Apologise and confirm we are checking with the carrier', next: { step: 'Ask them to check with neighbours, anyone else at the address, and any safe place, porch or bin store', next: { q: 'Is the order a phone (or does it include one)?', branches: [
+        { label: 'Phone', next: { q: 'Does tracking show “delivered”?', branches: [
+          { label: 'Yes', next: { do: ['Explain they may be asked for a police crime reference number because the parcel shows as delivered'] } },
+          { label: 'No / in transit', next: { do: ['Give the tracking status and the next update time', 'Do not mention police references yet'] } } ] } },
+        { label: 'Accessory only', next: { do: ['Do NOT mention police crime references', 'Offer replacement or refund via Amazon once the carrier check completes'] } } ] } } } },
+    { id: 'locked', cat: 'Returns & refunds', title: 'Locked phone (iCloud / Activation Lock)', icon: 'fa-lock', section: 'Locked phone (iCloud / Activation Lock)', summary: 'Returned phones that are still locked. We never ask for the Apple ID password.',
+      root: { step: 'Ask them to remove the phone from their Apple ID (Settings › [name] › Sign Out, or icloud.com/find). Never ask for a password.', next: { q: 'Still locked after 2 business days?', branches: [
+        { label: 'Yes', next: { do: ['Flag for manager — the manager may refuse the refund', 'If they unlock it later, the refund goes ahead'], flags: MGR } },
+        { label: 'Unlocked', next: { do: ['Refund goes ahead'] } } ] } } },
+    { id: 'com', cat: 'Returns & refunds', title: 'Change of mind', icon: 'fa-rotate-left', section: 'Change of mind', summary: 'Never refuse a return. After 30 days a manager decides how to handle it.',
+      root: { q: 'Days since delivery?', branches: [
+        { label: '0–30 days', next: { do: ['Accept the return through Amazon’s returns process', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
+        { label: 'Over 30 days', next: { do: ['Never refuse the return in the reply', 'Flag for manager'], flags: MGR } } ] } },
+    { id: 'refund', cat: 'Returns & refunds', title: 'Partial refund requested', icon: 'fa-sterling-sign', section: 'Refunds', summary: 'Staff can approve up to £15. Above that a manager approves.',
+      root: { q: 'Amount offered or requested?', branches: [
+        { label: '≤ £15', next: { do: ['Staff may approve', 'Never say a refund has been “issued” unless refund_issued = Yes'] } },
+        { label: '> £15', next: { do: ['Draft can propose it but must not promise it', 'Flag for manager'], flags: MGR } } ] } },
+    { id: 'paid', cat: 'Returns & refunds', title: 'Paid repair', icon: 'fa-hand-holding-dollar', section: 'Paid repair', summary: 'Price only when approved; bank details only after the quote is accepted.',
+      root: { q: 'Is approved_repair_price set on the case?', branches: [
+        { label: 'No', next: { do: ['Say a technician will quote after inspection', 'Do NOT give a price or bank details'] } },
+        { label: 'Yes', next: { q: 'Has the customer accepted the quote (repair_quote_accepted = Yes)?', branches: [
+          { label: 'No', next: { do: ['Give the price', 'Do NOT give bank details yet'] } },
+          { label: 'Yes', next: { do: ['Give the price and our bank transfer details'] } } ] } } ] } },
+    { id: 'setup', cat: 'Setup & compatibility', title: 'eSIM / charger questions', icon: 'fa-sim-card', section: 'eSIM', summary: 'Quick facts from the policy.',
+      root: { q: 'What is the question about?', branches: [
+        { label: 'eSIM', next: { q: 'iPhone 14 or newer?', branches: [ { label: 'Yes', next: { do: ['Explain eSIM setup'] } }, { label: 'Older', next: { do: ['Do not explain eSIM setup — explain the physical SIM instead'] } } ] } },
+        { label: 'Charging cable', next: { q: 'iPhone 15 or newer?', branches: [ { label: 'Yes', next: { do: ['USB-C'] } }, { label: 'Older', next: { do: ['Lightning'] } } ] } } ] } },
+  ]
+  const NEVER = ['Ask for a PIN, passcode, verification code, Apple ID password, phone number, email address, ID document — or ask them to call us', 'Refuse a return', 'Say “waterproof”', 'Say a refund has been “issued” unless refund_issued is Yes', 'Mention, ask for or offer anything for reviews or feedback', 'Tell the customer they have “no rights” or “no claim”', 'Give bank details except for an approved paid repair']
+  function treeNode(n, depth = 0) {
+    if (n.q) return `<div class="dt-node dt-q"><div class="dt-box dt-box-q"><i class="fas fa-code-branch mr-1"></i>${esc(n.q)}</div><div class="dt-branches">${n.branches.map((b) => `<div class="dt-branch"><span class="dt-label">${esc(b.label)}</span>${treeNode(b.next, depth + 1)}</div>`).join('')}</div></div>`
+    if (n.step) return `<div class="dt-node"><div class="dt-box dt-box-step"><i class="fas fa-arrow-right mr-1"></i>${esc(n.step)}</div><div class="dt-then">${treeNode(n.next, depth + 1)}</div></div>`
+    const f = n.flags || {}
+    const checklist = n.do.filter((x) => x.startsWith('Return checklist: '))
+    const rest = n.do.filter((x) => !x.startsWith('Return checklist: '))
+    return `<div class="dt-node"><div class="dt-box dt-box-do ${f.manager ? 'dt-mgr' : ''}">
+      <ul>${rest.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+      ${checklist.length ? `<details class="mt-1"><summary class="cursor-pointer text-[11px] text-slate-500">Return checklist (${checklist.length})</summary><ul class="mt-1">${checklist.map((x) => `<li>${esc(x.replace('Return checklist: ', ''))}</li>`).join('')}</ul></details>` : ''}
+      ${f.manager || f.urgency ? `<div class="dt-flags">${f.manager ? '<span class="pill bg-amber-100 text-amber-800"><i class="fas fa-user-shield mr-1"></i>needs_manager = true</span>' : ''}${f.urgency ? `<span class="pill pill-high ml-1">urgency = ${f.urgency}</span>` : ''}</div>` : ''}
+    </div></div>`
+  }
+  let dtCat = 'All'
+  let dtOpen = new Set(JSON.parse(localStorage.getItem('riq.dt.open') || '["step0"]'))
+  function renderDecisionTrees() {
+    const cats = ['All', ...new Set(TREES.map((t) => t.cat))]
+    const shown = TREES.filter((t) => dtCat === 'All' || t.cat === dtCat)
+    app.innerHTML = `
+      <section id="decision-trees">
+        <div class="flex flex-wrap items-end justify-between gap-4 mb-4">
+          <div><h1 class="text-2xl font-bold"><i class="fas fa-sitemap mr-2 text-slate-400"></i>Decision Trees</h1><p class="text-sm text-slate-500">How each case type is handled, drawn from <a href="/policy" data-link class="text-sky-700 hover:underline">the reply policy</a>. The AI follows the same lanes; staff use these to check a draft or handle a case by hand.</p></div>
+          <div class="flex flex-wrap gap-1 text-sm">${cats.map((c) => `<button data-cat="${esc(c)}" class="px-3 py-1.5 rounded-md ${dtCat === c ? 'bg-slate-900 text-white' : 'bg-white border border-slate-300'}">${esc(c)}</button>`).join('')}</div>
+        </div>
+        <div class="mb-4 rounded-xl border border-red-200 bg-red-50 p-4">
+          <div class="font-semibold text-red-800 mb-1"><i class="fas fa-ban mr-1"></i>Never — applies on every branch</div>
+          <ul class="text-sm text-red-900 grid md:grid-cols-2 gap-x-6 gap-y-1 list-disc pl-5">${NEVER.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+        </div>
+        <div class="space-y-3">
+          ${shown.map((t) => `<article class="bg-white rounded-xl shadow-sm dt-card" data-tree="${t.id}">
+            <button class="w-full flex items-center gap-3 p-4 text-left dt-head">
+              <span class="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-slate-100 text-slate-700 flex-shrink-0"><i class="fas ${t.icon}"></i></span>
+              <span class="min-w-0 flex-1"><span class="block font-semibold">${esc(t.title)}</span><span class="block text-xs text-slate-500">${esc(t.summary)}</span></span>
+              <span class="pill bg-slate-100 text-slate-600 hidden sm:inline">${esc(t.cat)}</span>
+              <i class="fas fa-chevron-${dtOpen.has(t.id) ? 'up' : 'down'} text-slate-400 text-xs"></i>
+            </button>
+            <div class="dt-body px-4 pb-4 ${dtOpen.has(t.id) ? '' : 'hidden'}">
+              <div class="text-[11px] text-slate-400 mb-2"><i class="fas fa-book mr-1"></i>Policy section: <em>${esc(t.section)}</em></div>
+              <div class="dt-tree">${treeNode(t.root)}</div>
+            </div>
+          </article>`).join('')}
+        </div>
+      </section>`
+    app.querySelectorAll('[data-cat]').forEach((b) => (b.onclick = () => { dtCat = b.dataset.cat; renderDecisionTrees() }))
+    app.querySelectorAll('.dt-head').forEach((b) => (b.onclick = () => {
+      const id = b.closest('.dt-card').dataset.tree
+      dtOpen.has(id) ? dtOpen.delete(id) : dtOpen.add(id)
+      localStorage.setItem('riq.dt.open', JSON.stringify([...dtOpen]))
+      b.nextElementSibling.classList.toggle('hidden'); b.querySelector('.fa-chevron-up, .fa-chevron-down').className = `fas fa-chevron-${dtOpen.has(id) ? 'up' : 'down'} text-slate-400 text-xs`
+    }))
+  }
+
+  // ---------- KNOWLEDGE BASE (staff rules appended to the AI prompt after reply_instructions.md) ----------
+  let kbShow = localStorage.getItem('riq.kb.show') || 'live'
+  const KB_KIND_META = { rule: { label: 'Rule', icon: 'fa-gavel', cls: 'bg-blue-100 text-blue-800' }, fact: { label: 'Fact', icon: 'fa-circle-info', cls: 'bg-emerald-100 text-emerald-800' }, example: { label: 'Phrasing', icon: 'fa-quote-left', cls: 'bg-violet-100 text-violet-800' } }
+  const KB_STATUS_META = { draft: { label: 'Awaiting manager', cls: 'bg-amber-100 text-amber-800' }, active: { label: 'Active — used by AI', cls: 'bg-emerald-100 text-emerald-800' }, rejected: { label: 'Rejected', cls: 'bg-red-100 text-red-800' }, retired: { label: 'Retired', cls: 'bg-slate-200 text-slate-700' } }
+  const KB_MODES_LABEL = { all: 'Customer replies + Amazon statements', customer: 'Customer replies only', amazon: 'Amazon / Seller Central statements only' }
+  async function renderKnowledge() {
+    app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading knowledge base…</p>`
+    let d
+    try { ;({ data: d } = await axios.get('/api/kb', { params: { status: kbShow } })) } catch (err) { return renderError(err) }
+    const meta = d.meta
+    const active = d.rules.filter((r) => r.status === 'active').length
+    const pending = d.rules.filter((r) => r.status === 'draft').length
+    const catLabel = (c) => c.replace(/_/g, ' ')
+    const card = (r) => {
+      const k = KB_KIND_META[r.kind] || KB_KIND_META.rule, s = KB_STATUS_META[r.status] || KB_STATUS_META.draft
+      const canEdit = isManager || (r.status === 'draft' && r.created_by === ME.id)
+      return `<article class="bg-white rounded-xl shadow-sm p-4 kb-card" data-id="${r.id}">
+        <div class="flex flex-wrap items-center gap-2 mb-2">
+          <span class="pill ${k.cls}"><i class="fas ${k.icon} mr-1"></i>${k.label}</span>
+          <span class="pill bg-slate-100 text-slate-700">${esc(catLabel(r.category))}</span>
+          <span class="pill ${s.cls}">${s.label}</span>
+          <span class="ml-auto text-[10px] text-slate-400">#${r.id} · order ${r.sort_order}${r.used_in_drafts ? ` · used in ${r.used_in_drafts} draft${r.used_in_drafts === 1 ? '' : 's'}` : ''}</span>
+        </div>
+        <h3 class="font-semibold">${esc(r.title)}</h3>
+        <p class="text-sm text-slate-700 mt-1 whitespace-pre-wrap">${esc(r.rule_text)}</p>
+        <p class="text-[11px] text-slate-400 mt-2"><i class="fas fa-sliders mr-1"></i>${KB_MODES_LABEL[r.modes] || r.modes} · added by ${esc(r.created_by_name || '—')} ${dayjs(r.created_at).fromNow()}${r.approved_by_name ? ` · approved by ${esc(r.approved_by_name)}` : ''}${r.review_note ? ` · <em>“${esc(r.review_note)}”</em>` : ''}</p>
+        <div class="flex flex-wrap gap-2 mt-3 text-xs">
+          ${canEdit && ['draft', 'active'].includes(r.status) ? `<button data-act="edit" class="px-2 py-1 rounded-md border border-slate-300"><i class="fas fa-pen mr-1"></i>Edit</button>` : ''}
+          ${isManager && r.status === 'draft' ? `<button data-act="activate" class="px-2 py-1 rounded-md bg-emerald-600 text-white"><i class="fas fa-check mr-1"></i>Approve &amp; activate</button><button data-act="reject" class="px-2 py-1 rounded-md border border-red-300 text-red-700"><i class="fas fa-xmark mr-1"></i>Reject</button>` : ''}
+          ${isManager && r.status === 'active' ? `<button data-act="retire" class="px-2 py-1 rounded-md border border-slate-300 text-slate-700"><i class="fas fa-box-archive mr-1"></i>Retire</button>` : ''}
+          ${isManager && ['rejected', 'retired'].includes(r.status) ? `<button data-act="activate" class="px-2 py-1 rounded-md border border-emerald-300 text-emerald-700"><i class="fas fa-rotate-left mr-1"></i>Re-activate</button>` : ''}
+        </div>
+      </article>`
+    }
+    const form = (r) => `
+      <form id="kb-form" class="bg-white rounded-xl shadow-sm p-5 space-y-3" data-id="${r ? r.id : ''}">
+        <h2 class="font-semibold">${r ? `Edit rule #${r.id}` : 'Add to the knowledge base'}</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="field-label">Type</label><select name="kind" class="field-input">${meta.kinds.map((k) => `<option value="${k}" ${r?.kind === k ? 'selected' : ''}>${KB_KIND_META[k].label}</option>`).join('')}</select></div>
+          <div><label class="field-label">Category</label><select name="category" class="field-input">${meta.categories.map((k) => `<option value="${k}" ${r?.category === k ? 'selected' : ''}>${catLabel(k)}</option>`).join('')}</select></div>
+        </div>
+        <div><label class="field-label">Title (short)</label><input name="title" required minlength="3" maxlength="120" class="field-input" placeholder="e.g. iPhone 12 battery health promise" value="${esc(r?.title || '')}"></div>
+        <div><label class="field-label">What the AI should know or do</label><textarea name="rule_text" required rows="5" maxlength="${meta.max_chars}" class="field-input" placeholder="Write it as an instruction or a fact, e.g. “All phones are sold with at least 85% battery health; say so if a customer asks about battery health.”">${esc(r?.rule_text || '')}</textarea><div id="kb-check" class="text-xs mt-1 text-slate-400">Checked against the Never list as you type.</div></div>
+        <div><label class="field-label">Applies to</label><select name="modes" class="field-input">${meta.modes.map((m) => `<option value="${m}" ${r?.modes === m ? 'selected' : ''}>${KB_MODES_LABEL[m]}</option>`).join('')}</select></div>
+        ${isManager ? `<div><label class="field-label">Order (lower = earlier in the prompt)</label><input name="sort_order" type="number" class="field-input" value="${r?.sort_order ?? 100}"></div>` : ''}
+        <div class="flex gap-2">
+          <button class="flex-1 py-2 rounded-md bg-slate-900 text-white text-sm font-medium">${r ? 'Save changes' : isManager ? 'Save as draft' : 'Propose rule'}</button>
+          ${isManager && !r ? `<button type="button" id="kb-save-active" class="flex-1 py-2 rounded-md bg-emerald-600 text-white text-sm font-medium">Save &amp; activate</button>` : ''}
+          ${r ? `<button type="button" id="kb-cancel" class="px-3 py-2 rounded-md border border-slate-300 text-sm">Cancel</button>` : ''}
+        </div>
+        <p class="text-[11px] text-slate-400">${isManager ? 'Managers can activate rules. ' : 'Your rule is sent to a manager for approval before the AI uses it. '}Rules are appended to the prompt <strong>after</strong> <code>reply_instructions.md</code> and can never relax its “Never” list — the guardrail checks still run on every draft.</p>
+      </form>`
+    app.innerHTML = `
+      <section id="knowledge">
+        <div class="flex flex-wrap items-end justify-between gap-4 mb-4">
+          <div><h1 class="text-2xl font-bold"><i class="fas fa-brain mr-2 text-slate-400"></i>Knowledge base</h1><p class="text-sm text-slate-500">Rules, facts and phrasing the drafting model must follow in addition to the reply policy. <strong>${active}</strong> active · <strong>${pending}</strong> awaiting approval · max ${meta.max_active} active.</p></div>
+          <div class="flex gap-1 text-sm">${[['live', 'Active + pending'], ['active', 'Active'], ['draft', 'Pending'], ['all', 'All incl. retired']].map(([v, l]) => `<button data-show="${v}" class="px-3 py-1.5 rounded-md ${kbShow === v ? 'bg-slate-900 text-white' : 'bg-white border border-slate-300'}">${l}</button>`).join('')}</div>
+        </div>
+        ${d.migration_needed ? `<div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><i class="fas fa-database mr-1"></i>The knowledge base table does not exist yet. Run <code>db/migrations/${d.migration_needed}</code> in the Supabase SQL Editor, then reload.</div>` : ''}
+        <div class="grid lg:grid-cols-3 gap-4">
+          <div class="lg:col-span-2 space-y-3" id="kb-list">
+            ${d.rules.length ? d.rules.map(card).join('') : `<div class="bg-white rounded-xl shadow-sm p-8 text-center text-slate-500 text-sm">Nothing here yet. ${kbShow === 'live' ? 'Add the first rule on the right →' : ''}</div>`}
+          </div>
+          <div class="space-y-4">
+            <div id="kb-form-wrap">${form(null)}</div>
+            ${isManager ? `<div class="bg-white rounded-xl shadow-sm p-4"><button id="kb-preview-btn" class="text-sm text-sky-700 hover:underline"><i class="fas fa-eye mr-1"></i>Preview the exact text added to the prompt</button><pre id="kb-preview" class="hidden mt-3 text-[11px] whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-md p-3 max-h-96 overflow-auto"></pre></div>` : ''}
+            <div class="bg-white rounded-xl shadow-sm p-4 text-xs text-slate-600 space-y-2">
+              <div class="font-semibold text-slate-700"><i class="fas fa-lightbulb mr-1 text-amber-500"></i>Good knowledge-base items</div>
+              <ul class="list-disc pl-4 space-y-1">
+                <li><strong>Facts</strong> about what you sell: battery health guarantee, what is in the box, grading descriptions, charger type.</li>
+                <li><strong>Rules</strong> for situations the policy does not cover: e.g. how to answer "is it unlocked?", what to say about Face ID repairs.</li>
+                <li><strong>Phrasing</strong> you like: an opening line, how to word the six-sides photo request.</li>
+              </ul>
+              <div class="pt-1 text-slate-500">Items that ask for PINs/passwords/phone numbers, mention reviews, say "waterproof", refuse a return or contain bank details are rejected automatically.</div>
+            </div>
+          </div>
+        </div>
+      </section>`
+    app.querySelectorAll('[data-show]').forEach((b) => (b.onclick = () => { kbShow = b.dataset.show; localStorage.setItem('riq.kb.show', kbShow); renderKnowledge() }))
+    const wireForm = (r) => {
+      const f = document.getElementById('kb-form')
+      const check = document.getElementById('kb-check')
+      let t
+      f.rule_text.oninput = () => {
+        clearTimeout(t)
+        t = setTimeout(async () => {
+          try { const { data } = await axios.post('/api/kb/check', { rule_text: f.rule_text.value }); check.innerHTML = data.problems.length ? data.problems.map((p) => `<div class="text-red-700"><i class="fas fa-circle-xmark mr-1"></i>${esc(p)}</div>`).join('') : `<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>Passes the policy checks · ${f.rule_text.value.length}/${meta.max_chars}</span>` } catch {}
+        }, 350)
+      }
+      const payload = (status) => ({ kind: f.kind.value, category: f.category.value, title: f.title.value, rule_text: f.rule_text.value, modes: f.modes.value, sort_order: f.sort_order ? Number(f.sort_order.value) : undefined, status })
+      const submit = async (status) => {
+        try {
+          if (r) { await axios.patch(`/api/kb/${r.id}`, payload()); toast('Rule updated') }
+          else { await axios.post('/api/kb', payload(status)); toast(status === 'active' ? 'Rule saved and activated' : isManager ? 'Saved as draft' : 'Proposed — a manager will review it') }
+          refreshBadges(); renderKnowledge()
+        } catch (err) { const p = err.response?.data?.problems; toast(p?.length ? p[0] : err.response?.data?.error || err.message, 'err') }
+      }
+      f.onsubmit = (e) => { e.preventDefault(); submit('draft') }
+      document.getElementById('kb-save-active')?.addEventListener('click', () => submit('active'))
+      document.getElementById('kb-cancel')?.addEventListener('click', () => { document.getElementById('kb-form-wrap').innerHTML = form(null); wireForm(null) })
+    }
+    wireForm(null)
+    app.querySelectorAll('.kb-card [data-act]').forEach((b) => {
+      b.onclick = async () => {
+        const id = Number(b.closest('.kb-card').dataset.id)
+        const r = d.rules.find((x) => x.id === id)
+        const act = b.dataset.act
+        if (act === 'edit') { document.getElementById('kb-form-wrap').innerHTML = form(r); wireForm(r); document.getElementById('kb-form').scrollIntoView({ behavior: 'smooth', block: 'start' }); return }
+        let note
+        if (act === 'reject' || act === 'retire') { note = prompt(act === 'reject' ? 'Why is this rule rejected? (shown to the author)' : 'Why is this rule being retired?'); if (note === null) return }
+        try { await axios.post(`/api/kb/${id}/${act}`, { note }); toast(act === 'activate' ? 'Rule is now active — the AI will use it on the next draft' : `Rule ${act === 'reject' ? 'rejected' : 'retired'}`); refreshBadges(); renderKnowledge() } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      }
+    })
+    document.getElementById('kb-preview-btn')?.addEventListener('click', async () => {
+      const pre = document.getElementById('kb-preview')
+      try { const { data } = await axios.get('/api/kb/preview'); pre.textContent = `── Customer replies (${data.counts.customer} rules) ──${data.customer || '\n(none — prompt is reply_instructions.md only)'}\n\n── Amazon / Seller Central statements (${data.counts.amazon} rules) ──${data.amazon || '\n(none)'}`; pre.classList.toggle('hidden') } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
     })
   }
 

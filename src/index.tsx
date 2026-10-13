@@ -8,6 +8,7 @@ import { draftsApi } from './routes/drafts'
 import { gmailApi, gmailCallback, sendApi } from './routes/gmail'
 import { eventsApi, messagesApi } from './routes/events'
 import { spapiApi } from './routes/spapi'
+import { kbApi } from './routes/kb'
 import { runSync } from './sync'
 import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
@@ -89,6 +90,7 @@ app.route('/api/spapi', spapiApi) // status/test
 app.route('/api', spapiApi) // /cases/:id/fetch-order, /cases/:id/review-request
 app.route('/api/events', eventsApi) // A-to-Z / Returns / Chargebacks trackers
 app.route('/api/messages', messagesApi) // tone override
+app.route('/api/kb', kbApi) // knowledge base rules for the drafting model
 
 // SPA pages
 app.get('/', (c) => c.html(page(c.get('user'))))
@@ -98,6 +100,8 @@ app.get('/gmail', (c) => c.html(page(c.get('user'))))
 app.get('/inbox', (c) => c.html(page(c.get('user'))))
 app.get('/policy', (c) => c.html(page(c.get('user'))))
 app.get('/settings', (c) => c.html(page(c.get('user'))))
+app.get('/decision-trees', (c) => c.html(page(c.get('user'))))
+app.get('/knowledge', (c) => c.html(page(c.get('user'))))
 app.get('/api/policy', (c) => c.json({ markdown: instructions, model: MODEL, tone_model: TONE_MODEL }))
 app.get('/api/settings', (c) =>
   c.json({

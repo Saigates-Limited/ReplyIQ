@@ -1,6 +1,7 @@
 // Draft generation: builds a PII-minimised payload, calls OpenAI server-side,
 // and runs deterministic guardrail checks on the result.
 import instructions from '../reply_instructions.md?raw'
+import { kbPromptBlock, type KbRule } from './kb'
 import type { Bindings } from './db'
 import { assertNoAttachmentContent, attachmentSummaryForModel, type AttachmentMeta } from './attachments'
 
@@ -184,8 +185,8 @@ export async function generateDraft(
   env: Bindings,
   kase: CaseRow,
   messages: MessageRow[],
-  opts: { events?: EventRow[]; mode?: DraftMode } = {}
-): Promise<{ result: AiResult; payload: ReturnType<typeof buildPayload>; mode: DraftMode }> {
+  opts: { events?: EventRow[]; mode?: DraftMode; kbRules?: KbRule[] } = {}
+): Promise<{ result: AiResult; payload: ReturnType<typeof buildPayload>; mode: DraftMode; kbRuleIds: number[] }> {
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured on the server')
   const mode: DraftMode = opts.mode && DRAFT_MODES.includes(opts.mode) ? opts.mode : 'customer'
   const payload = buildPayload(kase, messages, { events: opts.events })
@@ -197,8 +198,13 @@ export async function generateDraft(
     .map((m) => `[${m.from} @ ${m.sent_at}]\n${m.text}`)
     .join('\n\n')}\n\nReturn the JSON object described under "## Output" and nothing else.`
 
+  // Knowledge base (staff-added rules) is appended AFTER the policy file; the file itself is never changed.
+  const kbRules = opts.kbRules ?? []
+  const systemMsg = instructions + kbPromptBlock(kbRules)
+
   // Hard guard: attachments are summarised as counts only. If any file content ever reaches this point, abort.
   assertNoAttachmentContent(userMsg)
+  assertNoAttachmentContent(systemMsg)
 
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
@@ -208,7 +214,7 @@ export async function generateDraft(
       store: false, // never retain prompts/completions on OpenAI's side
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: instructions },
+        { role: 'system', content: systemMsg },
         { role: 'user', content: userMsg },
       ],
     }),
@@ -239,7 +245,7 @@ export async function generateDraft(
     result.needs_manager = true
     result.urgency = 'high'
   }
-  return { result, payload, mode }
+  return { result, payload, mode, kbRuleIds: kbRules.map((r) => r.id) }
 }
 
 export type ServerFinding = { rule: string; severity: 'fail' | 'warn'; detail: string }

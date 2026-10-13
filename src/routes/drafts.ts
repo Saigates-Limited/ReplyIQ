@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import type { Vars } from '../auth'
 import { generateDraft, serverChecks, MODEL, DRAFT_MODES, type CaseRow, type MessageRow, type EventRow, type DraftMode } from '../ai'
+import { loadActiveRules } from '../kb'
 
 export const draftsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
@@ -43,7 +44,8 @@ draftsApi.post('/cases/:id/drafts', async (c) => {
     if (mode === 'customer' && !messages.some((m) => m.direction === 'inbound' && m.kind !== 'event'))
       return c.json({ error: 'No customer message on this case to reply to. Use a Seller Central mode instead.' }, 400)
 
-    const { result, payload } = await generateDraft(c.env, kase, messages, { events, mode })
+    const kbRules = await loadActiveRules(sql, mode)
+    const { result, payload, kbRuleIds } = await generateDraft(c.env, kase, messages, { events, mode, kbRules })
     const findings = serverChecks(result.draft, kase, mode)
     const checkResult = findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS'
 
@@ -64,16 +66,18 @@ draftsApi.post('/cases/:id/drafts', async (c) => {
     const needsManager = result.needs_manager || reasons.length > 0
     const urgency = batterySafety || kase.battery_flag === true ? 'high' : result.urgency
 
-    const [d] = await sql`
+    const insert = (withKb: boolean) => sql`
       INSERT INTO drafts (case_id, tree, draft_text, original_text, staff_notes, check_result, check_findings, server_findings,
-                          needs_manager, needs_manager_reason, urgency, model, created_by, mode)
+                          needs_manager, needs_manager_reason, urgency, model, created_by, mode ${withKb ? sql`, kb_rule_ids` : sql``})
       VALUES (${caseId}, ${result.lane}, ${result.draft}, ${result.draft}, ${result.staff_notes}, ${checkResult},
               ${sql.json([])}, ${sql.json(findings)},
-              ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${MODEL}, ${user.id}, ${mode})
+              ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${MODEL}, ${user.id}, ${mode} ${withKb ? sql`, string_to_array(${kbRuleIds.join(',')}, ',')::int[]` : sql``})
       RETURNING id`
+    // kb_rule_ids column arrives with migration 0011; fall back gracefully if it has not been applied yet.
+    const [d] = await insert(true).catch((e: any) => (/kb_rule_ids/.test(String(e?.message)) ? insert(false) : Promise.reject(e)))
     const draft = await loadDraft(sql, d.id)
     // Return what was sent to the model so the agent can see exactly what left the server.
-    return c.json({ draft, sent_to_model: payload }, 201)
+    return c.json({ draft, sent_to_model: payload, kb_rules_applied: kbRules.map((r) => ({ id: r.id, title: r.title })) }, 201)
   } finally {
     await sql.end()
   }

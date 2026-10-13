@@ -82,7 +82,9 @@ eventsApi.get('/counts', async (c) => {
         (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE ${af} AND e.kind = 'return_request' AND e.status NOT IN ('refunded','closed'))::int AS returns,
         (SELECT COUNT(*) FROM amazon_events e JOIN cases c ON c.id = e.case_id WHERE ${af} AND e.kind = 'chargeback' AND e.status NOT IN ('won','lost','closed'))::int AS chargebacks,
         (SELECT COUNT(*) FROM cases c WHERE c.status <> 'resolved' AND ${af})::int AS messages`)
-    return c.json(r)
+    // Knowledge-base rules awaiting a manager's decision (table arrives with migration 0011)
+    const [kb] = await sql`SELECT COUNT(*)::int AS n FROM kb_rules WHERE status = 'draft'`.catch(() => [{ n: 0 }])
+    return c.json({ ...r, kb_pending: c.get('user')?.role === 'manager' ? kb.n : 0 })
   } finally {
     await sql.end()
   }
