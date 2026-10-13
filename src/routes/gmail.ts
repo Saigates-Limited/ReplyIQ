@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
-import { authUrl, exchangeCode, encryptToken, decryptToken, revokeToken, getProfile, getConnection, accessToken, sendReply, requireGoogleConfig, GMAIL_SCOPES } from '../gmail'
+import { authUrl, exchangeCode, encryptToken, decryptToken, revokeToken, getProfile, getConnection, listConnections, hasMultiMailbox, accessToken, sendReply, requireGoogleConfig, GMAIL_SCOPES } from '../gmail'
 import { runSync, backfillAttachments } from '../sync'
 import { serverChecks, redactPii, type CaseRow } from '../ai'
 import { classifyTone } from '../tone'
@@ -17,8 +17,15 @@ const origin = (url: string) => new URL(url).origin
 gmailApi.get('/status', async (c) => {
   const sql = getDb(c.env)
   try {
-    const conn = await getConnection(sql)
-    const runs = await sql`SELECT id, started_at, finished_at, trigger, threads_seen, messages_new, cases_new, status, error FROM sync_runs ORDER BY started_at DESC LIMIT 10`
+    const all = await listConnections(sql)
+    const conn = all.find((c) => c.is_default) ?? all[0] ?? null
+    const multi = await hasMultiMailbox(sql)
+    const runs = await sql.unsafe(`SELECT r.id, r.started_at, r.finished_at, r.trigger, r.threads_seen, r.messages_new, r.cases_new, r.status, r.error
+      ${multi ? ', r.mailbox_id, g.label AS mailbox_label, g.email_address AS mailbox_email' : ', NULL::int AS mailbox_id, NULL::text AS mailbox_label, NULL::text AS mailbox_email'}
+      FROM sync_runs r ${multi ? 'LEFT JOIN gmail_connection g ON g.id = r.mailbox_id' : ''} ORDER BY r.started_at DESC LIMIT 12`)
+    // Cases per mailbox (so the UI can show what each mailbox feeds)
+    const caseCounts = multi ? await sql`SELECT mailbox_id, COUNT(*)::int AS n FROM cases WHERE mailbox_id IS NOT NULL GROUP BY mailbox_id` : []
+    const countOf = (id: number) => (caseCounts as any[]).find((x) => x.mailbox_id === id)?.n ?? 0
     let configured = true, configError: string | null = null
     try { requireGoogleConfig(c.env) } catch (e: any) { configured = false; configError = e.message }
     // Google client health probe (managers): shape of the client ID + Google's verdict. Values are never returned.
@@ -40,6 +47,8 @@ gmailApi.get('/status', async (c) => {
       configured, configError,
       connected: Boolean(conn),
       connection: conn ? { ...conn, refresh_token_enc: undefined } : null,
+      mailboxes: all.map((m) => ({ ...m, refresh_token_enc: undefined, cases: countOf(m.id) })),
+      multi_mailbox: multi,
       poll_interval_minutes: 15,
       scopes: GMAIL_SCOPES,
       recent_runs: runs,
@@ -53,11 +62,14 @@ gmailApi.get('/status', async (c) => {
 // POST /api/gmail/connect  (manager) → returns Google consent URL
 gmailApi.post('/connect', requireManager, async (c) => {
   requireGoogleConfig(c.env)
+  const body = (await c.req.json().catch(() => ({}))) as { label?: string }
+  const label = String(body.label || '').trim().replace(/[^\w\s\-&()]/g, '').slice(0, 40) || 'Mailbox'
   const state = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('')
   const sql = getDb(c.env)
   try {
     await sql`DELETE FROM oauth_states WHERE created_at < now() - INTERVAL '15 minutes'`
-    await sql`INSERT INTO oauth_states (state, user_id) VALUES (${state}, ${c.get('user').id})`
+    if (await hasMultiMailbox(sql)) await sql`INSERT INTO oauth_states (state, user_id, label) VALUES (${state}, ${c.get('user').id}, ${label})`
+    else await sql`INSERT INTO oauth_states (state, user_id) VALUES (${state}, ${c.get('user').id})`
   } finally {
     await sql.end()
   }
@@ -66,14 +78,34 @@ gmailApi.post('/connect', requireManager, async (c) => {
 
 // POST /api/gmail/disconnect (manager)
 gmailApi.post('/disconnect', requireManager, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { mailbox_id?: number }
   const sql = getDb(c.env)
   try {
-    const conn = await getConnection(sql)
+    const conn = body.mailbox_id != null ? await getConnection(sql, Number(body.mailbox_id)) : await getConnection(sql)
     if (conn) {
       try { await revokeToken(await decryptToken(c.env, conn.refresh_token_enc)) } catch {}
-      await sql`DELETE FROM gmail_connection WHERE id = 1`
+      await sql`DELETE FROM gmail_connection WHERE id = ${conn.id}`
+      // Cases keep their history; mailbox_id becomes NULL (ON DELETE SET NULL) so replies fall back to the default mailbox.
     }
     return c.json({ ok: true })
+  } finally {
+    await sql.end()
+  }
+})
+
+// PATCH /api/gmail/mailboxes/:id {label?, enabled?, is_default?} (manager)
+gmailApi.patch('/mailboxes/:id', requireManager, async (c) => {
+  const id = Number(c.req.param('id'))
+  const body = (await c.req.json().catch(() => ({}))) as { label?: string; enabled?: boolean; is_default?: boolean }
+  const sql = getDb(c.env)
+  try {
+    if (!(await hasMultiMailbox(sql))) return c.json({ error: 'Run db/migrations/0013_multi_mailbox.sql first' }, 503)
+    const conn = await getConnection(sql, id)
+    if (!conn) return c.json({ error: 'Mailbox not found' }, 404)
+    if (body.label !== undefined) await sql`UPDATE gmail_connection SET label = ${String(body.label).trim().slice(0, 40) || 'Mailbox'} WHERE id = ${id}`
+    if (body.enabled !== undefined) await sql`UPDATE gmail_connection SET enabled = ${Boolean(body.enabled)} WHERE id = ${id}`
+    if (body.is_default === true) { await sql`UPDATE gmail_connection SET is_default = FALSE`; await sql`UPDATE gmail_connection SET is_default = TRUE WHERE id = ${id}` }
+    return c.json({ ok: true, mailbox: { ...(await getConnection(sql, id))!, refresh_token_enc: undefined } })
   } finally {
     await sql.end()
   }
@@ -82,12 +114,13 @@ gmailApi.post('/disconnect', requireManager, async (c) => {
 // POST /api/gmail/sync  (any staff) → run the poller now (1-hour window)
 // POST /api/gmail/sync {days: 7|30|90}  (manager) → one-off history import
 gmailApi.post('/sync', async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { days?: number }
+  const body = (await c.req.json().catch(() => ({}))) as { days?: number; mailbox_id?: number }
   const days = [7, 30, 90].includes(Number(body.days)) ? Number(body.days) : 0
   if (days && c.get('user').role !== 'manager') return c.json({ error: 'Only a manager can import history' }, 403)
+  const mailboxId = body.mailbox_id != null && Number.isInteger(Number(body.mailbox_id)) ? Number(body.mailbox_id) : undefined
   const sql = getDb(c.env)
   try {
-    const result = await runSync(c.env, sql, days ? 'import' : 'manual', days ? { lookbackDays: days } : {})
+    const result = await runSync(c.env, sql, days ? 'import' : 'manual', { ...(days ? { lookbackDays: days } : {}), ...(mailboxId !== undefined ? { mailboxId } : {}) })
     return c.json({ ok: true, ...result })
   } catch (e: any) {
     return c.json({ error: e.message }, 502)
@@ -139,9 +172,9 @@ gmailApi.get('/messages/:id/structure', requireManager, async (c) => {
   const id = Number(c.req.param('id'))
   const sql = getDb(c.env)
   try {
-    const [m] = await sql`SELECT gmail_message_id FROM messages WHERE id = ${id}`
+    const [m] = await sql`SELECT gmail_message_id, ${(await hasMultiMailbox(sql)) ? sql`mailbox_id` : sql`NULL::int AS mailbox_id`} FROM messages WHERE id = ${id}`
     if (!m?.gmail_message_id) return c.json({ error: 'No Gmail message for this id' }, 404)
-    const token = await accessToken(c.env, sql)
+    const { token } = await accessToken(c.env, sql, m.mailbox_id)
     const gm = await getMessage(token, m.gmail_message_id)
     const parts: any[] = []
     const walk = (p: any, depth: number) => {
@@ -168,7 +201,8 @@ gmailApi.get('/attachments/:id', async (c) => {
     const [a] = await sql`SELECT * FROM attachments WHERE id = ${id}`
     if (!a) return c.json({ error: 'Attachment not found' }, 404)
     if (a.source !== 'gmail' || !a.gmail_message_id || !a.gmail_attachment_id) return c.json({ error: 'Not available yet (R2 storage not enabled)' }, 501)
-    const token = await accessToken(c.env, sql)
+    const [mrow] = (await hasMultiMailbox(sql)) ? await sql`SELECT mailbox_id FROM messages WHERE id = ${a.message_id}` : [{ mailbox_id: null }]
+    const { token } = await accessToken(c.env, sql, mrow?.mailbox_id ?? null)
     const bytes = await getAttachment(token, a.gmail_message_id, a.gmail_attachment_id)
     const safeType = /^(image\/(jpeg|png|gif|webp)|application\/pdf)$/.test(a.mime_type) ? a.mime_type : 'application/octet-stream'
     const disposition = safeType === 'application/octet-stream' ? 'attachment' : 'inline'
@@ -244,7 +278,8 @@ sendApi.post('/drafts/:id/send', async (c) => {
     if (!claimed.length) return c.json({ error: 'Draft is already being sent' }, 409)
 
     try {
-      const { token, conn } = await accessToken(c.env, sql)
+      // Reply from the mailbox the customer wrote to (case.mailbox_id); fall back to the default mailbox.
+      const { token, conn } = await accessToken(c.env, sql, (kase as any).mailbox_id ?? null)
       const sent = await sendReply(token, {
         from: conn.email_address,
         to: kase.customer_reply_to,
@@ -280,7 +315,10 @@ gmailCallback.get('/auth/google/callback', async (c) => {
   if (!code || !state) return back('Missing code or state')
   const sql = getDb(c.env)
   try {
-    const [st] = await sql`DELETE FROM oauth_states WHERE state = ${state} AND created_at > now() - INTERVAL '15 minutes' RETURNING user_id`
+    const multi = await hasMultiMailbox(sql)
+    const [st] = multi
+      ? await sql`DELETE FROM oauth_states WHERE state = ${state} AND created_at > now() - INTERVAL '15 minutes' RETURNING user_id, label`
+      : await sql`DELETE FROM oauth_states WHERE state = ${state} AND created_at > now() - INTERVAL '15 minutes' RETURNING user_id, NULL::text AS label`
     if (!st) return back('Login link expired or invalid. Please try Connect again.')
     const [u] = await sql`SELECT role FROM users WHERE id = ${st.user_id} AND is_active`
     if (u?.role !== 'manager') return back('Only a manager can connect Gmail.')
@@ -292,12 +330,25 @@ gmailCallback.get('/auth/google/callback', async (c) => {
     if (missing.length) return back(`Missing permission: ${missing.map((s) => s.split('/').pop()).join(', ')}. Please tick all boxes on the Google screen.`)
     const profile = await getProfile(tok.access_token)
     const enc = await encryptToken(c.env, tok.refresh_token)
-    await sql`
-      INSERT INTO gmail_connection (id, email_address, refresh_token_enc, scopes, connected_by)
-      VALUES (1, ${profile.emailAddress}, ${enc}, ${tok.scope}, ${st.user_id})
-      ON CONFLICT (id) DO UPDATE SET email_address = EXCLUDED.email_address, refresh_token_enc = EXCLUDED.refresh_token_enc,
-        scopes = EXCLUDED.scopes, connected_by = EXCLUDED.connected_by, connected_at = now(), last_sync_status = NULL, last_sync_error = NULL`
-    return back(`Connected ${profile.emailAddress}`, true)
+    if (multi) {
+      // One row per Gmail address: re-connecting the same address refreshes its token and keeps its id/label/history.
+      const [existing] = await sql`SELECT id FROM gmail_connection WHERE lower(email_address) = lower(${profile.emailAddress})`
+      if (existing) {
+        await sql`UPDATE gmail_connection SET refresh_token_enc = ${enc}, scopes = ${tok.scope}, connected_by = ${st.user_id}, connected_at = now(),
+                  last_sync_status = NULL, last_sync_error = NULL, enabled = TRUE WHERE id = ${existing.id}`
+      } else {
+        const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM gmail_connection`
+        await sql`INSERT INTO gmail_connection (email_address, refresh_token_enc, scopes, connected_by, label, is_default)
+                  VALUES (${profile.emailAddress}, ${enc}, ${tok.scope}, ${st.user_id}, ${st.label || 'Mailbox'}, ${n === 0})`
+      }
+    } else {
+      await sql`
+        INSERT INTO gmail_connection (id, email_address, refresh_token_enc, scopes, connected_by)
+        VALUES (1, ${profile.emailAddress}, ${enc}, ${tok.scope}, ${st.user_id})
+        ON CONFLICT (id) DO UPDATE SET email_address = EXCLUDED.email_address, refresh_token_enc = EXCLUDED.refresh_token_enc,
+          scopes = EXCLUDED.scopes, connected_by = EXCLUDED.connected_by, connected_at = now(), last_sync_status = NULL, last_sync_error = NULL`
+    }
+    return back(`Connected ${profile.emailAddress}${st.label ? ` as "${st.label}"` : ''}`, true)
   } catch (e: any) {
     return back(e.message)
   } finally {

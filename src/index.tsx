@@ -135,7 +135,7 @@ export default {
       (async () => {
         const sql = getDb(env)
         try {
-          const conn = await sql`SELECT 1 FROM gmail_connection WHERE id = 1`
+          const conn = await sql`SELECT 1 FROM gmail_connection LIMIT 1`
           if (!conn.length) return
           const r = await runSync(env, sql, 'cron')
           console.log('gmail sync', JSON.stringify(r))

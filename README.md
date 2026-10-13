@@ -245,3 +245,18 @@ R2 bucket (token needs "Workers R2 Storage: Edit"), Gmail attachments shown in c
 - **Audit**: `drafts.system_prompt_version` records the version in force for every real draft; history shows "N drafts" per version.
 - API: `GET /api/prompt` · `POST /api/prompt/check` · `POST /api/prompt` · `POST /api/prompt/rollback/:v` · `GET /api/prompt/preview?body=&mode=` · `POST /api/prompt/test`.
 - Migration **0012_system_prompt.sql**. App tolerates its absence (editor shows a banner; drafts run without a custom prompt).
+
+## Phase 11 (LIVE 2026-10-13) — Multiple Gmail mailboxes
+- **Mailboxes**: `gmail_connection` is now a list (migration **0013**): `label` (Manager / Agent / Returns / …), `enabled` (polled or paused),
+  `is_default` (used for cases with no mailbox). One row per Gmail address (unique, case-insensitive); reconnecting the same address
+  refreshes its token and keeps its history. Planned set-up: **Manager = saigateslimited@gmail.com**, **Agent = bijalshah.cc@gmail.com**.
+- **Routing**: every case, message, Amazon event and sync run records `mailbox_id`. **Send to customer** replies from the case's own mailbox
+  (`accessToken(env, sql, case.mailbox_id)`); the send dialog shows the From address. Attachment proxy and MIME diagnostics use the message's mailbox.
+  Disconnecting a mailbox keeps its cases (`ON DELETE SET NULL` → replies fall back to the default mailbox).
+- **Sync**: `runSync` loops over enabled mailboxes (cron and manual); one failing mailbox does not stop the others; `sync_runs` has one row per mailbox.
+  "Seen thread" keys are prefixed with the mailbox id because Gmail thread ids are per account. `isOurs()` treats mail from *any* connected address as ours.
+- **UI** (`/gmail`): a card per mailbox — Sync this mailbox, Import history (7/30/90 d), Rename, Make default, Pause/Resume, Reconnect, Disconnect —
+  plus "Add another mailbox" with a label picker (sign in to Google *as that mailbox*). Case view shows "Via mailbox" and which address will reply.
+- API: `GET /api/gmail/status` → `mailboxes[]`, `multi_mailbox` · `POST /api/gmail/connect {label}` · `POST /api/gmail/disconnect {mailbox_id}` ·
+  `PATCH /api/gmail/mailboxes/:id {label, enabled, is_default}` · `POST /api/gmail/sync {days?, mailbox_id?}`.
+- App tolerates the migration not being applied yet (single-mailbox behaviour; the page shows a banner).

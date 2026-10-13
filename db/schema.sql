@@ -328,3 +328,21 @@ DROP TRIGGER IF EXISTS trg_spv_no_delete ON public.system_prompt_versions;
 CREATE TRIGGER trg_spv_no_delete BEFORE DELETE ON public.system_prompt_versions FOR EACH ROW EXECUTE FUNCTION public.refuse_delete();
 DROP TRIGGER IF EXISTS trg_spv_no_update ON public.system_prompt_versions;
 CREATE TRIGGER trg_spv_no_update BEFORE UPDATE ON public.system_prompt_versions FOR EACH ROW EXECUTE FUNCTION public.refuse_update();
+
+-- ── 0013 Multiple Gmail mailboxes (labelled; cases/messages/events/sync runs record their mailbox; replies go from the same one) ──
+-- (For fresh installs the CHECK (id = 1) on gmail_connection above is removed here.)
+DO $$ DECLARE r RECORD; BEGIN
+  FOR r IN SELECT conname FROM pg_constraint WHERE conrelid = 'public.gmail_connection'::regclass AND contype = 'c' LOOP
+    EXECUTE format('ALTER TABLE public.gmail_connection DROP CONSTRAINT %I', r.conname); END LOOP; END $$;
+CREATE SEQUENCE IF NOT EXISTS public.gmail_connection_id_seq;
+ALTER TABLE public.gmail_connection ALTER COLUMN id SET DEFAULT nextval('public.gmail_connection_id_seq');
+ALTER TABLE public.gmail_connection ADD COLUMN IF NOT EXISTS label      TEXT NOT NULL DEFAULT 'Mailbox';
+ALTER TABLE public.gmail_connection ADD COLUMN IF NOT EXISTS enabled    BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE public.gmail_connection ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gmail_connection_email ON public.gmail_connection (lower(email_address));
+ALTER TABLE public.cases         ADD COLUMN IF NOT EXISTS mailbox_id INTEGER REFERENCES public.gmail_connection(id) ON DELETE SET NULL;
+ALTER TABLE public.messages      ADD COLUMN IF NOT EXISTS mailbox_id INTEGER REFERENCES public.gmail_connection(id) ON DELETE SET NULL;
+ALTER TABLE public.amazon_events ADD COLUMN IF NOT EXISTS mailbox_id INTEGER REFERENCES public.gmail_connection(id) ON DELETE SET NULL;
+ALTER TABLE public.sync_runs     ADD COLUMN IF NOT EXISTS mailbox_id INTEGER REFERENCES public.gmail_connection(id) ON DELETE SET NULL;
+ALTER TABLE public.oauth_states  ADD COLUMN IF NOT EXISTS label TEXT;
+CREATE INDEX IF NOT EXISTS idx_cases_mailbox ON public.cases(mailbox_id);

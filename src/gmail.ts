@@ -90,6 +90,10 @@ export async function revokeToken(token: string) {
 
 // ───────────── Connection record ─────────────
 export type GmailConnection = {
+  id: number
+  label: string
+  enabled: boolean
+  is_default: boolean
   email_address: string
   refresh_token_enc: string
   scopes: string
@@ -101,17 +105,40 @@ export type GmailConnection = {
   connected_by_name?: string | null
 }
 
-export async function getConnection(sql: Sql): Promise<GmailConnection | null> {
-  const [row] = await sql<GmailConnection[]>`
-    SELECT g.*, u.name AS connected_by_name FROM gmail_connection g LEFT JOIN users u ON u.id = g.connected_by WHERE g.id = 1`
-  return row ?? null
+// Multi-mailbox (migration 0013). Before it, gmail_connection is a single row (id=1) without label/enabled/is_default;
+// the queries below tolerate that so the app keeps working until the migration is applied.
+let multiKnown: boolean | null = null
+export async function hasMultiMailbox(sql: Sql) {
+  if (multiKnown !== null) return multiKnown
+  const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'gmail_connection' AND column_name = 'label'`
+  multiKnown = !!r
+  return multiKnown
+}
+const CONN_COLS = (multi: boolean) =>
+  multi ? `g.id, g.label, g.enabled, g.is_default` : `g.id, 'Mailbox'::text AS label, TRUE AS enabled, TRUE AS is_default`
+
+/** All connected mailboxes, default first. */
+export async function listConnections(sql: Sql): Promise<GmailConnection[]> {
+  const multi = await hasMultiMailbox(sql)
+  return sql.unsafe(`
+    SELECT ${CONN_COLS(multi)}, g.email_address, g.refresh_token_enc, g.scopes, g.connected_at, g.last_sync_at, g.last_sync_status, g.last_sync_error, g.last_sync_new_msgs,
+           u.name AS connected_by_name
+    FROM gmail_connection g LEFT JOIN users u ON u.id = g.connected_by
+    ORDER BY ${multi ? 'g.is_default DESC,' : ''} g.id ASC`) as unknown as Promise<GmailConnection[]>
 }
 
-/** Returns a live access token for the connected mailbox. */
-export async function accessToken(env: Bindings, sql: Sql) {
+/** One mailbox by id; with no id → the default mailbox (or the only/first one). */
+export async function getConnection(sql: Sql, mailboxId?: number | null): Promise<GmailConnection | null> {
+  const all = await listConnections(sql)
+  if (mailboxId != null) return all.find((c) => c.id === mailboxId) ?? null
+  return all.find((c) => c.is_default) ?? all[0] ?? null
+}
+
+/** Live access token for a mailbox. With no id → the default mailbox. */
+export async function accessToken(env: Bindings, sql: Sql, mailboxId?: number | null) {
   requireGoogleConfig(env)
-  const conn = await getConnection(sql)
-  if (!conn) throw new Error('Gmail is not connected')
+  const conn = await getConnection(sql, mailboxId)
+  if (!conn) throw new Error(mailboxId != null ? `Mailbox #${mailboxId} is no longer connected` : 'Gmail is not connected')
   return { token: await refreshAccessToken(env, await decryptToken(env, conn.refresh_token_enc)), conn }
 }
 

@@ -346,6 +346,7 @@
                 <dt class="text-slate-500">Email</dt><dd class="col-span-2 break-all">${esc(k.customer_email || '—')}</dd>
                 <dt class="text-slate-500">Phone</dt><dd class="col-span-2">${esc(k.customer_phone || '—')}</dd>
                 <dt class="text-slate-500">Address</dt><dd class="col-span-2">${esc(k.customer_address || '—')}</dd>
+                ${k.mailbox_email ? `<dt class="text-slate-500">Via mailbox</dt><dd class="col-span-2"><span class="pill ${(k.mailbox_label || '').toLowerCase() === 'manager' ? 'bg-violet-100 text-violet-800' : 'bg-sky-100 text-sky-800'}">${esc(k.mailbox_label || 'Mailbox')}</span> <span class="text-xs text-slate-500 break-all">${esc(k.mailbox_email)}</span><div class="text-[10px] text-slate-400">Replies are sent from this address</div></dd>` : ''}
               </dl>
               <p class="mt-3 text-xs text-slate-500 bg-slate-50 rounded-md p-2"><i class="fas fa-lock mr-1"></i>Only the first name (<strong>${esc(k.customer_first_name)}</strong>) is ever shared with the AI drafting service.</p>
             </section>
@@ -779,7 +780,8 @@
           </div>
         </div>`
       document.body.appendChild(modal)
-      axios.get('/api/gmail/status').then(({ data }) => { const el = modal.querySelector('#send-from'); if (el && data.connection) el.textContent = data.connection.email_address }).catch(() => {})
+      if (kase.mailbox_email) { const el = modal.querySelector('#send-from'); if (el) el.textContent = `${kase.mailbox_email} (${kase.mailbox_label || 'mailbox'})` }
+      else axios.get('/api/gmail/status').then(({ data }) => { const el = modal.querySelector('#send-from'); if (el && data.connection) el.textContent = `${data.connection.email_address} (default mailbox)` }).catch(() => {})
       modal.querySelector('#send-cancel').onclick = () => modal.remove()
       modal.querySelector('#send-now').onclick = async () => {
         const b = modal.querySelector('#send-now'); b.disabled = true; b.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Sending…'
@@ -906,58 +908,85 @@
     const q = new URLSearchParams(location.search)
     const flash = q.get('ok') ? `<div class="mb-4 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-2 text-sm"><i class="fas fa-circle-check mr-1"></i>${esc(q.get('ok'))}</div>`
       : q.get('error') ? `<div class="mb-4 rounded-md bg-red-50 border border-red-200 text-red-800 px-4 py-2 text-sm"><i class="fas fa-circle-xmark mr-1"></i>${esc(q.get('error'))}</div>` : ''
-    const c = st.connection
+    const boxes = st.mailboxes || (st.connection ? [{ ...st.connection, id: 1, label: 'Mailbox', enabled: true, is_default: true, cases: null }] : [])
+    const mailboxCard = (m) => `
+      <div class="rounded-lg border ${m.enabled ? 'border-slate-200' : 'border-dashed border-slate-300 opacity-70'} p-4 mailbox-card" data-mailbox="${m.id}">
+        <div class="flex flex-wrap items-center gap-2 mb-2">
+          <span class="pill ${m.label.toLowerCase() === 'manager' ? 'bg-violet-100 text-violet-800' : 'bg-sky-100 text-sky-800'}"><i class="fas ${m.label.toLowerCase() === 'manager' ? 'fa-user-shield' : 'fa-headset'} mr-1"></i>${esc(m.label)}</span>
+          ${m.is_default ? '<span class="pill bg-emerald-100 text-emerald-800" title="Used for cases that did not come through a mailbox">default</span>' : ''}
+          ${!m.enabled ? '<span class="pill bg-slate-200 text-slate-700">paused</span>' : ''}
+          <span class="ml-auto text-[11px] text-slate-400">${m.cases != null ? `${m.cases} case${m.cases === 1 ? '' : 's'}` : ''}</span>
+        </div>
+        <div class="font-medium text-sm break-all">${esc(m.email_address)}</div>
+        <dl class="text-xs text-slate-500 mt-1 space-y-0.5">
+          <div>Connected ${fmtDateTime(m.connected_at)} by ${esc(m.connected_by_name || '—')}</div>
+          <div>Last sync: ${m.last_sync_at ? dayjs(m.last_sync_at).fromNow() : 'never'} ${m.last_sync_status === 'error' ? `<span class="text-red-700">— ${esc(m.last_sync_error || 'error')}</span>` : m.last_sync_status === 'ok' ? `<span class="text-emerald-700">OK${m.last_sync_new_msgs ? ` · ${m.last_sync_new_msgs} new` : ''}</span>` : ''}</div>
+        </dl>
+        <div class="mt-3 flex flex-wrap gap-2 text-xs">
+          <button data-act="sync" class="px-2 py-1 rounded-md bg-slate-900 text-white"><i class="fas fa-rotate mr-1"></i>Sync this mailbox</button>
+          ${isManager && st.multi_mailbox ? `
+            <select data-act="import" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Import history…</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>
+            <button data-act="rename" class="px-2 py-1 rounded-md border border-slate-300"><i class="fas fa-pen mr-1"></i>Rename</button>
+            ${m.is_default ? '' : '<button data-act="default" class="px-2 py-1 rounded-md border border-slate-300">Make default</button>'}
+            <button data-act="toggle" class="px-2 py-1 rounded-md border border-slate-300">${m.enabled ? '<i class="fas fa-pause mr-1"></i>Pause' : '<i class="fas fa-play mr-1"></i>Resume'}</button>
+            <button data-act="reconnect" class="px-2 py-1 rounded-md border border-slate-300" title="Refresh Google permission for this address"><i class="fab fa-google mr-1"></i>Reconnect</button>` : ''}
+          ${isManager ? '<button data-act="disconnect" class="px-2 py-1 rounded-md border border-red-300 text-red-700">Disconnect</button>' : ''}
+        </div>
+      </div>`
     app.innerHTML = `
       <section id="gmail-section">
-        <h1 class="text-2xl font-bold mb-1"><i class="fab fa-google mr-2 text-slate-400"></i>Gmail connection</h1>
-        <p class="text-sm text-slate-500 mb-4">ReplyIQ reads Amazon customer messages from the connected mailbox every ${st.poll_interval_minutes} minutes. Email is only ever sent when a member of staff presses <strong>Send to customer</strong> on an approved draft.</p>
+        <h1 class="text-2xl font-bold mb-1"><i class="fab fa-google mr-2 text-slate-400"></i>Gmail mailboxes</h1>
+        <p class="text-sm text-slate-500 mb-4">ReplyIQ reads Amazon customer messages from every connected mailbox every ${st.poll_interval_minutes} minutes. Replies go out from the <strong>same mailbox the customer wrote to</strong>. Email is only ever sent when a member of staff presses <strong>Send to customer</strong> on an approved draft.</p>
         ${flash}
         ${!st.configured ? `<div class="mb-4 rounded-md bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 text-sm"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(st.configError)}</div>` : ''}
+        ${!st.multi_mailbox ? `<div class="mb-4 rounded-md bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 text-sm"><i class="fas fa-database mr-1"></i>To connect more than one mailbox, run <code>db/migrations/0013_multi_mailbox.sql</code> in Supabase, then reload.</div>` : ''}
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div class="bg-white rounded-xl shadow-sm p-5">
-            <h2 class="font-semibold mb-3">Mailbox</h2>
-            ${st.connected ? `
-              <dl class="text-sm space-y-1">
-                <div><dt class="text-slate-500 inline">Account:</dt> <dd class="inline font-medium">${esc(c.email_address)}</dd></div>
-                <div><dt class="text-slate-500 inline">Connected:</dt> <dd class="inline">${fmtDateTime(c.connected_at)} by ${esc(c.connected_by_name || '—')}</dd></div>
-                <div><dt class="text-slate-500 inline">Last sync:</dt> <dd class="inline">${c.last_sync_at ? dayjs(c.last_sync_at).fromNow() : 'never'} ${c.last_sync_status === 'error' ? `<span class="text-red-700">— ${esc(c.last_sync_error || 'error')}</span>` : c.last_sync_status === 'ok' ? '<span class="text-emerald-700">OK</span>' : ''}</dd></div>
-              </dl>
-              <div class="mt-4 flex gap-2">
-                <button id="sync-now" class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-rotate mr-1"></i>Sync now</button>
-                ${isManager ? `<select id="import-days" class="field-input py-1 text-sm" style="width:auto"><option value="">Import history…</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>` : ''}
-                ${isManager ? '<button id="tone-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Label older customer messages with a tone (AI, gpt-6-luna)"><i class="fas fa-tags mr-1"></i>Label tones</button>' : ''}
+          <div class="lg:col-span-1 space-y-4">
+            <div class="bg-white rounded-xl shadow-sm p-5 space-y-3">
+              <h2 class="font-semibold">Connected mailboxes <span class="text-xs font-normal text-slate-400">(${boxes.length})</span></h2>
+              ${boxes.length ? boxes.map(mailboxCard).join('') : '<p class="text-sm text-slate-600">No mailbox connected yet.</p>'}
+              ${isManager ? `
+              <div class="pt-3 border-t border-slate-100">
+                <div class="text-xs font-semibold text-slate-600 mb-2">${boxes.length ? 'Add another mailbox' : 'Connect a mailbox'}</div>
+                <div class="flex gap-2">
+                  <select id="connect-label" class="field-input py-1.5 text-sm mt-0" ${st.multi_mailbox ? '' : 'disabled'}>
+                    <option value="Manager" ${boxes.some((b) => b.label === 'Manager') ? 'disabled' : ''}>Manager</option>
+                    <option value="Agent" ${boxes.some((b) => b.label === 'Agent') ? 'disabled' : ''}>Agent</option>
+                    <option value="Returns">Returns</option><option value="Mailbox">Other</option>
+                  </select>
+                  <button id="connect" ${st.configured && (st.multi_mailbox || !boxes.length) ? '' : 'disabled'} class="px-4 py-1.5 rounded-md bg-slate-900 text-white text-sm whitespace-nowrap disabled:opacity-50"><i class="fab fa-google mr-1"></i>Connect Gmail</button>
+                </div>
+                <p class="mt-2 text-[11px] text-slate-400">You will be asked to sign in to Google <em>as that mailbox</em> and allow read + send. The token is stored encrypted.</p>
+              </div>` : '<p class="text-xs text-slate-500">A manager connects mailboxes.</p>'}
+            </div>
+            ${boxes.length ? `<div class="bg-white rounded-xl shadow-sm p-5">
+              <h2 class="font-semibold mb-2 text-sm">All mailboxes</h2>
+              <div class="flex flex-wrap gap-2">
+                <button id="sync-now" class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-rotate mr-1"></i>Sync all now</button>
                 ${isManager ? '<button id="tone-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Label customer messages that have no tone yet"><i class="fas fa-tags mr-1"></i>Label tones</button>' : ''}
-                ${isManager ? '<button id="att-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="One-off: record photo/PDF attachments on messages imported before attachments were tracked"><i class="fas fa-paperclip mr-1"></i>Scan attachments</button>' : ''}
-                ${isManager ? '<button id="disconnect" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm text-red-700">Disconnect</button>' : ''}
-              </div>` : `
-              <p class="text-sm text-slate-600 mb-4">No mailbox connected.</p>
-              ${isManager ? `<button id="connect" ${st.configured ? '' : 'disabled'} class="px-4 py-2 rounded-md bg-slate-900 text-white text-sm disabled:opacity-50"><i class="fab fa-google mr-1"></i>Connect Gmail</button>` : '<p class="text-xs text-slate-500">A manager needs to connect the mailbox.</p>'}`}
-            <p class="mt-4 text-xs text-slate-400">Permissions requested: read mail, send mail. The sign-in token is stored encrypted.</p>
+                ${isManager ? '<button id="att-backfill" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Record photo/PDF attachments on messages imported before attachments were tracked"><i class="fas fa-paperclip mr-1"></i>Scan attachments</button>' : ''}
+              </div>
+            </div>` : ''}
           </div>
           <div class="lg:col-span-2 bg-white rounded-xl shadow-sm overflow-hidden">
             <div class="px-5 py-3 border-b border-slate-100 font-semibold">Recent sync runs</div>
             <table class="w-full text-sm">
-              <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-4 py-2">When</th><th class="px-4 py-2">Trigger</th><th class="px-4 py-2">Threads</th><th class="px-4 py-2">New msgs</th><th class="px-4 py-2">New cases</th><th class="px-4 py-2">Result</th></tr></thead>
-              <tbody>${st.recent_runs.length ? st.recent_runs.map((r) => `<tr class="border-b border-slate-100"><td class="px-4 py-2 whitespace-nowrap">${fmtDateTime(r.started_at)}</td><td class="px-4 py-2">${esc(r.trigger)}</td><td class="px-4 py-2">${r.threads_seen ?? '—'}</td><td class="px-4 py-2">${r.messages_new ?? '—'}</td><td class="px-4 py-2">${r.cases_new ?? '—'}</td><td class="px-4 py-2 ${r.status === 'error' ? 'text-red-700' : 'text-emerald-700'}" title="${esc(r.error || '')}">${esc(r.status || 'running')}</td></tr>`).join('') : '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">No runs yet</td></tr>'}</tbody>
+              <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-4 py-2">When</th><th class="px-4 py-2">Mailbox</th><th class="px-4 py-2">Trigger</th><th class="px-4 py-2">Threads</th><th class="px-4 py-2">New msgs</th><th class="px-4 py-2">New cases</th><th class="px-4 py-2">Result</th></tr></thead>
+              <tbody>${st.recent_runs.length ? st.recent_runs.map((r) => `<tr class="border-b border-slate-100"><td class="px-4 py-2 whitespace-nowrap">${fmtDateTime(r.started_at)}</td><td class="px-4 py-2 text-xs">${r.mailbox_label ? `<span class="font-medium">${esc(r.mailbox_label)}</span><div class="text-slate-400">${esc(r.mailbox_email || '')}</div>` : '<span class="text-slate-400">—</span>'}</td><td class="px-4 py-2">${esc(r.trigger)}</td><td class="px-4 py-2">${r.threads_seen ?? '—'}</td><td class="px-4 py-2">${r.messages_new ?? '—'}</td><td class="px-4 py-2">${r.cases_new ?? '—'}</td><td class="px-4 py-2 ${r.status === 'error' ? 'text-red-700' : 'text-emerald-700'}" title="${esc(r.error || '')}">${esc(r.status || 'running')}</td></tr>`).join('') : '<tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">No runs yet</td></tr>'}</tbody>
             </table>
           </div>
         </div>
       </section>`
-    app.querySelector('#connect')?.addEventListener('click', async () => {
-      try { const { data } = await axios.post('/api/gmail/connect'); location.href = data.url } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
-    })
-    app.querySelector('#disconnect')?.addEventListener('click', async () => {
-      if (!confirm('Disconnect the Gmail mailbox? Syncing and sending will stop until reconnected.')) return
-      try { await axios.post('/api/gmail/disconnect'); toast('Disconnected'); history.replaceState({}, '', '/gmail'); renderGmail() } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
-    })
-    app.querySelector('#import-days')?.addEventListener('change', async (e) => {
-      const days = Number(e.target.value); if (!days) return
-      if (!confirm(`Import all Amazon customer threads from the last ${days} days as cases? Threads already imported are skipped.`)) { e.target.value = ''; return }
-      e.target.disabled = true
+    const connectWith = async (label) => {
+      try { const { data } = await axios.post('/api/gmail/connect', { label }); location.href = data.url } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+    }
+    const runImport = async (days, mailboxId, el) => {
+      if (!confirm(`Import Amazon customer threads from the last ${days} days${mailboxId ? ' for this mailbox' : ''} as cases? Threads already imported are skipped.`)) { if (el) el.value = ''; return }
+      if (el) el.disabled = true
       let total = { c: 0, m: 0 }, rounds = 0
       try {
         for (;;) {
-          const { data } = await axios.post('/api/gmail/sync', { days }, { timeout: 120000 })
+          const { data } = await axios.post('/api/gmail/sync', { days, ...(mailboxId ? { mailbox_id: mailboxId } : {}) }, { timeout: 120000 })
           total.c += data.casesNew; total.m += data.messagesNew; rounds++
           toast(`Importing… ${total.c} case(s), ${total.m} message(s) so far, ${data.remaining} thread(s) left`)
           if (!data.remaining || rounds > 60) break
@@ -965,21 +994,28 @@
         toast(`Import complete: ${total.c} new case(s), ${total.m} new message(s)`)
       } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
       history.replaceState({}, '', '/gmail'); renderGmail()
-    })
-    app.querySelector('#tone-backfill')?.addEventListener('click', async (e) => {
-      e.target.disabled = true; e.target.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Labelling…'
-      let total = 0, rounds = 0
-      try {
-        for (;;) {
-          const { data } = await axios.post('/api/gmail/tone-backfill', { limit: 20 }, { timeout: 120000 })
-          total += data.labelled; rounds++
-          toast(`Labelled ${total} so far, ${data.remaining} left`)
-          if (!data.remaining || !data.labelled || rounds > 30) break
+    }
+    app.querySelectorAll('.mailbox-card [data-act]').forEach((b) => {
+      const id = Number(b.closest('.mailbox-card').dataset.mailbox)
+      const m = boxes.find((x) => x.id === id)
+      const patch = async (body, msg) => { try { await axios.patch(`/api/gmail/mailboxes/${id}`, body); toast(msg); renderGmail() } catch (err) { toast(err.response?.data?.error || err.message, 'err') } }
+      if (b.dataset.act === 'import') { b.onchange = () => { const d = Number(b.value); if (d) runImport(d, id, b) }; return }
+      b.onclick = async () => {
+        switch (b.dataset.act) {
+          case 'sync': b.disabled = true; b.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Syncing…'
+            try { const { data } = await axios.post('/api/gmail/sync', { mailbox_id: id }, { timeout: 120000 }); toast(`${m.label}: ${data.messagesNew} new message(s), ${data.casesNew} new case(s)`) } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+            history.replaceState({}, '', '/gmail'); renderGmail(); break
+          case 'rename': { const l = prompt('Label for this mailbox (e.g. Manager, Agent, Returns)', m.label); if (l && l.trim()) patch({ label: l.trim() }, 'Renamed'); break }
+          case 'default': patch({ is_default: true }, `${m.label} is now the default mailbox`); break
+          case 'toggle': patch({ enabled: !m.enabled }, m.enabled ? 'Mailbox paused — it will not be polled' : 'Mailbox resumed'); break
+          case 'reconnect': connectWith(m.label); break
+          case 'disconnect':
+            if (!confirm(`Disconnect ${m.email_address}? Its cases stay in ReplyIQ; syncing and sending from this address stop until reconnected.`)) return
+            try { await axios.post('/api/gmail/disconnect', { mailbox_id: id }); toast('Disconnected'); history.replaceState({}, '', '/gmail'); renderGmail() } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
         }
-        toast(`Tone labels done: ${total} message(s) labelled`)
-      } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
-      renderGmail()
+      }
     })
+    app.querySelector('#connect')?.addEventListener('click', () => connectWith(document.getElementById('connect-label')?.value || 'Mailbox'))
     app.querySelector('#tone-backfill')?.addEventListener('click', async (e) => {
       const b = e.currentTarget; b.disabled = true
       let total = 0, rounds = 0
@@ -1009,7 +1045,7 @@
     })
     app.querySelector('#sync-now')?.addEventListener('click', async (e) => {
       e.target.disabled = true; e.target.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Syncing…'
-      try { const { data } = await axios.post('/api/gmail/sync', {}, { timeout: 120000 }); toast(`Sync done: ${data.messagesNew} new message(s), ${data.casesNew} new case(s)`) } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      try { const { data } = await axios.post('/api/gmail/sync', {}, { timeout: 120000 }); const per = (data.mailboxes || []).map((x) => `${x.label}: ${x.error ? 'error' : x.messagesNew + ' new'}`).join(' · '); toast(`Sync done: ${data.messagesNew} new message(s), ${data.casesNew} new case(s)${per ? ' — ' + per : ''}`) } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
       history.replaceState({}, '', '/gmail'); renderGmail()
     })
   }

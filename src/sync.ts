@@ -1,7 +1,7 @@
 // Gmail → cases sync. Read-only against Gmail. Runs from the cron trigger and from a manual button.
 import type { Bindings, Sql } from './db'
 import { redactPii } from './ai'
-import { accessToken, listThreadIds, getThread, header, messageBody, type GmailMessage } from './gmail'
+import { accessToken, listConnections, hasMultiMailbox, listThreadIds, getThread, header, messageBody, type GmailMessage, type GmailConnection } from './gmail'
 import { classifyNotice, parseSellerReplyCopy, parseAtoz, parseReturnAuth, parseChargeback, redactChargebackPii } from './amazon'
 import { classifyTone } from './tone'
 import { listAttachments } from './gmail'
@@ -10,7 +10,7 @@ import { isAllowedType } from './attachments'
 const AMAZON_DOMAIN = 'marketplace.amazon.co.uk'
 const DEFAULT_LOOKBACK = 'newer_than:1h' // generous relative to the 15-min cron so a missed run cannot drop mail
 
-export type SyncResult = { threadsSeen: number; messagesNew: number; casesNew: number; skipped: { thread: string; reason: string }[]; query: string; remaining: number }
+export type SyncResult = { threadsSeen: number; messagesNew: number; casesNew: number; skipped: { thread: string; reason: string }[]; query: string; remaining: number; mailboxes?: { id: number; label: string; email: string; messagesNew: number; casesNew: number; remaining: number; error?: string }[] }
 
 const ORDER_RE = /\b(\d{3}-\d{7}-\d{7})\b/
 
@@ -101,9 +101,10 @@ function stripQuoted(raw: string) {
   return t.split('\n').filter((l) => !/^>/.test(l)).join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
-function isOurs(m: GmailMessage, ourEmail: string) {
+/** Sent by us = from any connected Saigates mailbox, or carrying Gmail's SENT label. */
+function isOurs(m: GmailMessage, ourEmails: string[]) {
   const from = parseAddress(header(m, 'From')).address
-  return from === ourEmail.toLowerCase() || (m.labelIds ?? []).includes('SENT')
+  return ourEmails.some((e) => e.toLowerCase() === from) || (m.labelIds ?? []).includes('SENT')
 }
 
 async function nextCaseRef(sql: Sql) {
@@ -118,12 +119,39 @@ async function nextCaseRef(sql: Sql) {
   return `RIQ-${n}`
 }
 
-export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual' | 'import', opts: { lookbackDays?: number } = {}): Promise<SyncResult> {
-  const [run] = await sql`INSERT INTO sync_runs (trigger) VALUES (${trigger}) RETURNING id`
+/** Sync every enabled mailbox (or one, via opts.mailboxId). Each mailbox gets its own sync_runs row; totals are summed. */
+export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual' | 'import', opts: { lookbackDays?: number; mailboxId?: number } = {}): Promise<SyncResult> {
+  const all = await listConnections(sql)
+  const targets = all.filter((c) => c.enabled && (opts.mailboxId == null || c.id === opts.mailboxId))
+  if (!targets.length) throw new Error(all.length ? 'No enabled mailbox to sync' : 'Gmail is not connected')
+  const ourEmails = all.map((c) => c.email_address)
+  const total: SyncResult = { threadsSeen: 0, messagesNew: 0, casesNew: 0, skipped: [], query: '', remaining: 0, mailboxes: [] }
+  let firstError: Error | null = null
+  for (const conn of targets) {
+    try {
+      const r = await syncMailbox(env, sql, conn, ourEmails, trigger, opts)
+      total.threadsSeen += r.threadsSeen; total.messagesNew += r.messagesNew; total.casesNew += r.casesNew; total.remaining += r.remaining
+      total.skipped.push(...r.skipped); total.query = r.query
+      total.mailboxes!.push({ id: conn.id, label: conn.label, email: conn.email_address, messagesNew: r.messagesNew, casesNew: r.casesNew, remaining: r.remaining })
+    } catch (e: any) {
+      firstError ??= e
+      total.mailboxes!.push({ id: conn.id, label: conn.label, email: conn.email_address, messagesNew: 0, casesNew: 0, remaining: 0, error: String(e?.message ?? e).slice(0, 300) })
+    }
+  }
+  // One mailbox failing must not hide the others' progress; surface the error only if every mailbox failed.
+  if (firstError && total.mailboxes!.every((m) => m.error)) throw firstError
+  return total
+}
+
+async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEmails: string[], trigger: 'cron' | 'manual' | 'import', opts: { lookbackDays?: number }): Promise<SyncResult> {
+  const multi = await hasMultiMailbox(sql)
+  const mb = multi ? conn.id : null
+  const [run] = multi
+    ? await sql`INSERT INTO sync_runs (trigger, mailbox_id) VALUES (${trigger}, ${conn.id}) RETURNING id`
+    : await sql`INSERT INTO sync_runs (trigger) VALUES (${trigger}) RETURNING id`
   const result: SyncResult = { threadsSeen: 0, messagesNew: 0, casesNew: 0, skipped: [], query: '', remaining: 0 }
   try {
-    const { token, conn } = await accessToken(env, sql)
-    const ourEmail = conn.email_address
+    const { token } = await accessToken(env, sql, conn.id)
     const lookback = opts.lookbackDays ? `newer_than:${opts.lookbackDays}d` : DEFAULT_LOOKBACK
     // Customer messages + Seller Central reply copies + A-to-Z + returns + chargebacks
     const q = `(from:${AMAZON_DOMAIN} OR to:${AMAZON_DOMAIN} OR from:atoz-guarantee-no-reply@amazon.co.uk OR from:cb-seller-notification@amazon.co.uk OR (from:donotreply@amazon.com (subject:"Return authorisation notification" OR subject:"Your email to"))) ${lookback}`
@@ -132,7 +160,11 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
     // Skip threads we already have fully (cheap DB check) so repeated imports make progress
     const idList = allIds.join(',')
     await sql`CREATE TABLE IF NOT EXISTS gmail_threads_seen (thread_id TEXT PRIMARY KEY, history_id TEXT, seen_at TIMESTAMPTZ NOT NULL DEFAULT now())`
-    const seen = new Set((await sql`SELECT thread_id FROM gmail_threads_seen WHERE thread_id = ANY(string_to_array(${idList}, ','))`).map((r) => r.thread_id))
+    // Thread ids are per Gmail account, so the "seen" key is prefixed with the mailbox id once there is more than one mailbox.
+    const seenKey = (tid: string) => (mb ? `${mb}:${tid}` : tid)
+    const keyList = allIds.map(seenKey).join(',')
+    const seenRows = await sql`SELECT thread_id FROM gmail_threads_seen WHERE thread_id = ANY(string_to_array(${keyList}, ','))`
+    const seen = new Set(seenRows.map((r) => (mb ? String(r.thread_id).slice(String(mb).length + 1) : r.thread_id)))
     // For the normal 1h poll, re-check recent threads (a new message may have arrived on a seen thread).
     // For bulk imports, skip anything already processed so repeated rounds make progress.
     const todo = opts.lookbackDays ? allIds.filter((id) => !seen.has(id)) : allIds
@@ -151,17 +183,17 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
       const kind0 = classifyNotice(header(first0, 'From'), header(first0, 'Subject'))
       if (kind0) {
         for (const m of msgs) {
-          const r = await ingestNotice(sql, m, classifyNotice(header(m, 'From'), header(m, 'Subject')) ?? kind0, result)
+          const r = await ingestNotice(sql, m, classifyNotice(header(m, 'From'), header(m, 'Subject')) ?? kind0, result, mb)
           if (r === 'new') result.messagesNew++
         }
-        await markSeenFor(sql, tid)
+        await markSeenFor(sql, seenKey(tid))
         continue
       }
 
-      const inbound = msgs.filter((m) => !isOurs(m, ourEmail) && parseAddress(header(m, 'From')).address.endsWith(`@${AMAZON_DOMAIN}`))
+      const inbound = msgs.filter((m) => !isOurs(m, ourEmails) && parseAddress(header(m, 'From')).address.endsWith(`@${AMAZON_DOMAIN}`))
       // Amazon also sends non-customer notices from this domain (e.g. order confirmations). Skip threads with no customer text.
       if (inbound.length && !parseAmazonBody(messageBody(inbound[inbound.length - 1])).text) { result.skipped.push({ thread: tid, reason: `no customer text parsed; subject="${header(inbound[0], 'Subject').slice(0, 80)}"` }); await markSeen(); continue }
-      const markSeen = () => sql`INSERT INTO gmail_threads_seen (thread_id) VALUES (${tid}) ON CONFLICT (thread_id) DO UPDATE SET seen_at = now()`
+      const markSeen = () => markSeenFor(sql, seenKey(tid))
       if (!inbound.length) { result.skipped.push({ thread: tid, reason: `no inbound from @${AMAZON_DOMAIN}; from=${parseAddress(header(msgs[0], 'From')).address}` }); await markSeen(); continue }
 
       const first = inbound[0]
@@ -182,28 +214,30 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
         const ref = await nextCaseRef(sql)
         ;[kase] = await sql`
           INSERT INTO cases (case_ref, subject, status, customer_first_name, customer_last_name, customer_email, order_id, device_model,
-                             gmail_thread_id, customer_reply_to, source, last_customer_message_at)
+                             gmail_thread_id, customer_reply_to, source, last_customer_message_at ${multi ? sql`, mailbox_id` : sql``})
           VALUES (${ref}, ${cleanSubject(subject)}, 'open', ${firstName}, ${lastName}, ${fromParsed.address}, ${orderId}, ${product},
-                  ${tid}, ${fromParsed.address}, 'gmail', ${latestInboundAt})
+                  ${tid}, ${fromParsed.address}, 'gmail', ${latestInboundAt} ${multi ? sql`, ${mb}` : sql``})
           RETURNING id, last_customer_message_at, status, gmail_thread_id`
         result.casesNew++
       } else if (kase.gmail_thread_id !== tid) {
-        // Newer thread for the same order → replies must go to the latest thread
-        await sql`UPDATE cases SET gmail_thread_id = ${tid} WHERE id = ${kase.id} AND (SELECT max(sent_at) FROM messages WHERE case_id = ${kase.id}) < ${latestInboundAt}`
+        // Newer thread for the same order → replies must go to the latest thread, from the mailbox it arrived in
+        await sql`UPDATE cases SET gmail_thread_id = ${tid} ${multi ? sql`, mailbox_id = ${mb}` : sql``} WHERE id = ${kase.id} AND (SELECT max(sent_at) FROM messages WHERE case_id = ${kase.id}) < ${latestInboundAt}`
+      } else if (multi) {
+        await sql`UPDATE cases SET mailbox_id = ${mb} WHERE id = ${kase.id} AND mailbox_id IS NULL`
       }
 
       // Insert any messages we have not seen
       for (const m of msgs) {
         const [exists] = await sql`SELECT 1 FROM messages WHERE gmail_message_id = ${m.id}`
         if (exists) continue
-        const ours = isOurs(m, ourEmail)
+        const ours = isOurs(m, ourEmails)
         const body = ours ? stripQuoted(messageBody(m)) : parseAmazonBody(messageBody(m)).text
         if (!body) continue
         const sender = ours ? 'Saigates Support' : isAmazonCsRelay(body) ? 'Amazon Customer Service (on behalf of customer)' : 'Customer'
         const [ins] = await sql`
-          INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, rfc_message_id, sent_at)
+          INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, rfc_message_id, sent_at ${multi ? sql`, mailbox_id` : sql``})
           VALUES (${kase.id}, ${ours ? 'outbound' : 'inbound'}, ${sender}, ${body.slice(0, 20000)},
-                  ${header(m, 'Subject') || null}, ${m.id}, ${header(m, 'Message-ID') || null}, ${new Date(Number(m.internalDate))})
+                  ${header(m, 'Subject') || null}, ${m.id}, ${header(m, 'Message-ID') || null}, ${new Date(Number(m.internalDate))} ${multi ? sql`, ${mb}` : sql``})
           RETURNING id`
         result.messagesNew++
         await recordAttachments(sql, m, ins.id, kase.id)
@@ -238,12 +272,12 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
     }
     const note = result.skipped.length ? `skipped ${result.skipped.length}: ` + result.skipped.slice(0, 5).map((x) => x.reason).join(' | ') : null
     await sql`UPDATE sync_runs SET finished_at = now(), status = 'ok', threads_seen = ${result.threadsSeen}, messages_new = ${result.messagesNew}, cases_new = ${result.casesNew}, error = ${note} WHERE id = ${run.id}`
-    await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = 'ok', last_sync_error = NULL, last_sync_new_msgs = ${result.messagesNew} WHERE id = 1`
+    await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = 'ok', last_sync_error = NULL, last_sync_new_msgs = ${result.messagesNew} WHERE id = ${conn.id}`
     return result
   } catch (e: any) {
     const msg = String(e?.message ?? e).slice(0, 500)
     await sql`UPDATE sync_runs SET finished_at = now(), status = 'error', error = ${msg} WHERE id = ${run.id}`
-    await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = 'error', last_sync_error = ${msg} WHERE id = 1`
+    await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = 'error', last_sync_error = ${msg} WHERE id = ${conn.id}`
     throw e
   }
 }
@@ -255,16 +289,18 @@ export async function backfillAttachments(env: Bindings, sql: Sql, limit = 25) {
   // Reply-To status on chargeback events imported before 0009 (same classifier as live sync)
   const pending = await sql<{ id: number; reply_to: string }[]>`SELECT id, reply_to FROM amazon_events WHERE kind = 'chargeback' AND reply_to_status IS NULL AND reply_to IS NOT NULL`
   for (const e of pending) await sql`UPDATE amazon_events SET reply_to_status = ${classifyReplyTo(e.reply_to)}, reply_to_checked_at = now() WHERE id = ${e.id}`
-  const rows = await sql<{ id: number; case_id: number; gmail_message_id: string }[]>`
-    SELECT m.id, m.case_id, m.gmail_message_id FROM messages m
+  const multi = await hasMultiMailbox(sql)
+  const rows = await sql<{ id: number; case_id: number; gmail_message_id: string; mailbox_id: number | null }[]>`
+    SELECT m.id, m.case_id, m.gmail_message_id, ${multi ? sql`m.mailbox_id` : sql`NULL::int AS mailbox_id`} FROM messages m
     WHERE m.gmail_message_id IS NOT NULL AND m.kind = 'message' AND m.direction = 'inbound' AND m.attachments_checked_at IS NULL
     ORDER BY m.sent_at DESC LIMIT ${limit}`
   if (!rows.length) return { checked: 0, attachments: 0, remaining: 0 }
-  const token = await accessToken(env, sql)
+  const tokens = new Map<string, string>()
+  const tokenFor = async (mbId: number | null) => { const k = String(mbId); if (!tokens.has(k)) tokens.set(k, (await accessToken(env, sql, mbId)).token); return tokens.get(k)! }
   let found = 0
   for (const r of rows) {
     try {
-      const gm = await getMessage(token, r.gmail_message_id)
+      const gm = await getMessage(await tokenFor(r.mailbox_id), r.gmail_message_id)
       const before = (await sql`SELECT COUNT(*)::int AS n FROM attachments WHERE message_id = ${r.id}`)[0].n
       await recordAttachments(sql, gm, r.id, r.case_id)
       const after = (await sql`SELECT COUNT(*)::int AS n FROM attachments WHERE message_id = ${r.id}`)[0].n
@@ -316,7 +352,18 @@ async function caseForOrder(sql: Sql, orderId: string, opts: { firstName?: strin
 }
 
 /** Ingest one Amazon notice email. Returns 'new' | 'dup' | 'skip'. */
-export async function ingestNotice(sql: Sql, m: GmailMessage, kind: NonNullable<ReturnType<typeof classifyNotice>>, result: SyncResult): Promise<'new' | 'dup' | 'skip'> {
+export async function ingestNotice(sql: Sql, m: GmailMessage, kind: NonNullable<ReturnType<typeof classifyNotice>>, result: SyncResult, mailboxId: number | null = null): Promise<'new' | 'dup' | 'skip'> {
+  const r = await ingestNoticeInner(sql, m, kind, result)
+  // Tag what this notice created with the mailbox it arrived in (columns exist from migration 0013)
+  if (r === 'new' && mailboxId != null) {
+    await sql`UPDATE messages SET mailbox_id = ${mailboxId} WHERE gmail_message_id = ${m.id} AND mailbox_id IS NULL`.catch(() => {})
+    await sql`UPDATE amazon_events SET mailbox_id = ${mailboxId} WHERE gmail_message_id = ${m.id} AND mailbox_id IS NULL`.catch(() => {})
+    await sql`UPDATE cases c SET mailbox_id = ${mailboxId} FROM messages mm WHERE mm.case_id = c.id AND mm.gmail_message_id = ${m.id} AND c.mailbox_id IS NULL`.catch(() => {})
+  }
+  return r
+}
+
+async function ingestNoticeInner(sql: Sql, m: GmailMessage, kind: NonNullable<ReturnType<typeof classifyNotice>>, result: SyncResult): Promise<'new' | 'dup' | 'skip'> {
   const [dup] = await sql`SELECT 1 FROM messages WHERE gmail_message_id = ${m.id} UNION ALL SELECT 1 FROM amazon_events WHERE gmail_message_id = ${m.id} LIMIT 1`
   if (dup) return 'dup'
   const at = new Date(Number(m.internalDate))
