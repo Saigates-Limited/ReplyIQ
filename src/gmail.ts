@@ -229,22 +229,46 @@ function encodeHeaderUtf8(v: string) {
   return /[^\x20-\x7e]/.test(v) ? `=?UTF-8?B?${btoa(unescape(encodeURIComponent(v)))}?=` : v
 }
 
+/** Plain text → simple HTML: blank line = new paragraph, single newline = <br>, URLs become links. Everything is escaped. */
+export function textToHtml(text: string): string {
+  const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  const linkify = (t: string) => t.replace(/(https?:\/\/[^\s<]+[^\s<.,;:!?)\]])/g, (u) => `<a href="${u}">${u}</a>`)
+  const paras = text.replace(/\r\n/g, '\n').trim().split(/\n{2,}/)
+  const html = paras.map((p) => {
+    const lines = p.split('\n').map((l) => linkify(esc(l)))
+    // Bulleted lists (- or •) become <ul>
+    if (lines.length > 1 && lines.every((l) => /^\s*(?:-|•|\*)\s+/.test(l)))
+      return `<ul style="margin:0 0 1em 1.2em;padding:0">${lines.map((l) => `<li>${l.replace(/^\s*(?:-|•|\*)\s+/, '')}</li>`).join('')}</ul>`
+    return `<p style="margin:0 0 1em 0">${lines.join('<br>')}</p>`
+  }).join('')
+  return `<!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222">${html}</body></html>`
+}
+
+const b64wrap = (s: string) => btoa(unescape(encodeURIComponent(s))).replace(/(.{76})/g, '$1\r\n')
+
+/** Sends the reply as multipart/alternative (plain text + HTML). Amazon Buyer-Seller Messaging renders the HTML part,
+ *  which keeps paragraphs and line breaks; plain-text-only mail is shown there as one unbroken block. */
 export async function sendReply(
   token: string,
   args: { from: string; to: string; subject: string; body: string; inReplyTo?: string; references?: string; threadId: string }
 ) {
-  const lines = [
+  const boundary = `=_riq_${crypto.randomUUID().replace(/-/g, '')}`
+  const headers = [
     `From: Customer Support Team <${args.from}>`,
     `To: ${args.to}`,
     `Subject: ${encodeHeaderUtf8(args.subject)}`,
     'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset="UTF-8"',
-    'Content-Transfer-Encoding: base64',
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
   ]
-  if (args.inReplyTo) lines.push(`In-Reply-To: ${args.inReplyTo}`)
-  if (args.references) lines.push(`References: ${args.references}`)
-  const bodyB64 = btoa(unescape(encodeURIComponent(args.body))).replace(/(.{76})/g, '$1\r\n')
-  const raw = lines.join('\r\n') + '\r\n\r\n' + bodyB64
+  if (args.inReplyTo) headers.push(`In-Reply-To: ${args.inReplyTo}`)
+  if (args.references) headers.push(`References: ${args.references}`)
+  const text = args.body.replace(/\r\n/g, '\n').trim()
+  const parts = [
+    `--${boundary}`, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', b64wrap(text),
+    `--${boundary}`, 'Content-Type: text/html; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', b64wrap(textToHtml(text)),
+    `--${boundary}--`, '',
+  ]
+  const raw = headers.join('\r\n') + '\r\n\r\n' + parts.join('\r\n')
   const rawUrl = btoa(unescape(encodeURIComponent(raw))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
   return gapi<{ id: string; threadId: string }>(token, '/messages/send', {
     method: 'POST',
