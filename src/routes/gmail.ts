@@ -21,6 +21,21 @@ gmailApi.get('/status', async (c) => {
     const runs = await sql`SELECT id, started_at, finished_at, trigger, threads_seen, messages_new, cases_new, status, error FROM sync_runs ORDER BY started_at DESC LIMIT 10`
     let configured = true, configError: string | null = null
     try { requireGoogleConfig(c.env) } catch (e: any) { configured = false; configError = e.message }
+    // Google client health probe (managers): shape of the client ID + Google's verdict. Values are never returned.
+    let client_probe: any = null
+    if (c.get('user').role === 'manager' && c.req.query('probe') === '1') {
+      const id = c.env.GOOGLE_CLIENT_ID || ''
+      const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: id, client_secret: c.env.GOOGLE_CLIENT_SECRET || '', refresh_token: 'probe', grant_type: 'refresh_token' }) })
+      const j: any = await r.json().catch(() => ({}))
+      // invalid_grant  => client exists (only the token is bad)  |  invalid_client => client deleted / wrong project / typo
+      client_probe = {
+        client_id_suffix: id.slice(-30), client_id_length: id.length, looks_like_google_id: /\.apps\.googleusercontent\.com$/.test(id),
+        secret_length: (c.env.GOOGLE_CLIENT_SECRET || '').length,
+        google_error: j.error ?? null, google_description: j.error_description ?? null,
+        verdict: j.error === 'invalid_grant' ? 'client OK' : j.error === 'invalid_client' ? 'client NOT recognised by Google' : `unexpected (${r.status})`,
+      }
+    }
     return c.json({
       configured, configError,
       connected: Boolean(conn),
@@ -28,6 +43,7 @@ gmailApi.get('/status', async (c) => {
       poll_interval_minutes: 15,
       scopes: GMAIL_SCOPES,
       recent_runs: runs,
+      client_probe,
     })
   } finally {
     await sql.end()
