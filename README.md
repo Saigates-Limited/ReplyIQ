@@ -193,3 +193,21 @@ API additions: `GET /api/events?kind=&status=` · `GET /api/events/counts` · `P
 
 ### Next — Step C
 R2 bucket (token needs "Workers R2 Storage: Edit"), Gmail attachments shown in chat, agent uploads limited to Amazon's rules (PDF/JPG/JPEG/PNG/XML, ≤5 files, ≤10 MB per message), attachments never sent to OpenAI, chargeback email only after Reply-To verified on a real notice.
+
+## Phase 9 (LIVE 2026-10-13) — tone filter, bulk actions, SP-API orders, review requests
+- **Tone filter**: multi-select chips above the Inbox list (persisted), combines with status filter + search.
+- **Bulk actions**: `POST /api/cases/bulk {ids, action, value}` → `{done, skipped[{case_ref, reason}]}`.
+  Actions: resolve · status · assign · tone · archive (manager). Resolve skips open A-to-Z / chargeback, `battery_flag`,
+  drafts awaiting manager. No bulk send exists.
+- **SP-API** (`src/spapi.ts`, Orders **v2026-01-01**, Solicitations v1; EU endpoint; UK marketplace `A1F83G8C2ARO7P`):
+  - Secrets: `SPAPI_LWA_CLIENT_ID`, `SPAPI_LWA_CLIENT_SECRET`, `SPAPI_REFRESH_TOKEN`. Roles: Inventory & Order Tracking, Buyer Solicitation.
+    `includedData=FULFILLMENT,PACKAGES,PROCEEDS` only — never BUYER/RECIPIENT.
+  - `POST /api/cases/:id/fetch-order` (auto on first open; 6 h cache in `amazon_orders`): fills EMPTY fields only —
+    delivery_date (actual from `packages[].packageStatus=DELIVERED` → `amazon_actual`; else promised `deliverByWindow.latest` → `amazon_estimated`),
+    tracking_number, carrier, device_model. Staff-typed dates set `delivery_date_source='staff'` and are never overwritten.
+    The AI payload carries `delivery_date_basis` so estimated dates are treated as unconfirmed.
+  - `GET|POST /api/cases/:id/review-request`: rule = delivery+7d ≤ today ≤ delivery+30d (identical for all orders) →
+    once per order (`review_requests.order_id UNIQUE`) → Amazon `getSolicitationActionsForOrder` → `createProductReviewAndSellerFeedbackSolicitation`.
+    Result logged as an event message on the case. Manual button only; automation is a separate approval.
+  - `GET /api/spapi/status`, `POST /api/spapi/test` (manager; LWA exchange only). Settings page shows state + Test connection.
+- Migration **0010_spapi.sql** (`amazon_orders`, `review_requests`, `cases.delivery_date_source`, `cases.spapi_synced_at`). App tolerates its absence.

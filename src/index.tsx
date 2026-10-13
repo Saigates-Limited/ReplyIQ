@@ -7,6 +7,7 @@ import { authApi, authPublic } from './routes/auth'
 import { draftsApi } from './routes/drafts'
 import { gmailApi, gmailCallback, sendApi } from './routes/gmail'
 import { eventsApi, messagesApi } from './routes/events'
+import { spapiApi } from './routes/spapi'
 import { runSync } from './sync'
 import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
@@ -84,6 +85,8 @@ app.route('/api/cases', casesApi)
 app.route('/api', draftsApi)
 app.route('/api/gmail', gmailApi)
 app.route('/api', sendApi) // POST /api/drafts/:id/send
+app.route('/api/spapi', spapiApi) // status/test
+app.route('/api', spapiApi) // /cases/:id/fetch-order, /cases/:id/review-request
 app.route('/api/events', eventsApi) // A-to-Z / Returns / Chargebacks trackers
 app.route('/api/messages', messagesApi) // tone override
 

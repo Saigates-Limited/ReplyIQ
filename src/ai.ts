@@ -29,6 +29,7 @@ export type CaseRow = {
   chargeback_open?: boolean | null
   battery_flag?: boolean | null
   internal_notes?: string | null // NEVER included in the payload
+  delivery_date_source?: string | null // staff | amazon_actual | amazon_estimated
 }
 export type MessageRow = {
   direction: 'inbound' | 'outbound'
@@ -138,6 +139,8 @@ export function buildPayload(kase: CaseRow, messages: MessageRow[], opts: { even
     order_id: kase.order_id ?? 'unknown',
     device_model: kase.device_model ?? 'unknown',
     delivery_date: kase.delivery_date ? new Date(kase.delivery_date).toISOString().slice(0, 10) : 'unknown',
+    // staff-entered dates are authoritative for warranty/return lanes; Amazon "estimated" = promised window, not confirmed delivery
+    delivery_date_basis: !kase.delivery_date ? 'none' : kase.delivery_date_source === 'amazon_estimated' ? 'ESTIMATED (Amazon promised window, not confirmed) — if the lane depends on days since delivery, ask staff to confirm' : kase.delivery_date_source === 'amazon_actual' ? 'confirmed by Amazon tracking' : 'entered by staff',
     days_since_delivery: daysSinceDelivery ?? 'unknown',
     refund_issued: yn(kase.refund_issued),
     atoz_open: yn(kase.a_to_z_open),

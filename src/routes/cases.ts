@@ -13,6 +13,14 @@ async function hasArchiveCols(sql: ReturnType<typeof getDb>) {
   archiveColsKnown = !!r
   return archiveColsKnown
 }
+let spapiColsKnown: boolean | null = null
+async function hasSpapiCols(sql: ReturnType<typeof getDb>) {
+  if (spapiColsKnown !== null) return spapiColsKnown
+  const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'spapi_synced_at'`
+  spapiColsKnown = !!r
+  return spapiColsKnown
+}
+const spapiExpr = (has: boolean, expr: string) => (has ? expr : expr.replace(/cases\.delivery_date_source, cases\.spapi_synced_at,/g, 'NULL::text AS delivery_date_source, NULL::timestamptz AS spapi_synced_at,').replace(/(?<!cases\.)\bdelivery_date_source, spapi_synced_at,/g, 'NULL::text AS delivery_date_source, NULL::timestamptz AS spapi_synced_at,'))
 const archExpr = (has: boolean, expr: string) => (has ? expr : expr.replace(/cases\.archived_at IS NULL/g, 'TRUE').replace(/cases\.archived_at IS NOT NULL/g, 'FALSE').replace(/cases\.archived_at,/g, 'NULL::timestamptz AS archived_at,'))
 
 // Columns returned to the agent UI. PII columns (last name, email, phone,
@@ -23,7 +31,7 @@ const CASE_COLUMNS = `
   customer_first_name, customer_last_name, customer_email, customer_phone, customer_address,
   order_id, device_model, delivery_date, refund_issued, a_to_z_open, in_stock,
   approved_repair_price, repair_quote_accepted, tracking_number, carrier,
-  chargeback_open, battery_flag, tone, assigned_to, internal_notes, source, archived_at,
+  chargeback_open, battery_flag, tone, assigned_to, internal_notes, source, archived_at, delivery_date_source, spapi_synced_at,
   last_customer_message_at,
   (last_customer_message_at + INTERVAL '24 hours') AS reply_deadline,
   created_at, updated_at
@@ -34,7 +42,7 @@ const CASE_COLUMNS_Q = `
   cases.customer_first_name, cases.customer_last_name, cases.customer_email, cases.customer_phone, cases.customer_address,
   cases.order_id, cases.device_model, cases.delivery_date, cases.refund_issued, cases.a_to_z_open, cases.in_stock,
   cases.approved_repair_price, cases.repair_quote_accepted, cases.tracking_number, cases.carrier,
-  cases.chargeback_open, cases.battery_flag, cases.tone, cases.assigned_to, cases.internal_notes, cases.source, cases.archived_at,
+  cases.chargeback_open, cases.battery_flag, cases.tone, cases.assigned_to, cases.internal_notes, cases.source, cases.archived_at, cases.delivery_date_source, cases.spapi_synced_at,
   cases.last_customer_message_at,
   (cases.last_customer_message_at + INTERVAL '24 hours') AS reply_deadline,
   cases.created_at, cases.updated_at
@@ -62,7 +70,7 @@ casesApi.get('/', async (c) => {
     // "Deadline" is the earlier of the 24h customer-reply deadline and any open Amazon event deadline.
     const has = await hasArchiveCols(sql)
     const rows = await sql.unsafe(
-      archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS},
+      spapiExpr(await hasSpapiCols(sql), archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS},
               (SELECT COUNT(*) FROM messages m WHERE m.case_id = cases.id AND m.kind <> 'event')::int AS message_count,
               (SELECT status FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_status,
               (SELECT needs_manager FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_needs_manager,
@@ -75,7 +83,7 @@ casesApi.get('/', async (c) => {
        ORDER BY
          CASE WHEN cases.status <> 'resolved' AND ${DEADLINE_EXPR} < now() THEN 0 ELSE 1 END,
          CASE WHEN cases.tone IN ('angry','dispute') THEN 0 ELSE 1 END,
-         ${DEADLINE_EXPR} ASC NULLS LAST`),
+         ${DEADLINE_EXPR} ASC NULLS LAST`)),
       [status]
     )
     return c.json({ cases: rows, now: new Date().toISOString() })
@@ -171,7 +179,7 @@ casesApi.get('/:id', async (c) => {
   const sql = getDb(c.env)
   try {
     const [kase] = await sql.unsafe(
-      archExpr(await hasArchiveCols(sql), `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS} FROM cases LEFT JOIN users u ON u.id = cases.assigned_to WHERE cases.id = $1`),
+      spapiExpr(await hasSpapiCols(sql), archExpr(await hasArchiveCols(sql), `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS} FROM cases LEFT JOIN users u ON u.id = cases.assigned_to WHERE cases.id = $1`)),
       [id]
     )
     if (!kase) return c.json({ error: 'Case not found' }, 404)
@@ -268,11 +276,13 @@ casesApi.patch('/:id', async (c) => {
 
   const sql = getDb(c.env)
   try {
+    const hasSp = await hasSpapiCols(sql)
+    if ('delivery_date' in updates && hasSp) updates.delivery_date_source = updates.delivery_date ? 'staff' : null
     const cols = Object.keys(updates)
     const has = await hasArchiveCols(sql)
     const [row] = await sql.unsafe(
       `UPDATE cases SET ${cols.map((k, i) => `${k} = $${i + 2}`).join(', ')}, updated_at = now()
-       WHERE id = $1 RETURNING ${has ? CASE_COLUMNS : CASE_COLUMNS.replace('archived_at,', 'NULL::timestamptz AS archived_at,')}`,
+       WHERE id = $1 RETURNING ${spapiExpr(hasSp, has ? CASE_COLUMNS : CASE_COLUMNS.replace('archived_at,', 'NULL::timestamptz AS archived_at,'))}`,
       [id, ...cols.map((k) => updates[k])] as any[]
     )
     if (!row) return c.json({ error: 'Case not found' }, 404)
@@ -282,7 +292,7 @@ casesApi.patch('/:id', async (c) => {
                 WHERE id = (SELECT id FROM messages WHERE case_id = ${id} AND direction = 'inbound' AND kind <> 'event' ORDER BY sent_at DESC LIMIT 1)`
     }
     const [full] = await sql.unsafe(
-      archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS} FROM cases LEFT JOIN users u ON u.id = cases.assigned_to WHERE cases.id = $1`),
+      spapiExpr(await hasSpapiCols(sql), archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS} FROM cases LEFT JOIN users u ON u.id = cases.assigned_to WHERE cases.id = $1`)),
       [id]
     )
     return c.json({ case: full ?? row })

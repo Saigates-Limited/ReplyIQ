@@ -267,3 +267,20 @@ ALTER TABLE public.amazon_events ADD COLUMN IF NOT EXISTS reply_to_status TEXT; 
 ALTER TABLE public.amazon_events ADD COLUMN IF NOT EXISTS reply_to_checked_at TIMESTAMPTZ;
 
 ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS attachments_checked_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS public.amazon_orders (
+  order_id    TEXT PRIMARY KEY,
+  payload     JSONB NOT NULL,            -- OrderSummary (no buyer/recipient data is ever requested)
+  fetched_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS public.review_requests (
+  id            SERIAL PRIMARY KEY,
+  order_id      TEXT NOT NULL UNIQUE,    -- once per order, enforced here and by Amazon (403 on repeat)
+  case_id       INTEGER REFERENCES public.cases(id) ON DELETE SET NULL,
+  requested_by  INTEGER REFERENCES public.users(id) ON DELETE SET NULL,
+  requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  result        TEXT NOT NULL DEFAULT 'pending',   -- pending | sent | ineligible | already_requested | error
+  detail        TEXT,
+  completed_at  TIMESTAMPTZ
+);
+ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS delivery_date_source TEXT;   -- staff | amazon_actual | amazon_estimated
+ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS spapi_synced_at TIMESTAMPTZ;

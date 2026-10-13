@@ -327,6 +327,15 @@
               <p class="mt-3 text-xs text-slate-500 bg-slate-50 rounded-md p-2"><i class="fas fa-lock mr-1"></i>Only the first name (<strong>${esc(k.customer_first_name)}</strong>) is ever shared with the AI drafting service.</p>
             </section>
 
+            <section id="amazon-order-panel" class="bg-white rounded-xl shadow-sm p-5">
+              <div class="flex items-center justify-between mb-2">
+                <h2 class="font-semibold"><i class="fab fa-amazon mr-2 text-slate-400"></i>Amazon order</h2>
+                <button id="fetch-order-btn" class="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50" ${k.order_id ? '' : 'disabled'}><i class="fas fa-rotate mr-1"></i>Fetch from Amazon</button>
+              </div>
+              <div id="amazon-order-body" class="text-sm text-slate-500">${k.order_id ? (k.spapi_synced_at ? 'Loading…' : 'Not fetched yet.') : 'No order ID on this case.'}</div>
+              <div id="review-request-box" class="mt-3"></div>
+            </section>
+
             <section id="case-fields" class="bg-white rounded-xl shadow-sm p-5">
               <div class="flex items-center justify-between mb-3">
                 <h2 class="font-semibold"><i class="fas fa-clipboard-list mr-2 text-slate-400"></i>Case details</h2>
@@ -342,8 +351,8 @@
                   <input id="f-device_model" name="device_model" class="field-input" value="${esc(k.device_model || '')}">
                 </div>
                 <div>
-                  <label class="field-label" for="f-delivery_date">Delivery date</label>
-                  <input id="f-delivery_date" name="delivery_date" type="date" class="field-input" value="${esc(k.delivery_date ? String(k.delivery_date).slice(0, 10) : '')}">
+                  <label class="field-label" for="f-delivery_date">Delivery date ${k.delivery_date_source === 'amazon_estimated' ? '<span class="normal-case font-normal text-amber-700">(Amazon estimate — promised window)</span>' : k.delivery_date_source === 'amazon_actual' ? '<span class="normal-case font-normal text-emerald-700">(Amazon: delivered)</span>' : k.delivery_date_source === 'staff' ? '<span class="normal-case font-normal text-slate-500">(entered by staff)</span>' : ''}</label>
+                  <input id="f-delivery_date" name="delivery_date" type="date" class="field-input ${k.delivery_date_source === 'amazon_estimated' ? 'border-amber-400' : ''}" value="${esc(k.delivery_date ? String(k.delivery_date).slice(0, 10) : '')}">
                 </div>
                 <div>
                   <label class="field-label" for="f-approved_repair_price">Approved repair price (£)</label>
@@ -374,10 +383,71 @@
 
     wireFields(id)
     wireTicket(id, k)
+    wireAmazonOrder(id, k)
     renderDraftWorkspace(id, k, data.drafts, data.events)
     const sc = document.getElementById('chat-scroll'); if (sc) sc.scrollTop = sc.scrollHeight
     document.querySelectorAll('#inbox-list .ticket-item').forEach((el) => el.classList.toggle('active', Number(el.dataset.caseId) === id))
     document.querySelector('.inbox')?.classList.add('show-detail')
+  }
+
+  // ---------- Amazon order (SP-API) + review request ----------
+  async function wireAmazonOrder(id, k) {
+    const body = document.getElementById('amazon-order-body')
+    const btn = document.getElementById('fetch-order-btn')
+    const box = document.getElementById('review-request-box')
+    if (!body) return
+    const render = (o, filled) => {
+      if (!o) return
+      const items = (o.items || []).map((it) => `<li>${esc(it.title || it.asin || '')}${it.quantity > 1 ? ` ×${it.quantity}` : ''}${it.unitPrice ? ` · ${esc(it.currency || '')} ${esc(it.unitPrice)}` : ''}${it.condition ? ` · <span class="text-slate-400">${esc(it.condition)}</span>` : ''}</li>`).join('')
+      body.innerHTML = `<dl class="grid grid-cols-3 gap-y-1 text-xs">
+        <dt class="text-slate-500">Ordered</dt><dd class="col-span-2">${o.orderDate ? fmtDateTime(o.orderDate) : '—'}</dd>
+        <dt class="text-slate-500">Status</dt><dd class="col-span-2">${esc(o.status || '—')} ${o.fulfilledBy ? `<span class="text-slate-400">· ${esc(o.fulfilledBy)}</span>` : ''}</dd>
+        <dt class="text-slate-500">Total</dt><dd class="col-span-2">${o.grandTotal ? `${esc(o.currency || '')} ${esc(o.grandTotal)}` : '—'}</dd>
+        <dt class="text-slate-500">Shipped</dt><dd class="col-span-2">${o.shipDate ? fmtDateTime(o.shipDate) : '—'}${o.carrier ? ` · ${esc(o.carrier)}` : ''}</dd>
+        <dt class="text-slate-500">Tracking</dt><dd class="col-span-2 font-mono">${esc(o.trackingNumber || '—')} ${o.packageStatus ? `<span class="font-sans px-1.5 rounded ${o.packageStatus === 'DELIVERED' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700'} text-[10px]">${esc(o.packageStatus)}</span>` : ''}</dd>
+        <dt class="text-slate-500">Delivery</dt><dd class="col-span-2">${o.deliveredAt ? `<span class="text-emerald-700">Delivered ${fmtDateTime(o.deliveredAt)}</span>` : o.promisedDelivery?.latest ? `<span class="text-amber-700">Promised ${fmtDate(o.promisedDelivery.earliest)} – ${fmtDate(o.promisedDelivery.latest)} (estimate)</span>` : '—'}</dd>
+      </dl>
+      ${items ? `<ul class="mt-2 text-xs list-disc pl-4 text-slate-700">${items}</ul>` : ''}
+      ${filled?.length ? `<div class="mt-2 text-[10px] text-emerald-700"><i class="fas fa-circle-check mr-1"></i>Filled from Amazon: ${esc(filled.join(', '))}</div>` : ''}
+      <div class="mt-1 text-[10px] text-slate-400">Fetched ${o.fetchedAt ? dayjs(o.fetchedAt).fromNow() : ''} · staff-entered values are never overwritten</div>`
+    }
+    const fetchOrder = async (force) => {
+      btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Fetching…'
+      try {
+        const { data } = await axios.post(`/api/cases/${id}/fetch-order`, { force }, { timeout: 30000 })
+        render(data.order, data.filled)
+        if (data.filled?.length) { toast(`Filled from Amazon: ${data.filled.join(', ')}`); renderCase(id); return }
+      } catch (err) {
+        const d = err.response?.data || {}
+        body.innerHTML = `<span class="${d.configured === false ? 'text-slate-400' : 'text-red-700'}">${esc(d.error || err.message)}</span>${d.configured === false ? ' <a href="/settings" data-link class="underline">Settings</a>' : ''}`
+      } finally { btn.disabled = false; btn.innerHTML = '<i class="fas fa-rotate mr-1"></i>Fetch from Amazon' }
+    }
+    btn.onclick = () => fetchOrder(true)
+    // Auto-fetch once on first open (cached 6h server-side; silent if SP-API isn't configured)
+    if (k.order_id) {
+      const st = await axios.get('/api/spapi/status').then((r) => r.data).catch(() => ({ configured: false }))
+      if (st.configured) await fetchOrder(false)
+      else body.innerHTML = '<span class="text-slate-400">Amazon connection not configured yet — <a href="/settings" data-link class="underline">Settings</a>.</span>'
+    }
+    // Review request
+    if (box && k.order_id) {
+      try {
+        const { data: r } = await axios.get(`/api/cases/${id}/review-request`)
+        const rule = r.rule || {}
+        let html = ''
+        if (r.previous) html = `<div class="text-xs rounded-md bg-slate-50 border border-slate-200 px-2 py-1.5"><i class="fas fa-star mr-1 text-amber-500"></i>Review request <strong>${esc(r.previous.result)}</strong> ${fmtDateTime(r.previous.requested_at)} by ${esc(r.previous.requested_by_name || '—')}${r.previous.detail && r.previous.result !== 'sent' ? ` — ${esc(r.previous.detail)}` : ''}</div>`
+        else if (rule.state === 'window_open') html = `<button id="review-btn" ${r.configured ? '' : 'disabled'} class="w-full text-xs px-3 py-2 rounded-md bg-amber-500 text-white font-medium disabled:opacity-50"><i class="fas fa-star mr-1"></i>Request review via Amazon <span class="font-normal opacity-80">(day ${rule.days_since} of 30)</span></button>`
+        else if (rule.state === 'too_early') html = `<button disabled class="w-full text-xs px-3 py-2 rounded-md bg-slate-200 text-slate-500"><i class="fas fa-star mr-1"></i>Request review — available from ${fmtDate(rule.available_from)}</button>`
+        else if (rule.state === 'no_delivery_date') html = `<div class="text-[10px] text-slate-400"><i class="fas fa-star mr-1"></i>Review request: set the delivery date first.</div>`
+        box.innerHTML = html + (rule.state !== 'expired' ? '<div class="mt-1 text-[10px] text-slate-400">Same rule for every order: 7–30 days after delivery, checked with Amazon, once per order. Never based on tone or outcome.</div>' : '')
+        document.getElementById('review-btn')?.addEventListener('click', async (e) => {
+          if (!confirm(`Ask Amazon to send its standard review request for order ${k.order_id}? This can only be done once.`)) return
+          e.target.disabled = true
+          try { const { data } = await axios.post(`/api/cases/${id}/review-request`, {}, { timeout: 30000 }); toast(data.detail || 'Review request sent'); renderCase(id) }
+          catch (err) { toast(err.response?.data?.error || err.response?.data?.detail || err.message, 'err'); renderCase(id) }
+        })
+      } catch {}
+    }
   }
 
   // WhatsApp-style items: customer left (white), Saigates right (green), Seller Central copies right (dashed), Amazon notices centred.
@@ -1152,6 +1222,16 @@
             <a href="/gmail" data-link class="inline-block mt-3 text-sm text-sky-700 hover:underline">Manage connection →</a>
           </div>
           <div class="bg-white rounded-xl shadow-sm p-5">
+            <h2 class="font-semibold mb-2"><i class="fab fa-amazon mr-2 text-slate-400"></i>Amazon SP-API</h2>
+            ${row('Credentials', `<span id="spapi-state">checking…</span>`)}
+            ${row('App type', 'Private, self-authorised')}
+            ${row('Roles', 'Inventory &amp; Order Tracking · Buyer Solicitation')}
+            ${row('Data requested', 'Order status, items, prices, packages/tracking — <strong>never</strong> buyer or address data')}
+            ${row('Review requests', 'Solicitations API only · 7–30 days after delivery · once per order')}
+            ${isManager ? '<button id="spapi-test" class="mt-3 text-sm px-3 py-1.5 rounded-md border border-slate-300">Test connection</button> <span id="spapi-test-result" class="text-xs ml-2"></span>' : ''}
+            <p class="mt-2 text-[10px] text-slate-400">Secrets: SPAPI_LWA_CLIENT_ID · SPAPI_LWA_CLIENT_SECRET · SPAPI_REFRESH_TOKEN (Cloudflare → Workers → replyiq → Settings → Variables &amp; Secrets)</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm p-5">
             <h2 class="font-semibold mb-2"><i class="fas fa-server mr-2 text-slate-400"></i>Platform</h2>
             ${row('Hosting', esc(st.hosting))}
             ${row('Database', esc(st.database))}
@@ -1160,6 +1240,12 @@
           </div>
         </div>
       </section>`
+    axios.get('/api/spapi/status').then(({ data }) => { const el = document.getElementById('spapi-state'); if (el) el.innerHTML = data.configured ? '<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>Configured</span>' : '<span class="text-amber-700"><i class="fas fa-circle-exclamation mr-1"></i>Not configured</span>' }).catch(() => {})
+    document.getElementById('spapi-test')?.addEventListener('click', async (e) => {
+      const out = document.getElementById('spapi-test-result'); e.target.disabled = true; out.textContent = 'testing…'
+      try { const { data } = await axios.post('/api/spapi/test'); out.innerHTML = data.ok ? `<span class="text-emerald-700">✓ ${esc(data.detail)}</span>` : `<span class="text-red-700">✗ ${esc(data.detail)}</span>` } catch (err) { out.innerHTML = `<span class="text-red-700">${esc(err.response?.data?.error || err.message)}</span>` }
+      e.target.disabled = false
+    })
   }
 
   function replyToBadge(e) {
