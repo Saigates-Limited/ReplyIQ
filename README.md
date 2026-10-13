@@ -211,3 +211,24 @@ R2 bucket (token needs "Workers R2 Storage: Edit"), Gmail attachments shown in c
     Result logged as an event message on the case. Manual button only; automation is a separate approval.
   - `GET /api/spapi/status`, `POST /api/spapi/test` (manager; LWA exchange only). Settings page shows state + Test connection.
 - Migration **0010_spapi.sql** (`amazon_orders`, `review_requests`, `cases.delivery_date_source`, `cases.spapi_synced_at`). App tolerates its absence.
+
+## Phase 10 (LIVE 2026-10-13) — collapsible sidebar, dark mode, Knowledge base, Decision Trees
+- **Collapsible sidebar** (desktop): `«` button in the sidebar header → icon-only rail (badges stay visible, titles on hover).
+  Remembered per browser (`localStorage riq.sidebar`), applied before first paint via `html.sb-collapsed`.
+- **Dark / light toggle**: moon/sun button in the top bar. `html.dark` + Tailwind `darkMode:'class'`; theme overrides live in
+  `public/static/style.css` (`html.dark …`). Remembered per browser (`riq.theme`). Default is light.
+- **Knowledge base** (`/knowledge`, `src/kb.ts`, `src/routes/kb.ts`): staff-added **rules / facts / phrasing examples** for the drafting model.
+  - Prompt = `reply_instructions.md` (unchanged, still the file) **+ active rules appended after it** under a heading that says they can
+    never relax the "Never" list or Step 0. The deterministic `serverChecks` guardrails still run on every draft.
+  - Workflow: agents **propose** (status `draft`), managers **approve & activate / reject / retire**; managers can also save straight to active.
+    Max 60 active rules, 1 500 chars each; `modes` = all | customer | amazon (Seller Central statements).
+  - `validateRuleText` rejects text that asks for PIN/password/phone/email/ID, says "waterproof", mentions reviews/feedback, refuses a return,
+    says "no rights", contains bank details, contains links, or tries to override instructions ("ignore previous…", "act as…").
+  - Audit: every draft stores `drafts.kb_rule_ids` (the rules in force when it was generated); the card shows "used in N drafts".
+    No DELETE — DB trigger refuses it; retire instead.
+  - API: `GET /api/kb?status=live|active|draft|all` · `POST /api/kb` · `PATCH /api/kb/:id` · `POST /api/kb/:id/activate|reject|retire|reorder` (manager) ·
+    `POST /api/kb/check` (live validation) · `GET /api/kb/preview` (manager; exact prompt block). `GET /api/events/counts` adds `kb_pending` (manager badge).
+  - Migration **0011_knowledge_base.sql** (`kb_rules`, `drafts.kb_rule_ids`, triggers). App tolerates its absence (page shows a banner; drafts still work).
+- **Decision Trees** (`/decision-trees`): flowchart cards built from the lanes in `reply_instructions.md` — Step 0, Faults by days since delivery
+  (0–30 / 31–90 / 91–180 / 181–365 / 365+), Battery, Item not received, Locked phone, Change of mind, Partial refund, Paid repair, eSIM/charger —
+  with the "Never" list pinned at the top. Category filter; cards remember open/closed state. Static content (`TREES` in `app.js`) — update it when the policy changes.
