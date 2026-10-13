@@ -50,6 +50,7 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
         <div class="nav-group px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Reference</div>
         <a href="/policy" data-link data-nav="policy" class="nav-tab" title="Reply policy"><i class="fas fa-book w-5"></i><span class="nav-label">Reply policy</span></a>
         <a href="/decision-trees" data-link data-nav="trees" class="nav-tab" title="Decision Trees"><i class="fas fa-sitemap w-5"></i><span class="nav-label">Decision Trees</span></a>
+        <a href="/templates" data-link data-nav="templates" class="nav-tab" title="Reply templates"><i class="fas fa-file-lines w-5"></i><span class="nav-label">Templates</span></a>
         <a href="/knowledge" data-link data-nav="knowledge" class="nav-tab" title="Knowledge base"><i class="fas fa-brain w-5"></i><span class="nav-label">Knowledge base</span> <span class="nav-badge nav-badge-muted" data-badge="kb"></span></a>
         <div class="nav-group px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Setup</div>
         <a href="/settings" data-link data-nav="settings" class="nav-tab" title="Settings"><i class="fas fa-gear w-5"></i><span class="nav-label">Settings</span></a>

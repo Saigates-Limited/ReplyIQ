@@ -264,3 +264,23 @@ R2 bucket (token needs "Workers R2 Storage: Edit"), Gmail attachments shown in c
   message whose RFC `Message-ID` header (or identical text within 2 min on the same case) is already stored; Amazon notices are
   deduped the same way. One-off clean-up for copies imported before this: Gmail page → **Remove duplicates**
   (`POST /api/gmail/dedupe {apply}`; preview first; keeps the earliest copy, re-points attachments, merges duplicate event rows).
+
+## Phase 12 (LIVE 2026-10-13) — New reply policy, templates, KB seed, system prompt
+- **`reply_instructions.md` rewritten** from the "UK Renewed Smartphone Customer Support Agent" brief: Step 0 (refund/A-to-z/chargeback
+  open; legal mentions; safety), expanded Never list (no liability admission, no accusations, no "fake" parts, no refurbed on Amazon, no
+  rejection without inspection), product positioning, 15 case types, physical damage / safety / battery / Unknown Part / overheating /
+  refund / return instructions (Royal Mail portal) / iCloud / cosmetic / repeat fault / replacement-first / INR & delivery disputes /
+  accessories / SIM / reviews / troubleshooting / out of warranty / paid repair, default reply structure. Sign-off: **Kind regards, Customer Support Team**.
+- **Guardrails updated to match** (`serverChecks`): `never_accuse` (fraud / you damaged it / this proves), `never_fake_parts`,
+  `no_liability_admission`, `no_unconditional_promise` (warn), `never_refurbed`, `never_refuse_return` now allows refusal only when
+  the 12-month warranty has clearly expired (staff/actual delivery date > 365 d), `safety_stop_using` only for swelling / lifting
+  screen / excessive heat (not battery-health enquiries), `battery_overexplain` (warn on UN3481 / dangerous-goods wording), style warnings
+  (sign-off, em dash, "I", >4,000 chars). Tested on 13 scenarios.
+- **Reply templates** (`/templates`, `reply_templates`, migration **0014**): 13 seeded short replies (found accessory, return proof,
+  replacement address, photos requested, photos cannot upload, return instructions, iCloud still linked, replacement before return,
+  INR check-first, Royal Mail confirmed delivery, out of warranty, SIM left in return, dispatched). Draft editor → **Insert template…**
+  fills `[Name]` / `[tracking]` from the case; other `[placeholders]` stay visible. Managers add/edit/retire; same content checks as the KB.
+- **Knowledge base seeded** (14 active facts/rules/examples from the brief). KB validator now allows the Royal Mail returns-portal link only.
+- **Custom system prompt**: seed text (company, voice, seller position, house style) saved as a new version via the editor.
+- **Decision Trees** rebuilt to the new lanes. Gmail From name is now "Customer Support Team".
+- OpenAI JSON parsing is more tolerant and logs the finish reason / head of any non-JSON reply.

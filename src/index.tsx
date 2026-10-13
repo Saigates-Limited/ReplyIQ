@@ -10,6 +10,7 @@ import { eventsApi, messagesApi } from './routes/events'
 import { spapiApi } from './routes/spapi'
 import { kbApi } from './routes/kb'
 import { promptApi } from './routes/prompt'
+import { templatesApi } from './routes/templates'
 import { runSync } from './sync'
 import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
@@ -93,6 +94,7 @@ app.route('/api/events', eventsApi) // A-to-Z / Returns / Chargebacks trackers
 app.route('/api/messages', messagesApi) // tone override
 app.route('/api/kb', kbApi) // knowledge base rules for the drafting model
 app.route('/api/prompt', promptApi) // custom system prompt (manager only)
+app.route('/api/templates', templatesApi) // ready-to-use reply templates
 
 // SPA pages
 app.get('/', (c) => c.html(page(c.get('user'))))
@@ -105,6 +107,7 @@ app.get('/settings', (c) => c.html(page(c.get('user'))))
 app.get('/decision-trees', (c) => c.html(page(c.get('user'))))
 app.get('/knowledge', (c) => c.html(page(c.get('user'))))
 app.get('/settings/prompt', (c) => c.html(page(c.get('user'))))
+app.get('/templates', (c) => c.html(page(c.get('user'))))
 app.get('/api/policy', (c) => c.json({ markdown: instructions, model: MODEL, tone_model: TONE_MODEL }))
 app.get('/api/settings', (c) =>
   c.json({

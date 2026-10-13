@@ -68,7 +68,7 @@
   function route() {
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
     const p = location.pathname
-    setActiveNav(m || p === '/inbox' ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p.startsWith('/settings') ? 'settings' : 'dashboard')
+    setActiveNav(m || p === '/inbox' ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
     refreshBadges()
     document.getElementById('sidebar')?.classList.remove('open')
     if (m) renderInbox(Number(m[1]))
@@ -80,6 +80,7 @@
     else if (p === '/settings/prompt') renderPromptEditor()
     else if (p === '/decision-trees') renderDecisionTrees()
     else if (p === '/knowledge') renderKnowledge()
+    else if (p === '/templates') renderTemplates()
     else if (p === '/atoz') renderTracker('atoz')
     else if (p === '/returns') renderTracker('return')
     else if (p === '/chargebacks') renderTracker('chargeback')
@@ -684,6 +685,7 @@
           <textarea id="draft-text" class="field-input font-sans leading-relaxed" rows="14" ${locked ? 'readonly' : ''}>${esc(d.draft_text)}</textarea>
           <div class="mt-2 flex flex-wrap items-center gap-2">
             ${locked ? '' : `<button id="save-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm"><i class="far fa-floppy-disk mr-1"></i>Save edits</button>`}
+            ${locked || (d.mode && d.mode !== 'customer') ? '' : `<select id="template-pick" class="field-input py-1.5 text-sm mt-0" style="width:auto;max-width:16rem" title="Replace the text with a ready-made reply, then fill in the [placeholders]"><option value="">Insert template…</option></select>`}
             <button id="copy-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm"><i class="far fa-copy mr-1"></i>Copy reply</button>
             <span id="draft-save-indicator" class="text-xs text-slate-400"></span>
             <span class="ml-auto flex items-center gap-2">
@@ -752,6 +754,22 @@
     document.getElementById('copy-draft-btn').onclick = async () => {
       await navigator.clipboard.writeText(text.value)
       toast('Reply copied to clipboard')
+    }
+    const pick = document.getElementById('template-pick')
+    if (pick) {
+      loadTemplates().then((list) => {
+        const groups = {}
+        for (const t of list) (groups[t.category] ||= []).push(t)
+        pick.innerHTML = '<option value="">Insert template…</option>' + Object.entries(groups).map(([cat, ts]) => `<optgroup label="${esc(cat)}">${ts.map((t) => `<option value="${t.id}">${esc(t.title)}</option>`).join('')}</optgroup>`).join('')
+      })
+      pick.onchange = () => {
+        const t = templatesCache.find((x) => x.id === Number(pick.value)); pick.value = ''
+        if (!t) return
+        if (text.value.trim() && text.value.trim() !== d.draft_text.trim() && !confirm('Replace your unsaved edits with this template?')) return
+        text.value = fillTemplate(t.body, kase)
+        ind.textContent = 'Template inserted — fill in any [placeholders], then Save edits to run the checks'
+        text.focus()
+      }
     }
     document.getElementById('approve-btn')?.addEventListener('click', () => {
       if (text.value.trim() !== d.draft_text.trim() || (notes.value || '') !== (d.staff_notes || '')) {
@@ -1448,65 +1466,153 @@ House style: open with a one-line acknowledgement of the problem, then the next 
     })
   }
 
+  // ---------- REPLY TEMPLATES (ready-to-use short replies; inserted into the draft editor, then checked as usual) ----------
+  let templatesCache = []
+  async function loadTemplates(force) {
+    if (templatesCache.length && !force) return templatesCache
+    try { const { data } = await axios.get('/api/templates'); templatesCache = data.templates || [] } catch { templatesCache = [] }
+    return templatesCache
+  }
+  // Fill what we safely know; everything else stays as a visible [placeholder] for the agent.
+  function fillTemplate(body, kase) {
+    return body.replace(/\[Name\]/g, kase?.customer_first_name || '[Name]').replace(/\[tracking\]/g, kase?.tracking_number || '[tracking]')
+  }
+  async function renderTemplates() {
+    app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading templates…</p>`
+    let d
+    try { ;({ data: d } = await axios.get('/api/templates', { params: isManager ? { all: 1 } : {} })) } catch (err) { return renderError(err) }
+    templatesCache = d.templates.filter((t) => t.status === 'active')
+    const groups = {}
+    for (const t of d.templates) (groups[t.category] ||= []).push(t)
+    const form = (t) => `
+      <form id="tpl-form" class="bg-white rounded-xl shadow-sm p-5 space-y-3" data-id="${t ? t.id : ''}">
+        <h2 class="font-semibold">${t ? `Edit “${esc(t.title)}”` : 'Add a template'}</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="field-label">Title</label><input name="title" required class="field-input" value="${esc(t?.title || '')}"></div>
+          <div><label class="field-label">Category</label><select name="category" class="field-input">${d.categories.map((c) => `<option value="${c}" ${t?.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+        </div>
+        <div><label class="field-label">Reply text (use [Name], [Address], [date/time], [tracking], [reference] as placeholders)</label><textarea name="body" rows="12" required class="field-input font-sans leading-relaxed">${esc(t?.body || 'Dear [Name],\n\nThank you for your message.\n\n\n\nIf you need any further help, please let us know.\n\nKind regards,\nCustomer Support Team')}</textarea></div>
+        <div class="flex gap-2">
+          <button class="flex-1 py-2 rounded-md bg-slate-900 text-white text-sm font-medium">${t ? 'Save changes' : 'Add template'}</button>
+          ${t ? `<button type="button" id="tpl-cancel" class="px-3 py-2 rounded-md border border-slate-300 text-sm">Cancel</button>` : ''}
+        </div>
+        <p class="text-[11px] text-slate-400">Templates go through the same content checks as knowledge-base rules, and every draft built from one is still guardrail-checked before approval.</p>
+      </form>`
+    app.innerHTML = `
+      <section id="templates">
+        <div class="flex flex-wrap items-end justify-between gap-4 mb-4">
+          <div><h1 class="text-2xl font-bold"><i class="fas fa-file-lines mr-2 text-slate-400"></i>Reply templates</h1><p class="text-sm text-slate-500">Ready-to-send short replies. In a case, choose <em>Insert template…</em> under the draft to drop one in, fill the [placeholders], save and approve as usual.</p></div>
+        </div>
+        ${d.migration_needed ? `<div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><i class="fas fa-database mr-1"></i>Run <code>db/migrations/${esc(d.migration_needed)}</code> in Supabase, then reload.</div>` : ''}
+        <div class="grid lg:grid-cols-3 gap-4">
+          <div class="lg:col-span-2 space-y-4">
+            ${Object.entries(groups).map(([cat, ts]) => `<div><h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2">${esc(cat)}</h2><div class="space-y-2">${ts.map((t) => `
+              <article class="bg-white rounded-xl shadow-sm p-4 tpl-card ${t.status === 'retired' ? 'opacity-60' : ''}" data-id="${t.id}">
+                <div class="flex items-center gap-2 mb-1"><h3 class="font-semibold">${esc(t.title)}</h3>${t.status === 'retired' ? '<span class="pill bg-slate-200 text-slate-700">retired</span>' : ''}<span class="ml-auto text-[10px] text-slate-400">${esc(t.slug)}</span></div>
+                <pre class="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed max-h-40 overflow-auto">${esc(t.body)}</pre>
+                <div class="flex gap-2 mt-3 text-xs">
+                  <button data-act="copy" class="px-2 py-1 rounded-md border border-slate-300"><i class="far fa-copy mr-1"></i>Copy</button>
+                  ${isManager ? `<button data-act="edit" class="px-2 py-1 rounded-md border border-slate-300"><i class="fas fa-pen mr-1"></i>Edit</button>
+                  <button data-act="${t.status === 'active' ? 'retire' : 'restore'}" class="px-2 py-1 rounded-md border border-slate-300">${t.status === 'active' ? '<i class="fas fa-box-archive mr-1"></i>Retire' : '<i class="fas fa-rotate-left mr-1"></i>Restore'}</button>` : ''}
+                </div>
+              </article>`).join('')}</div></div>`).join('') || '<div class="bg-white rounded-xl shadow-sm p-8 text-center text-slate-500 text-sm">No templates yet.</div>'}
+          </div>
+          <div class="space-y-4">${isManager ? `<div id="tpl-form-wrap">${form(null)}</div>` : ''}
+            <div class="bg-white rounded-xl shadow-sm p-4 text-xs text-slate-600 space-y-1"><div class="font-semibold text-slate-700"><i class="fas fa-lightbulb mr-1 text-amber-500"></i>Placeholders</div><p><code>[Name]</code> and <code>[tracking]</code> are filled automatically from the case when inserted. Anything else in square brackets stays visible so you remember to replace it.</p></div>
+          </div>
+        </div>
+      </section>`
+    const wireForm = (t) => {
+      const f = document.getElementById('tpl-form'); if (!f) return
+      f.onsubmit = async (e) => {
+        e.preventDefault()
+        try {
+          if (t) await axios.patch(`/api/templates/${t.id}`, { title: f.title.value, category: f.category.value, body: f.body.value })
+          else await axios.post('/api/templates', { title: f.title.value, category: f.category.value, body: f.body.value })
+          toast(t ? 'Template updated' : 'Template added'); renderTemplates()
+        } catch (err) { toast(err.response?.data?.problems?.[0] || err.response?.data?.error || err.message, 'err') }
+      }
+      document.getElementById('tpl-cancel')?.addEventListener('click', () => { document.getElementById('tpl-form-wrap').innerHTML = form(null); wireForm(null) })
+    }
+    wireForm(null)
+    app.querySelectorAll('.tpl-card [data-act]').forEach((b) => {
+      b.onclick = async () => {
+        const id = Number(b.closest('.tpl-card').dataset.id); const t = d.templates.find((x) => x.id === id)
+        if (b.dataset.act === 'copy') { await navigator.clipboard.writeText(t.body); toast('Template copied'); return }
+        if (b.dataset.act === 'edit') { document.getElementById('tpl-form-wrap').innerHTML = form(t); wireForm(t); document.getElementById('tpl-form').scrollIntoView({ behavior: 'smooth' }); return }
+        try { await axios.patch(`/api/templates/${id}`, { status: b.dataset.act === 'retire' ? 'retired' : 'active' }); toast(b.dataset.act === 'retire' ? 'Template retired' : 'Template restored'); renderTemplates() } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      }
+    })
+  }
+
   // ---------- DECISION TREES (visual walk-through of the lanes in reply_instructions.md) ----------
   // Node shapes: { q, branches:[{label, next}] } decision · { do:[...], flags:{manager,urgency}, note } outcome · { step, next } action step.
-  const CHECKLIST = ['Sign out of iCloud and turn off Find My', 'Factory reset the phone', 'Remove the SIM card', 'Pack it securely with any accessories that came with it']
+  const CHECKLIST = ['Switch the phone off and remove the SIM (and eSIM if possible)', 'Back up and erase personal data; remove any PIN, passcode or screen lock', 'Remove the Apple ID / iCloud account and Find My', 'Package securely; include the supplied cable only if required', 'Keep proof of postage or collection confirmation (Royal Mail portal)']
   const MGR = { manager: true }
+  const INSPECT = 'Once received, our technicians inspect the device. If the fault is confirmed as covered, we arrange the appropriate resolution (repair, replacement or refund depending on inspection and availability).'
   const TREES = [
     { id: 'step0', cat: 'Always first', title: 'Step 0 — check before any lane', icon: 'fa-shield-halved', section: 'Step 0 — check first', summary: 'Runs before every reply. Stops the draft or forces manager review.',
-      root: { q: 'Is refund_issued = Yes, or is an A-to-Z claim open?', branches: [
-        { label: 'Yes', next: { do: ['Short acknowledgement only: “Thank you, we are looking into this and will update you shortly.”', 'Stop — do not use any other lane'], flags: MGR } },
-        { label: 'No', next: { q: 'Does the customer mention the Consumer Rights Act, Trading Standards, legal action, a solicitor, a chargeback or an A-to-Z claim?', branches: [
-          { label: 'Yes', next: { do: ['Continue to the right lane below', 'Flag for manager'], flags: MGR } },
-          { label: 'No', next: { do: ['Continue to the right lane below'] } } ] } } ] } },
-    { id: 'fault', cat: 'Faults & defects', title: 'Fault reported — choose by days since delivery', icon: 'fa-screwdriver-wrench', section: 'Faults — warranty is 12 months from the delivery date', summary: 'Warranty is 12 months from the delivery date. The delivery date decides the lane.',
-      root: { q: 'How many days since delivery? (use the typed delivery date; Amazon “estimated” dates are a fallback)', branches: [
-        { label: '0–30 days', next: { do: ['Apologise', 'Offer a replacement OR a refund through Amazon’s returns process', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
-        { label: '31–90 days', next: { step: 'Give simple troubleshooting steps and ask for photos or a short video of the fault', next: { q: 'Does the fault continue?', branches: [
-          { label: 'Yes', next: { do: ['Offer a return for inspection', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
-          { label: 'No', next: { do: ['Close politely; invite them to come back if it recurs'] } } ] } } },
-        { label: '91–180 days', next: { step: 'Ask for clear photos of all six sides (front, back, top, bottom, left, right)', next: { q: 'Are the photos clear?', branches: [
-          { label: 'Clear', next: { do: ['Arrange a return for inspection — do not question the claim; the technician decides', 'Mention our Dr.Fone test report showed the phone fully working when sent', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
-          { label: 'Blurry', next: { do: ['Ask again politely for clear photos', 'If they still do not send photos, the return STILL goes ahead', 'staff_notes: “no photos before return”'] } },
-          { label: 'None sent', next: { do: ['The return still goes ahead', 'staff_notes: “no photos before return”', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } } ] } } },
-        { label: '181–365 days', next: { do: ['Ask for photos of all six sides', 'Arrange a return for inspection — the technician decides', 'Promise a report within 2 business days of receiving the phone', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
-        { label: 'Over 365 days', next: { step: 'Politely explain the 12-month warranty has ended; offer a paid repair if suitable (never say “no rights”)', next: { q: 'Do they mention the law, Trading Standards, legal action or A-to-Z?', branches: [
-          { label: 'Yes', next: { do: ['Keep the same polite wording', 'Flag for manager'], flags: MGR } },
+      root: { q: 'Is refund_issued = Yes, or is an A-to-z claim or chargeback open?', branches: [
+        { label: 'Yes', next: { do: ['Short acknowledgement only: “Thank you for your message. We are looking into this and will update you shortly.”', 'Stop — do not use any other lane'], flags: MGR } },
+        { label: 'No', next: { q: 'Does the customer mention the Consumer Rights Act, Trading Standards, legal action, a solicitor, Section 75, a chargeback or an A-to-z claim?', branches: [
+          { label: 'Yes', next: { do: ['Reply calmly, state the seller position once, do not debate', 'Continue to the right lane', 'Flag for manager'], flags: MGR } },
+          { label: 'No', next: { q: 'Swelling, lifting screen, burning, smoke or excessively hot (or battery_flag set)?', branches: [
+            { label: 'Yes', next: { do: ['Follow the Safety lane', 'Manager review, urgency high'], flags: { manager: true, urgency: 'high' } } },
+            { label: 'No', next: { do: ['Continue to the right lane below'] } } ] } } ] } } ] } },
+    { id: 'fault', cat: 'Faults & defects', title: 'Fault / warranty claim — return first, inspect, then decide', icon: 'fa-screwdriver-wrench', section: 'Fault and warranty claims', summary: '12-month warranty from delivery. Never reject without inspection unless clearly out of warranty.',
+      root: { q: 'Days since delivery? (typed date; Amazon “estimated” dates must be confirmed by staff first)', branches: [
+        { label: '0–365 days', next: { step: 'Apologise, acknowledge the inconvenience. Ask for fault details / when it started / photos or a short video if missing. Suggest simple troubleshooting only where appropriate.', next: { q: 'Does the fault persist after troubleshooting?', branches: [
+          { label: 'Yes', next: { q: 'Any physical damage (bent frame, cracked back, lifting screen) or third-party repair mentioned?', branches: [
+            { label: 'No', next: { do: ['Arrange a return for inspection via the Royal Mail portal', INSPECT, ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
+            { label: 'Physical damage', next: { do: ['Stay neutral: “Physical damage can affect warranty eligibility … we cannot confirm the cause from messages alone, which is why the device must be inspected.”', 'Never say “you damaged it” or “this proves misuse”', 'Arrange a return for inspection', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
+            { label: 'Repaired elsewhere', next: { do: ['“As the phone has already been repaired elsewhere before being inspected by us, we are unable to verify the original condition, the cause, or whether the fault would have been covered.”', 'Offer inspection; no admission'], flags: MGR } } ] } },
+          { label: 'No / resolved', next: { do: ['Close politely; invite them to come back if it recurs'] } } ] } } },
+        { label: 'Over 365 days', next: { step: '“The 12-month warranty period has now expired … we are unable to provide a free warranty repair, replacement or refund.” Offer a paid repair if suitable. A repair does not restart the warranty.', next: { q: 'Do they cite the Consumer Rights Act / repair warranty?', branches: [
+          { label: 'Yes', next: { do: ['Stay calm, state the position once, do not debate, do not admit liability', 'Do not accept a return unless instructed'], flags: MGR } },
           { label: 'No', next: { do: ['Paid repair lane: price only if approved_repair_price is set'] } } ] } } } ] } },
-    { id: 'battery', cat: 'Faults & defects', title: 'Battery problem', icon: 'fa-battery-quarter', section: 'Battery', summary: 'Every battery case is a safety case. Heat, swelling or burning adds manager review and high urgency.',
-      root: { step: 'Tell the customer to stop using AND stop charging the phone', next: { step: 'Send the prepaid Royal Mail return label; ask them to put the UN3481 lithium battery label on the parcel', next: { q: 'Is the battery swollen, hot or burning (or battery_flag set on the order)?', branches: [
-        { label: 'Yes', next: { do: ['Same instructions, urgent tone', 'Manager must approve before sending'], flags: { manager: true, urgency: 'high' } } },
-        { label: 'No (e.g. drains fast)', next: { do: ['Arrange the return for inspection', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } } ] } } } },
-    { id: 'inr', cat: 'Item not received', title: 'Item not received', icon: 'fa-truck-ramp-box', section: 'Item not received', summary: 'Every phone is high value. Accessory-only orders skip the police reference line.',
-      root: { step: 'Apologise and confirm we are checking with the carrier', next: { step: 'Ask them to check with neighbours, anyone else at the address, and any safe place, porch or bin store', next: { q: 'Is the order a phone (or does it include one)?', branches: [
-        { label: 'Phone', next: { q: 'Does tracking show “delivered”?', branches: [
-          { label: 'Yes', next: { do: ['Explain they may be asked for a police crime reference number because the parcel shows as delivered'] } },
-          { label: 'No / in transit', next: { do: ['Give the tracking status and the next update time', 'Do not mention police references yet'] } } ] } },
-        { label: 'Accessory only', next: { do: ['Do NOT mention police crime references', 'Offer replacement or refund via Amazon once the carrier check completes'] } } ] } } } },
-    { id: 'locked', cat: 'Returns & refunds', title: 'Locked phone (iCloud / Activation Lock)', icon: 'fa-lock', section: 'Locked phone (iCloud / Activation Lock)', summary: 'Returned phones that are still locked. We never ask for the Apple ID password.',
-      root: { step: 'Ask them to remove the phone from their Apple ID (Settings › [name] › Sign Out, or icloud.com/find). Never ask for a password.', next: { q: 'Still locked after 2 business days?', branches: [
-        { label: 'Yes', next: { do: ['Flag for manager — the manager may refuse the refund', 'If they unlock it later, the refund goes ahead'], flags: MGR } },
-        { label: 'Unlocked', next: { do: ['Refund goes ahead'] } } ] } } },
-    { id: 'com', cat: 'Returns & refunds', title: 'Change of mind', icon: 'fa-rotate-left', section: 'Change of mind', summary: 'Never refuse a return. After 30 days a manager decides how to handle it.',
-      root: { q: 'Days since delivery?', branches: [
-        { label: '0–30 days', next: { do: ['Accept the return through Amazon’s returns process', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
-        { label: 'Over 30 days', next: { do: ['Never refuse the return in the reply', 'Flag for manager'], flags: MGR } } ] } },
-    { id: 'refund', cat: 'Returns & refunds', title: 'Partial refund requested', icon: 'fa-sterling-sign', section: 'Refunds', summary: 'Staff can approve up to £15. Above that a manager approves.',
-      root: { q: 'Amount offered or requested?', branches: [
-        { label: '≤ £15', next: { do: ['Staff may approve', 'Never say a refund has been “issued” unless refund_issued = Yes'] } },
-        { label: '> £15', next: { do: ['Draft can propose it but must not promise it', 'Flag for manager'], flags: MGR } } ] } },
-    { id: 'paid', cat: 'Returns & refunds', title: 'Paid repair', icon: 'fa-hand-holding-dollar', section: 'Paid repair', summary: 'Price only when approved; bank details only after the quote is accepted.',
-      root: { q: 'Is approved_repair_price set on the case?', branches: [
-        { label: 'No', next: { do: ['Say a technician will quote after inspection', 'Do NOT give a price or bank details'] } },
-        { label: 'Yes', next: { q: 'Has the customer accepted the quote (repair_quote_accepted = Yes)?', branches: [
-          { label: 'No', next: { do: ['Give the price', 'Do NOT give bank details yet'] } },
-          { label: 'Yes', next: { do: ['Give the price and our bank transfer details'] } } ] } } ] } },
-    { id: 'setup', cat: 'Setup & compatibility', title: 'eSIM / charger questions', icon: 'fa-sim-card', section: 'eSIM', summary: 'Quick facts from the policy.',
-      root: { q: 'What is the question about?', branches: [
-        { label: 'eSIM', next: { q: 'iPhone 14 or newer?', branches: [ { label: 'Yes', next: { do: ['Explain eSIM setup'] } }, { label: 'Older', next: { do: ['Do not explain eSIM setup — explain the physical SIM instead'] } } ] } },
-        { label: 'Charging cable', next: { q: 'iPhone 15 or newer?', branches: [ { label: 'Yes', next: { do: ['USB-C'] } }, { label: 'Older', next: { do: ['Lightning'] } } ] } } ] } },
+    { id: 'safety', cat: 'Faults & defects', title: 'Safety — lifting screen, swelling, excessive heat', icon: 'fa-triangle-exclamation', section: 'Safety issues', summary: 'Short and calm. Avoid using/charging, photos, return for inspection. No lithium-battery lecture.',
+      root: { step: '“Please avoid using or charging the phone while [the screen is lifting / it is getting excessively hot].”', next: { step: 'Request photos if not already provided', next: { q: 'Was the phone repaired elsewhere before we saw it?', branches: [
+        { label: 'No', next: { do: ['Arrange a return for inspection (subject to inspection, no promise)', ...CHECKLIST.map((c) => 'Return checklist: ' + c)], flags: { manager: true, urgency: 'high' } } },
+        { label: 'Yes', next: { do: ['“We are unable to verify the original condition of the device, the cause of the issue, or whether the fault would have been covered under the warranty.”'], flags: { manager: true, urgency: 'high' } } } ] } } } },
+    { id: 'battery', cat: 'Faults & defects', title: 'Battery, charging and “Unknown Part”', icon: 'fa-battery-quarter', section: 'Battery, charging and "Unknown Part"', summary: 'Battery health varies within renewed standards; “Unknown Part” is normal after refurbishment. Never say “fake”.',
+      root: { q: 'What is reported?', branches: [
+        { label: 'Poor battery', next: { do: ['Ask for Settings › Battery › Battery Health & Charging › Maximum Capacity', 'Suggest: update iOS, check battery usage by app, avoid heavy use while charging', 'If still faulty: return for inspection. “If our inspection confirms a covered battery fault, we will arrange the appropriate warranty resolution.”'] } },
+        { label: 'Charging problem', next: { do: ['Try a different compatible cable and adapter, check the port for debris, update iOS', 'Return for inspection if sudden shutdowns or battery jumps continue'] } },
+        { label: '“Unknown Part” / non-genuine', next: { do: ['“The ‘Unknown Part’ notification can appear on refurbished iPhones where a component has been replaced during refurbishment. If you are experiencing a performance issue, we are happy to inspect the device.”', 'Never: fake, counterfeit, “Apple has confirmed”, “we will fit an original Apple battery”'] } },
+        { label: 'Warm while charging', next: { do: ['“Overheating while charging is not expected as a general issue. Each device is checked before dispatch, including battery and charging.”', 'If excessively hot → Safety lane'] } } ] } },
+    { id: 'refund', cat: 'Returns & refunds', title: 'Return / refund request', icon: 'fa-sterling-sign', section: 'Return and refund requests', summary: 'Never promise a refund before inspection unless staff confirmed it.',
+      root: { q: 'What are they asking?', branches: [
+        { label: 'Full refund', next: { do: ['“We have noted your request for a full refund. Once the device has been received and inspected, we will process the appropriate resolution.”', 'If asked “will I get a full refund?”: same condition as received, no physical damage, accessories included, Apple ID removed → “we would expect to process a full refund”', 'Deductions only if damaged, missing accessories or still linked to iCloud', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } },
+        { label: 'Change of mind', next: { q: 'Within 30 days of delivery?', branches: [ { label: 'Yes', next: { do: ['Accept the return through Amazon’s returns process', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } }, { label: 'Over 30 days', next: { do: ['Do not refuse in the reply; note the policy neutrally', 'Flag for manager'], flags: MGR } } ] } },
+        { label: 'Partial refund', next: { q: 'Has staff set an amount?', branches: [ { label: 'No', next: { do: ['Do not offer an amount; offer a return instead'] } }, { label: '≤ £15', next: { do: ['Offer it as a goodwill gesture with two options: keep the device, or return it'] } }, { label: '> £15', next: { do: ['Draft may propose it but must not promise it'], flags: MGR } } ] } } ] } },
+    { id: 'cosmetic', cat: 'Returns & refunds', title: 'Cosmetic condition complaint', icon: 'fa-mobile-screen', section: 'Cosmetic condition complaints', summary: 'Cosmetic signs vary within refurbished grading. Partial refund only if instructed. Do not negotiate endlessly.',
+      root: { step: 'Acknowledge disappointment; explain cosmetic signs can vary within the grade', next: { q: 'Partial refund amount set by staff?', branches: [
+        { label: 'Yes', next: { do: ['“As a gesture of goodwill, we can offer £[amount] if you are happy to keep the device. This is the highest partial refund we are able to offer as an alternative to returning the handset.”', 'Options: accept and keep, or return via Amazon'] } },
+        { label: 'No', next: { do: ['Offer a return through Amazon’s returns process', ...CHECKLIST.map((c) => 'Return checklist: ' + c)] } } ] } } },
+    { id: 'repeat', cat: 'Returns & refunds', title: 'Repeat fault after repair / replacement wanted first', icon: 'fa-rotate', section: 'Repeat fault after repair', summary: 'Apologise more strongly, priority handling. No replacement before the original is back.',
+      root: { q: 'Situation?', branches: [
+        { label: 'Same fault again', next: { do: ['Stronger apology, acknowledge frustration, offer priority handling', 'If instructed: “we would like to offer a replacement device as the next resolution, subject to the returned handset being received and checked.”', 'If model/colour unavailable: closest suitable alternative'] } },
+        { label: 'Wants replacement before returning', next: { do: ['“We understand this is inconvenient, especially if this is your main phone. However, we are unable to send a replacement before receiving and inspecting the original device.”', INSPECT, 'Empathetic, not resistant'] } } ] } },
+    { id: 'icloud', cat: 'Returns & refunds', title: 'iCloud / Apple ID / Activation Lock', icon: 'fa-lock', section: 'iCloud, Apple ID and Activation Lock', summary: 'Never ask for a password. Remove from account at iCloud.com › Find Devices.',
+      root: { q: 'Where is the phone?', branches: [
+        { label: 'Returned, still linked', next: { q: 'Removed within 2 business days?', branches: [ { label: 'Yes', next: { do: ['Complete processing / refund goes ahead'] } }, { label: 'No', next: { do: ['Flag for manager — the manager may hold the refund', 'If unlocked later, processing continues'], flags: MGR } } ] } },
+        { label: 'Still with customer', next: { do: ['Steps: iCloud.com › sign in › Find Devices › choose the device › Remove from Account', 'Erase request stays pending until online; device must still be removed from the account', 'Data reassurance: we cannot access personal data; a passcode means your data cannot be accessed by us'] } } ] } },
+    { id: 'inr', cat: 'Item not received', title: 'Item not received / delivery dispute', icon: 'fa-truck-ramp-box', section: 'Item not received and delivery disputes', summary: 'Neutral, Royal Mail investigation first. Never guarantee a refund, never say fraud or theft.',
+      root: { q: 'What does Royal Mail tracking show?', branches: [
+        { label: 'Delivered / signed', next: { step: 'Quote the tracking status (placeholders for date/name if unknown). Ask them to check household, neighbours, safe place, reception or concierge. Raise a Royal Mail investigation.', next: { q: 'Royal Mail outcome?', branches: [
+          { label: 'Pending', next: { do: ['“We have raised this with Royal Mail under case reference [REFERENCE] and are waiting for their response. Please keep the packaging and any photos.”', 'Phone orders: they may be asked for a police crime reference number'] } },
+          { label: 'Confirms correct delivery', next: { do: ['“Royal Mail has completed its investigation and confirmed the parcel was delivered to the correct address. As Royal Mail has not confirmed a loss or misdelivery, we are unable to issue a refund.”', 'If taken after delivery: suggest continuing with their police report', 'IMEI stays internal; no blacklisting threats'], flags: MGR } },
+          { label: 'Confirms loss', next: { do: ['Arrange replacement or refund through Amazon'], flags: MGR } } ] } } },
+        { label: 'In transit / attempted', next: { do: ['Give the status and next update. “Address inaccessible”: Royal Mail usually retries the next working day; options can be changed on the tracking page', 'Delivery windows are an aim, not a guarantee', 'Disputed attempt: updates come directly from Royal Mail; we can only see what their system records'] } },
+        { label: 'Only charger received', next: { do: ['Ask them to keep packaging and contents; raise a courier investigation', 'Do not refund before it concludes; stay neutral'], flags: MGR } } ] } },
+    { id: 'misc', cat: 'General', title: 'Accessories, SIM left in return, reviews, pre-sale', icon: 'fa-box-open', section: 'Accessories and packaging', summary: 'Quick lanes. No statutory wording in friendly replies.',
+      root: { q: 'Topic?', branches: [
+        { label: 'Box / cable', next: { do: ['Renewed phones may not come in the original retail box; the cable may be compatible rather than Apple-branded', 'Missing cable after repair: arrange a replacement compatible cable', 'Goodwill towards a cable only if staff set an amount'] } },
+        { label: 'SIM left in return', next: { do: ['“Once we receive the returned device and it has been processed, we will remove the SIM card if it is still inside and keep it safe for return to you.” — no promise until received'] } },
+        { label: 'Review / feedback joke', next: { do: ['Do not mention the review at all', 'Answer only the practical point: “You’re very welcome. Your order has now been dispatched using Royal Mail Tracked 24.”'] } },
+        { label: 'Pre-sale / general', next: { do: ['Plain helpful answer; no policy or statutory wording', 'eSIM: iPhone 14 and newer. USB-C: iPhone 15 and newer; older use Lightning'] } } ] } },
   ]
-  const NEVER = ['Ask for a PIN, passcode, verification code, Apple ID password, phone number, email address, ID document — or ask them to call us', 'Refuse a return', 'Say “waterproof”', 'Say a refund has been “issued” unless refund_issued is Yes', 'Mention, ask for or offer anything for reviews or feedback', 'Tell the customer they have “no rights” or “no claim”', 'Give bank details except for an approved paid repair']
+  const NEVER = ['Admit liability or guarantee a refund/replacement before inspection', 'Accuse the customer: no “fraud”, “theft”, “you damaged it”, “this proves misuse”', 'Call a battery or part “fake” or “counterfeit”', 'Ask for a PIN, passcode, password, Apple ID password, code, ID document, phone number or email — or ask them to call us', 'Mention, ask for or offer anything for reviews or feedback', 'Say “no rights”, “no claim” or “not entitled”', 'Say “waterproof”; mention “refurbed” to Amazon customers', 'Reject a warranty claim without inspection (unless clearly out of warranty)', 'Give bank details except for an approved paid repair', 'Repeat internal notes (“looks like fraud”, “customer damaged it”) to the customer']
   function treeNode(n, depth = 0) {
     if (n.q) return `<div class="dt-node dt-q"><div class="dt-box dt-box-q"><i class="fas fa-code-branch mr-1"></i>${esc(n.q)}</div><div class="dt-branches">${n.branches.map((b) => `<div class="dt-branch"><span class="dt-label">${esc(b.label)}</span>${treeNode(b.next, depth + 1)}</div>`).join('')}</div></div>`
     if (n.step) return `<div class="dt-node"><div class="dt-box dt-box-step"><i class="fas fa-arrow-right mr-1"></i>${esc(n.step)}</div><div class="dt-then">${treeNode(n.next, depth + 1)}</div></div>`

@@ -68,7 +68,7 @@ State: what was ordered, dispatch/delivery with carrier and tracking (use [TRACK
 No greeting to the customer, no sign-off to the customer. Plain text, under 250 words. Set needs_manager to true. Put any missing facts the agent must fill in under staff_notes.`,
   seller_central_return: `MODE: RETURN REQUEST HANDLING (for pasting into Seller Central / internal handling notes — NOT an email to the customer).
 Using the return reason and comment in AMAZON EVENTS, write: (1) a one-paragraph note for Seller Central authorising or commenting on the return, and (2) under staff_notes the internal checklist (expected condition, inspection points, refund timing).
-If the case input shows battery_flag = yes or the return reason mentions heat/overheating/swelling, apply the Battery rule: the customer must be told to stop using and charging, the parcel needs the Royal Mail label with the UN3481 lithium battery marking, set needs_manager true and urgency high.
+If the case input shows battery_flag = yes or the return reason mentions heat/overheating/swelling, apply the Safety rule: the customer must be told to avoid using and charging the phone, the return goes through our Royal Mail portal, set needs_manager true and urgency high.
 Plain text. No invented facts.`,
   chargeback_evidence: `MODE: CHARGEBACK EVIDENCE (a representation to Amazon for a card chargeback — NOT an email to the customer).
 Write a factual evidence statement in this order: order shipped (yes/no), ship date, carrier, tracking number and proof of delivery, our policy that applies, the return address we gave, and a summary of the customer contact from the ORDER TIMELINE.
@@ -230,7 +230,12 @@ export async function generateDraft(
   try {
     parsed = JSON.parse(content.replace(/^```(?:json)?\s*|\s*```$/g, ''))
   } catch {
-    throw new Error('Model returned invalid JSON')
+    // Fallback: find the outermost JSON object (models occasionally wrap it in prose or stray characters).
+    const start = content.indexOf('{'), end = content.lastIndexOf('}')
+    try { parsed = JSON.parse(content.slice(start, end + 1)) } catch {
+      console.error('Model returned invalid JSON', { finish_reason: data.choices?.[0]?.finish_reason, length: content.length, head: content.slice(0, 300), tail: content.slice(-200) })
+      throw new Error(`Model returned invalid JSON (${data.choices?.[0]?.finish_reason ?? 'unknown'}, ${content.length} chars)`)
+    }
   }
   const urgency = ['high', 'normal', 'low'].includes(parsed.urgency) ? parsed.urgency : 'normal'
   const result: AiResult = {
@@ -260,6 +265,7 @@ export type ServerFinding = { rule: string; severity: 'fail' | 'warn'; detail: s
 export const paidRepairApproved = (k: CaseRow) => !!k.approved_repair_price && k.repair_quote_accepted === true
 
 const escapeReLocal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const daysSince = (k: CaseRow) => (k.delivery_date ? Math.floor((Date.now() - new Date(k.delivery_date).getTime()) / 86400000) : null)
 
 /**
  * Deterministic checks mirroring the "Never" list and the conditional rules in
@@ -306,9 +312,23 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
   if (asks(/\b(give us a call|call us|phone us|ring us|call our (?:team|office|line)|telephone us)\b/))
     add('never_ask_call', 'fail', 'Asks the customer to call us')
 
-  // ── Never refuse a return
-  if (asks(/\b(cannot|can't|unable to|won't|will not|not able to|do not|don't) (?:accept|take|process|offer|authori[sz]e) (?:a |the |your |this )?return\b|\breturn (?:is|will be|has been) (?:refused|declined|rejected)\b|\bno returns?\b/))
-    add('never_refuse_return', 'fail', 'Refuses a return')
+  // ── Never refuse a return / reject a warranty claim without inspection (allowed only once the 12-month warranty has clearly expired)
+  const outOfWarranty = daysSince(kase) !== null && daysSince(kase)! > 365 && kase.delivery_date_source !== 'amazon_estimated'
+  if (asks(/\b(cannot|can't|unable to|won't|will not|not able to|do not|don't) (?:accept|take|process|offer|authori[sz]e) (?:a |the |your |this )?(?:free )?(?:return|warranty (?:repair|claim))\b|\breturn (?:is|will be|has been) (?:refused|declined|rejected)\b|\bno returns?\b/) && !outOfWarranty)
+    add('never_refuse_return', 'fail', 'Refuses a return or warranty claim while the device is within the 12-month warranty (inspect first)')
+
+  // ── Never accuse: fraud / theft / you damaged it / this proves… / fake parts
+  if (!toAmazon && /\b(fraud|fraudulent|scam|identity theft)\b/.test(d)) add('never_accuse', 'fail', 'Says "fraud" to the customer')
+  if (!toAmazon && /\b(you (?:have )?(?:damaged|broke|broken|dropped|misused|tampered)|this proves|strongly suggests? misuse|you are lying|not telling the truth|stolen by you)\b/.test(d)) add('never_accuse', 'fail', 'Accuses the customer of damage, misuse or lying')
+  if (/\b(fake|counterfeit|non[- ]genuine (?:battery|part|screen))\b/.test(d) && !/\b(not|isn't|is not|does not mean|doesn't mean)\b[^.]{0,30}\b(fake|counterfeit)\b/.test(d)) add('never_fake_parts', 'fail', 'Calls a battery or part "fake"/"counterfeit"')
+
+  // ── Never admit liability or promise a resolution before inspection
+  if (!toAmazon && /\b(we (?:accept|admit|acknowledge) (?:full |our )?(?:liability|responsibility|fault)|(?:it is|it's|this is) our fault|we are (?:at fault|liable))\b/.test(d)) add('no_liability_admission', 'fail', 'Admits liability before inspection')
+  if (!toAmazon && /\b(we (?:will|'ll|shall) (?:issue|process|send|give|provide) (?:you )?(?:a |the |your )?(?:full |partial )?(?:refund|replacement|compensation)\b)(?![^.]{0,80}\b(?:once|after|if|when|subject to|provided|following)\b)/.test(d) && !/\b(once|after|if|when|subject to|provided|following)\b[^.]{0,120}\b(?:received|inspect|checked|confirmed|eligib)/.test(d) && kase.refund_issued !== true)
+    add('no_unconditional_promise', 'warn', 'Promises a refund/replacement without making it conditional on receipt and inspection')
+
+  // ── Never mention refurbed to Amazon customers
+  if (!toAmazon && /\brefurbed\b/.test(d)) add('never_refurbed', 'fail', 'Mentions "refurbed" to an Amazon customer')
 
   // ── Never say "waterproof"
   if (/\bwaterproof\b/.test(d)) add('never_waterproof', 'fail', 'Says "waterproof"')
@@ -350,21 +370,15 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
   // ── Refunds above £15 need a manager (warn: the needs_manager flag is enforced separately)
   if ([...refundAmountSet].some((a) => a > 15)) add('refund_over_15', 'warn', 'Offers a refund above £15 — manager approval required')
 
-  // ── Battery: stop using/charging is mandatory; RM label + UN3481 are expected and allowed.
-  // battery_flag (set from a return reason mentioning heat/overheating) forces the rule even if the draft avoids the words.
-  // A battery SAFETY case = the order is flagged, OR the draft describes a battery problem (drain/fault/swelling/heat).
-  // Merely mentioning "battery health" in a pre-sale or general enquiry is not a safety case.
-  const batterySafetyWords = /\b(swollen|swelling|bulging|overheat(?:ing|s)?|very hot|too hot|burning smell|smoke|smoking)\b/.test(d)
-  const batteryProblem = /\b(battery|batteries)\b[^.]{0,80}\b(drain|drains|draining|dies|dying|fault|faulty|problem|issue|not (?:holding|lasting)|won't (?:hold|charge|last)|does ?n[o']t (?:hold|charge|last)|replace|replacement|return|inspection)\b/.test(d)
-    || /\b(drain|drains|draining|dies|dying|fault|faulty|problem|issue|replace|replacement)\b[^.]{0,80}\b(battery|batteries)\b/.test(d)
-  const batteryCase = kase.battery_flag === true || batterySafetyWords || batteryProblem
-  if (batteryCase) {
-    if (!/\bstop (?:using|charging)\b|\bdo not (?:use|charge)\b|\bdon't (?:use|charge)\b|\bstopped? (?:using|charging)\b|\bnot (?:to )?(?:use|charge)\b/.test(d))
-      add('battery_stop_using', toAmazon ? 'warn' : 'fail', 'Battery/heat case does not tell the customer to stop using and charging the phone')
-    if (!/un\s?3481/i.test(draft)) add('battery_un3481', 'warn', 'Battery case does not mention the UN3481 lithium battery label')
-    if (!/royal mail/.test(d)) add('battery_rm_label', 'warn', 'Battery case does not mention the Royal Mail return label')
+  // ── Safety: a SAFETY case (order flagged, or swelling / lifting screen / excessive heat / smoke in the draft) must tell the
+  // customer not to use or charge the phone. Ordinary battery-drain complaints and "battery health" enquiries are not safety cases.
+  const batterySafetyWords = /\b(swollen|swelling|bulging|lifting screen|screen (?:is )?lifting|overheat(?:ing|s)?|excessively hot|very hot|too hot|burning smell|smoke|smoking)\b/.test(d)
+  if (kase.battery_flag === true || batterySafetyWords) {
+    if (!/\b(?:stop|avoid|not|don't|do not|refrain from) (?:to )?(?:using|use|charging|charge)\b|\bstopped? (?:using|charging)\b/.test(d))
+      add('safety_stop_using', toAmazon ? 'warn' : 'fail', 'Safety case (swelling / lifting screen / excessive heat) does not tell the customer to avoid using and charging the phone')
   }
   if (/\b(charge (?:it )?overnight|leave (?:it )?charging overnight|keep (?:it )?charging|continue (?:to )?charg)/.test(d)) add('unsafe_advice', 'fail', 'Suggests continuing to charge the device')
+  if (/\b(un\s?3481|lithium battery (?:label|marking|regulations)|dangerous goods)\b/i.test(draft) && !toAmazon) add('battery_overexplain', 'warn', 'Over-explains lithium battery / dangerous goods wording (keep it short)')
 
   // ── Locked phone: never ask for their password (covered above); fine to point at icloud.com/find
 
@@ -386,7 +400,10 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
   // ── Format (customer emails only)
   if (!toAmazon) {
     if (!new RegExp(`\\b${escapeReLocal(kase.customer_first_name)}\\b`, 'i').test(draft)) add('greeting', 'warn', 'Does not address the customer by first name')
-    if (!/saigates customer care/i.test(draft)) add('signoff', 'warn', 'Missing the "Saigates Customer Care" sign-off')
+    if (!/customer support team/i.test(draft)) add('signoff', 'warn', 'Missing the "Kind regards, Customer Support Team" sign-off')
+    if (/\u2014/.test(draft)) add('style_em_dash', 'warn', 'Contains an em dash (seller prefers none)')
+    if (draft.length > 4000) add('length', 'warn', `Over 4,000 characters (${draft.length}); Amazon Messages may truncate`)
+    if (/\b(?:i will|i'll|i have|i've|i am|i'm|i can|i would)\b/i.test(draft)) add('style_we', 'warn', 'Uses "I" instead of "we"')
   } else {
     // Seller Central / Amazon statements: placeholders must be filled before use
     const missing = draft.match(/\[MISSING:[^\]]*\]/gi) ?? []

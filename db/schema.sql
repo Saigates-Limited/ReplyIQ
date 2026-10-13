@@ -346,3 +346,22 @@ ALTER TABLE public.amazon_events ADD COLUMN IF NOT EXISTS mailbox_id INTEGER REF
 ALTER TABLE public.sync_runs     ADD COLUMN IF NOT EXISTS mailbox_id INTEGER REFERENCES public.gmail_connection(id) ON DELETE SET NULL;
 ALTER TABLE public.oauth_states  ADD COLUMN IF NOT EXISTS label TEXT;
 CREATE INDEX IF NOT EXISTS idx_cases_mailbox ON public.cases(mailbox_id);
+
+-- ── 0014 Reply templates (seed data lives in db/migrations/0014_templates_and_kb_seed.sql) ──
+CREATE TABLE IF NOT EXISTS public.reply_templates (
+  id          SERIAL PRIMARY KEY,
+  slug        TEXT NOT NULL UNIQUE,
+  category    TEXT NOT NULL DEFAULT 'general',
+  title       TEXT NOT NULL,
+  body        TEXT NOT NULL,                 -- may contain [Name], [Address], [date/time], [reference] placeholders
+  status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','retired')),
+  sort_order  INTEGER NOT NULL DEFAULT 100,
+  created_by  INTEGER REFERENCES public.users(id) ON DELETE SET NULL,
+  updated_by  INTEGER REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS trg_reply_templates_updated ON public.reply_templates;
+CREATE TRIGGER trg_reply_templates_updated BEFORE UPDATE ON public.reply_templates FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+DROP TRIGGER IF EXISTS trg_reply_templates_no_delete ON public.reply_templates;
+CREATE TRIGGER trg_reply_templates_no_delete BEFORE DELETE ON public.reply_templates FOR EACH ROW EXECUTE FUNCTION public.refuse_delete();

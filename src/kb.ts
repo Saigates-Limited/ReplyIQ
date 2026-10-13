@@ -54,7 +54,9 @@ export function validateRuleText(text: string): string[] {
   const out: string[] = []
   if (t.length < 10) out.push('Rule is too short (10+ characters)')
   if (t.length > KB_MAX_CHARS) out.push(`Rule is too long (max ${KB_MAX_CHARS} characters)`)
-  if (/https?:\/\//i.test(t)) out.push('Links are not allowed in rules (write the fact in words)')
+  // Only the seller's own Royal Mail returns portal may be linked; any other URL is blocked.
+  const otherLinks = (t.match(/https?:\/\/[^\s)]+/gi) || []).filter((u) => !/^https:\/\/www\.royalmail\.com\/track-my-return/i.test(u))
+  if (otherLinks.length) out.push('Links are not allowed in rules, except the Royal Mail returns portal (write the fact in words)')
   if (/data:[a-z]+\/[a-z0-9.+-]+;base64,/i.test(t)) out.push('Encoded file content is not allowed')
   for (const f of FORBIDDEN) if (f.re.test(t)) out.push(`Not allowed: ${f.why}`)
   return out

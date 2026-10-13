@@ -234,7 +234,7 @@ export async function sendReply(
   args: { from: string; to: string; subject: string; body: string; inReplyTo?: string; references?: string; threadId: string }
 ) {
   const lines = [
-    `From: Saigates Customer Care <${args.from}>`,
+    `From: Customer Support Team <${args.from}>`,
     `To: ${args.to}`,
     `Subject: ${encodeHeaderUtf8(args.subject)}`,
     'MIME-Version: 1.0',
