@@ -297,8 +297,9 @@
         </header>
 
         <div class="grid grid-cols-1 2xl:grid-cols-5 gap-4">
-          <!-- Conversation (chat view: customer left, us right, Amazon notices centred) -->
-          <article id="conversation" class="2xl:col-span-3 bg-white rounded-xl shadow-sm border border-slate-100">
+          <!-- Left column: conversation, then the draft directly beneath it -->
+          <div class="2xl:col-span-3 space-y-4 min-w-0">
+          <article id="conversation" class="bg-white rounded-xl shadow-sm border border-slate-100">
             <div class="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
               <h2 class="font-semibold"><i class="far fa-comments mr-2 text-slate-400"></i>Conversation <span class="text-xs font-normal text-slate-500">· order ${esc(k.order_id || '—')}</span></h2>
               <div class="flex items-center gap-2 text-xs">
@@ -313,11 +314,13 @@
             <div class="chat p-3 sm:p-4 flex flex-col gap-2 max-h-[60vh] overflow-auto" id="chat-scroll">
               ${chatItems(data.messages, data.events, data.attachments || [])}
             </div>
-            ${k.battery_flag ? '<div class="px-5 py-2 text-xs bg-red-600 text-white rounded-b-xl"><i class="fas fa-fire mr-1"></i><strong>Battery / heat flag:</strong> stop using &amp; charging, Royal Mail label with UN3481 marking, manager approval, high urgency.</div>' : ''}
+            ${k.battery_flag ? '<div class="px-5 py-2 text-xs bg-red-600 text-white rounded-b-xl"><i class="fas fa-fire mr-1"></i><strong>Safety flag:</strong> tell the customer to avoid using and charging the phone, return for inspection, manager approval, high urgency.</div>' : ''}
           </article>
+          <section id="draft-workspace"></section>
+          </div>
 
-          <!-- Right column -->
-          <aside class="2xl:col-span-2 space-y-4">
+          <!-- Right column: details (collapsible so the draft stays close to the chat on smaller screens) -->
+          <aside class="2xl:col-span-2 space-y-4 min-w-0">
             <section id="ticket-panel" class="bg-white rounded-xl shadow-sm p-5">
               <h2 class="font-semibold mb-3"><i class="fas fa-ticket mr-2 text-slate-400"></i>Ticket</h2>
               <div class="grid grid-cols-2 gap-3 text-sm">
@@ -402,8 +405,6 @@
 
           </aside>
         </div>
-
-        <section id="draft-workspace" class="mt-6"></section>
       </section>`
 
     wireFields(id)
@@ -698,11 +699,11 @@
               ${d.status === 'draft' && !canApprove ? `<span class="block w-full text-right text-[11px] ${fails.length ? 'text-red-700' : 'text-violet-700'}" style="flex-basis:100%">${fails.length ? `<i class="fas fa-lock mr-1"></i>Approval is blocked while a check is <strong>FAIL</strong>. Edit the reply to fix it (or press <strong>Save edits</strong> to re-run the checks), then Approve.` : `<i class="fas fa-user-shield mr-1"></i>Needs a manager's approval${isManager ? '' : ' — ask a manager'}.`}</span>` : ''}
               ${d.status === 'approved' ? `
                 <button id="unapprove-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-slate-800">Withdraw approval</button>
-                ${(!d.mode || d.mode === 'customer') && kase.source === 'gmail' && kase.customer_reply_to ? `
+                ${(!d.mode || d.mode === 'customer') && kase.gmail_thread_id && kase.customer_reply_to ? `
                 <button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800">
                   <i class="fas fa-paper-plane mr-1"></i>Send to customer
                 </button>` : `
-                <button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="Confirm you have pasted this into Amazon Seller Central">
+                <button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="${(!d.mode || d.mode === 'customer') ? 'This case has no Gmail thread to reply on (it came from an Amazon notice, not a customer email). Copy the reply, paste it into Seller Central / Buyer-Seller Messages, then confirm here.' : 'Confirm you have pasted this into Amazon Seller Central'}">
                   <i class="fas fa-paste mr-1"></i>Mark as sent in Seller Central
                 </button>`}` : ''}
               ${d.status === 'sending' ? '<span class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Sending…</span>' : ''}

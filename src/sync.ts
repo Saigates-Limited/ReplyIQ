@@ -232,7 +232,7 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
 
       // One case per ORDER (Amazon opens a new Gmail thread per message). Fall back to thread id when no order id.
       let [kase] = orderId
-        ? await sql`SELECT id, last_customer_message_at, status, gmail_thread_id FROM cases WHERE source = 'gmail' AND order_id = ${orderId} ORDER BY id LIMIT 1`
+        ? await sql`SELECT id, last_customer_message_at, status, gmail_thread_id FROM cases WHERE order_id = ${orderId} ORDER BY (source = 'gmail') DESC, id LIMIT 1`
         : await sql`SELECT id, last_customer_message_at, status, gmail_thread_id FROM cases WHERE gmail_thread_id = ${tid}`
       if (!kase) [kase] = await sql`SELECT id, last_customer_message_at, status, gmail_thread_id FROM cases WHERE gmail_thread_id = ${tid}`
       if (!kase) {
@@ -244,6 +244,11 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
                   ${tid}, ${fromParsed.address}, 'gmail', ${latestInboundAt} ${multi ? sql`, ${mb}` : sql``})
           RETURNING id, last_customer_message_at, status, gmail_thread_id`
         result.casesNew++
+      } else if (!kase.gmail_thread_id) {
+        // Case was opened by an Amazon notice; this is the first customer thread on the order → it becomes replyable.
+        await sql`UPDATE cases SET gmail_thread_id = ${tid}, customer_reply_to = ${fromParsed.address}, customer_email = COALESCE(customer_email, ${fromParsed.address}),
+                  customer_first_name = CASE WHEN customer_first_name = 'Customer' THEN ${firstName} ELSE customer_first_name END,
+                  customer_last_name = COALESCE(customer_last_name, ${lastName}) ${multi ? sql`, mailbox_id = ${mb}` : sql``} WHERE id = ${kase.id}`
       } else if (kase.gmail_thread_id !== tid) {
         // Newer thread for the same order → replies must go to the latest thread, from the mailbox it arrived in
         await sql`UPDATE cases SET gmail_thread_id = ${tid} ${multi ? sql`, mailbox_id = ${mb}` : sql``} WHERE id = ${kase.id} AND (SELECT max(sent_at) FROM messages WHERE case_id = ${kase.id}) < ${latestInboundAt}`

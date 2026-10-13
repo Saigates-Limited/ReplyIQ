@@ -43,6 +43,7 @@ const CASE_COLUMNS = `
   order_id, device_model, delivery_date, refund_issued, a_to_z_open, in_stock,
   approved_repair_price, repair_quote_accepted, tracking_number, carrier,
   chargeback_open, battery_flag, tone, assigned_to, internal_notes, source, archived_at, delivery_date_source, spapi_synced_at,
+  gmail_thread_id, customer_reply_to,
   __MAILBOX__
   last_customer_message_at,
   (last_customer_message_at + INTERVAL '24 hours') AS reply_deadline,
@@ -55,6 +56,7 @@ const CASE_COLUMNS_Q = `
   cases.order_id, cases.device_model, cases.delivery_date, cases.refund_issued, cases.a_to_z_open, cases.in_stock,
   cases.approved_repair_price, cases.repair_quote_accepted, cases.tracking_number, cases.carrier,
   cases.chargeback_open, cases.battery_flag, cases.tone, cases.assigned_to, cases.internal_notes, cases.source, cases.archived_at, cases.delivery_date_source, cases.spapi_synced_at,
+  cases.gmail_thread_id, cases.customer_reply_to,
   __MAILBOX__
   cases.last_customer_message_at,
   (cases.last_customer_message_at + INTERVAL '24 hours') AS reply_deadline,
