@@ -68,7 +68,7 @@
   function route() {
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
     const p = location.pathname
-    setActiveNav(m || p === '/inbox' ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/settings' ? 'settings' : 'dashboard')
+    setActiveNav(m || p === '/inbox' ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p.startsWith('/settings') ? 'settings' : 'dashboard')
     refreshBadges()
     document.getElementById('sidebar')?.classList.remove('open')
     if (m) renderInbox(Number(m[1]))
@@ -77,6 +77,7 @@
     else if (p === '/gmail') renderGmail()
     else if (p === '/policy') renderPolicy()
     else if (p === '/settings') renderSettings()
+    else if (p === '/settings/prompt') renderPromptEditor()
     else if (p === '/decision-trees') renderDecisionTrees()
     else if (p === '/knowledge') renderKnowledge()
     else if (p === '/atoz') renderTracker('atoz')
@@ -1221,9 +1222,15 @@
             ${row('Tone model', `<code>${esc(st.tone_model)}</code>`)}
             ${row('Data retention at OpenAI', `<code>store: ${st.openai_store}</code> — nothing kept`)}
             ${row('Sent to the model', 'first name, redacted thread, case fields, Amazon events')}
-            ${row('System prompt', `<code>reply_instructions.md</code> + <a href="/knowledge" data-link class="text-sky-700 hover:underline">active knowledge-base rules</a>`)}
+            ${row('System prompt', `<code>reply_instructions.md</code>${isManager ? ' + <a href="/settings/prompt" data-link class="text-sky-700 hover:underline">custom prompt</a>' : ''} + <a href="/knowledge" data-link class="text-sky-700 hover:underline">knowledge-base rules</a>`)}
             ${row('Never sent', 'surname, email, phone, address, internal notes, attachments')}
           </div>
+          ${isManager ? `<div class="bg-white rounded-xl shadow-sm p-5">
+            <h2 class="font-semibold mb-2"><i class="fas fa-feather-pointed mr-2 text-slate-400"></i>Custom system prompt <span class="pill bg-violet-100 text-violet-800 ml-1">managers only</span></h2>
+            <p class="text-sm text-slate-600">Company background, voice and house style for the drafting model. Placed <strong>after</strong> the policy file and <strong>before</strong> knowledge-base rules, so the policy always wins. Versioned — every save is kept and can be rolled back.</p>
+            <div id="prompt-summary" class="text-xs text-slate-500 mt-2">checking…</div>
+            <a href="/settings/prompt" data-link class="inline-block mt-3 px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-pen mr-1"></i>Open editor</a>
+          </div>` : ''}
           <div class="bg-white rounded-xl shadow-sm p-5">
             <h2 class="font-semibold mb-2"><i class="fas fa-paper-plane mr-2 text-slate-400"></i>Sending controls</h2>
             <div class="flex items-center justify-between py-2 border-b border-slate-100 text-sm"><span><strong>Auto-send</strong><br><span class="text-xs text-slate-500">AI sends replies without a human</span></span><span class="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 text-xs font-semibold">OFF — by design</span></div>
@@ -1263,11 +1270,125 @@
           </div>
         </div>
       </section>`
+    if (isManager) axios.get('/api/prompt').then(({ data }) => { const el = document.getElementById('prompt-summary'); if (!el) return; el.innerHTML = data.migration_needed ? `<span class="text-amber-700"><i class="fas fa-database mr-1"></i>Run <code>db/migrations/${esc(data.migration_needed)}</code> first</span>` : data.current && data.current.body.trim() ? `<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>v${data.current.version} in force</span> · ${data.current.body.trim().length} chars · saved ${dayjs(data.current.created_at).fromNow()} by ${esc(data.current.created_by_name || '—')}` : '<span class="text-slate-500">No custom prompt yet — the model gets the policy file and knowledge base only.</span>' }).catch(() => {})
     axios.get('/api/spapi/status').then(({ data }) => { const el = document.getElementById('spapi-state'); if (el) el.innerHTML = data.configured ? '<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>Configured</span>' : '<span class="text-amber-700"><i class="fas fa-circle-exclamation mr-1"></i>Not configured</span>' }).catch(() => {})
     document.getElementById('spapi-test')?.addEventListener('click', async (e) => {
       const out = document.getElementById('spapi-test-result'); e.target.disabled = true; out.textContent = 'testing…'
       try { const { data } = await axios.post('/api/spapi/test'); out.innerHTML = data.ok ? `<span class="text-emerald-700">✓ ${esc(data.detail)}</span>` : `<span class="text-red-700">✗ ${esc(data.detail)}</span>` } catch (err) { out.innerHTML = `<span class="text-red-700">${esc(err.response?.data?.error || err.message)}</span>` }
       e.target.disabled = false
+    })
+  }
+
+  // ---------- CUSTOM SYSTEM PROMPT EDITOR (managers only; versioned; test before save) ----------
+  async function renderPromptEditor() {
+    if (!isManager) return navigate('/settings')
+    app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>`
+    let d, cases = []
+    try {
+      ;[{ data: d }, { data: { cases } }] = await Promise.all([axios.get('/api/prompt'), axios.get('/api/cases', { params: { status: 'active' } })])
+    } catch (err) { return renderError(err) }
+    const cur = d.current
+    const curText = cur ? cur.body : ''
+    const MAX = d.max_chars
+    app.innerHTML = `
+      <section id="prompt-editor">
+        <div class="flex flex-wrap items-end justify-between gap-4 mb-4">
+          <div><h1 class="text-2xl font-bold"><i class="fas fa-feather-pointed mr-2 text-slate-400"></i>Custom system prompt</h1>
+            <p class="text-sm text-slate-500">Describe the company, the voice and the house style. The model receives: <code>reply_instructions.md</code> → <strong>this text</strong> → knowledge-base rules. The policy file always wins on a conflict and the guardrail checks still run on every draft.</p></div>
+          <a href="/settings" data-link class="text-sm text-sky-700 hover:underline"><i class="fas fa-arrow-left mr-1"></i>Settings</a>
+        </div>
+        ${d.migration_needed ? `<div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><i class="fas fa-database mr-1"></i>Run <code>db/migrations/${esc(d.migration_needed)}</code> in the Supabase SQL Editor, then reload. Drafting works without it (no custom prompt is applied).</div>` : ''}
+        <div class="grid lg:grid-cols-3 gap-4">
+          <div class="lg:col-span-2 space-y-4">
+            <div class="bg-white rounded-xl shadow-sm p-5">
+              <div class="flex items-center justify-between mb-2">
+                <div class="text-sm">${cur && curText.trim() ? `<span class="pill bg-emerald-100 text-emerald-800">v${cur.version} in force</span> <span class="text-xs text-slate-500 ml-1">saved ${dayjs(cur.created_at).fromNow()} by ${esc(cur.created_by_name || '—')}${cur.note ? ` · “${esc(cur.note)}”` : ''}</span>` : '<span class="pill bg-slate-200 text-slate-700">No custom prompt yet</span>'}</div>
+                <span id="pe-count" class="text-xs text-slate-400">${curText.trim().length}/${MAX}</span>
+              </div>
+              <textarea id="pe-body" rows="14" maxlength="${MAX}" class="field-input font-mono text-[13px] leading-relaxed" placeholder="Example:
+Saigates Ltd is a small family-run business in the UK selling professionally renewed iPhones on Amazon. Every phone is tested with Dr.Fone before dispatch and comes with a 12-month warranty.
+
+Voice: warm, calm and plain. Short sentences. Use the customer's first name once at the start. Avoid jargon and exclamation marks. Never blame the customer or the courier.
+
+House style: open with a one-line acknowledgement of the problem, then the next step, then what happens after that. End with the sign-off from the policy.">${esc(curText)}</textarea>
+              <div id="pe-check" class="text-xs mt-2 text-slate-400">Checked against the Never list as you type. Leave empty to remove the custom prompt.</div>
+              <div class="flex flex-wrap items-end gap-2 mt-3">
+                <div class="flex-1 min-w-[12rem]"><label class="field-label">Change note (optional)</label><input id="pe-note" class="field-input" placeholder="e.g. Added house style section"></div>
+                <button id="pe-save" class="px-4 py-2 rounded-md bg-slate-900 text-white text-sm font-medium"><i class="fas fa-floppy-disk mr-1"></i>Save as new version</button>
+              </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm p-5">
+              <h2 class="font-semibold mb-1"><i class="fas fa-flask mr-2 text-slate-400"></i>Test on a case before saving</h2>
+              <p class="text-xs text-slate-500 mb-3">Generates a throwaway draft with the text above. Nothing is stored and the case is not touched.</p>
+              <div class="flex flex-wrap gap-2 items-end">
+                <div class="flex-1 min-w-[14rem]"><label class="field-label">Case</label><select id="pe-case" class="field-input">${cases.map((k) => `<option value="${k.id}">${esc(k.case_ref)} · ${esc(k.subject).slice(0, 60)} (${esc(k.customer_first_name || '')})</option>`).join('')}</select></div>
+                <div><label class="field-label">Mode</label><select id="pe-mode" class="field-input"><option value="customer">Customer reply</option><option value="seller_central_atoz">A-to-Z statement</option><option value="seller_central_return">Return statement</option><option value="chargeback_evidence">Chargeback evidence</option></select></div>
+                <button id="pe-test" class="px-4 py-2 rounded-md bg-violet-600 text-white text-sm font-medium"><i class="fas fa-play mr-1"></i>Test</button>
+              </div>
+              <div id="pe-test-out" class="mt-3"></div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm p-5">
+              <button id="pe-preview-btn" class="text-sm text-sky-700 hover:underline"><i class="fas fa-eye mr-1"></i>Preview the full system message (policy + this text + knowledge base)</button>
+              <pre id="pe-preview" class="hidden mt-3 text-[11px] whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-md p-3 max-h-[32rem] overflow-auto"></pre>
+            </div>
+          </div>
+          <div class="space-y-4">
+            <div class="bg-white rounded-xl shadow-sm p-4">
+              <h2 class="font-semibold mb-2 text-sm"><i class="fas fa-clock-rotate-left mr-2 text-slate-400"></i>Version history</h2>
+              ${d.history.length ? `<ol class="space-y-2 text-xs">${d.history.map((h, i) => `<li class="border border-slate-200 rounded-md p-2 ${i === 0 ? 'bg-emerald-50 border-emerald-200' : ''}" data-v="${h.version}">
+                <div class="flex items-center gap-2"><strong>v${h.version}</strong>${i === 0 ? '<span class="pill bg-emerald-100 text-emerald-800">current</span>' : ''}${h.restored_from ? `<span class="pill bg-slate-100 text-slate-600">from v${h.restored_from}</span>` : ''}<span class="ml-auto text-slate-400">${dayjs(h.created_at).format('DD MMM HH:mm')}</span></div>
+                <div class="text-slate-500 mt-0.5">${esc(h.created_by_name || '—')}${h.note ? ` · ${esc(h.note)}` : ''} · ${h.body.trim().length} chars${h.used_in_drafts ? ` · ${h.used_in_drafts} draft${h.used_in_drafts === 1 ? '' : 's'}` : ''}</div>
+                <div class="text-slate-600 mt-1 line-clamp-2">${esc(h.body.trim().slice(0, 140) || '(empty — no custom prompt)')}</div>
+                <div class="mt-1.5 flex gap-2"><button data-act="view" class="text-sky-700 hover:underline">View</button>${i !== 0 ? `<button data-act="load" class="text-sky-700 hover:underline">Load into editor</button><button data-act="rollback" class="text-amber-700 hover:underline">Roll back to this</button>` : ''}</div>
+              </li>`).join('')}</ol>` : '<p class="text-xs text-slate-400">No versions yet.</p>'}
+            </div>
+            <div class="bg-white rounded-xl shadow-sm p-4 text-xs text-slate-600 space-y-2">
+              <div class="font-semibold text-slate-700"><i class="fas fa-lightbulb mr-1 text-amber-500"></i>What goes here</div>
+              <ul class="list-disc pl-4 space-y-1"><li>Who Saigates is and what you sell</li><li>Voice and tone (warm, calm, plain)</li><li>Structure of a good reply</li><li>Things to avoid saying (beyond the policy)</li></ul>
+              <div class="font-semibold text-slate-700 pt-1">Put elsewhere</div>
+              <ul class="list-disc pl-4 space-y-1"><li>Individual facts or situational rules → <a href="/knowledge" data-link class="text-sky-700 hover:underline">Knowledge base</a></li><li>Changes to warranty lanes or the Never list → <code>reply_instructions.md</code> (ask the developer)</li></ul>
+            </div>
+          </div>
+        </div>
+      </section>`
+    const body = document.getElementById('pe-body'), check = document.getElementById('pe-check'), count = document.getElementById('pe-count')
+    let t, lastOk = true
+    const runCheck = async () => {
+      count.textContent = `${body.value.trim().length}/${MAX}`
+      try { const { data } = await axios.post('/api/prompt/check', { body: body.value }); lastOk = !data.problems.length; check.innerHTML = data.problems.length ? data.problems.map((p) => `<div class="text-red-700"><i class="fas fa-circle-xmark mr-1"></i>${esc(p)}</div>`).join('') : body.value.trim() ? '<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>Passes the policy checks</span>' : '<span class="text-slate-400">Empty — saving removes the custom prompt.</span>' } catch {}
+    }
+    body.oninput = () => { clearTimeout(t); t = setTimeout(runCheck, 350) }
+    document.getElementById('pe-save').onclick = async (e) => {
+      e.target.disabled = true
+      try { const { data } = await axios.post('/api/prompt', { body: body.value, note: document.getElementById('pe-note').value }); toast(`Saved as v${data.version} — used from the next draft`); renderPromptEditor() } catch (err) { toast(err.response?.data?.problems?.[0] || err.response?.data?.error || err.message, 'err'); e.target.disabled = false }
+    }
+    document.getElementById('pe-test').onclick = async (e) => {
+      const out = document.getElementById('pe-test-out'); e.target.disabled = true
+      out.innerHTML = '<p class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Generating a test draft (not saved)…</p>'
+      try {
+        const { data } = await axios.post('/api/prompt/test', { body: body.value, case_id: Number(document.getElementById('pe-case').value), mode: document.getElementById('pe-mode').value })
+        out.innerHTML = `<div class="rounded-lg border border-violet-200 bg-violet-50 p-3">
+          <div class="flex flex-wrap items-center gap-2 text-xs mb-2"><span class="pill bg-violet-100 text-violet-800"><i class="fas fa-flask mr-1"></i>TEST — not saved</span><span class="pill ${data.check_result === 'PASS' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}">${data.check_result}</span>${data.needs_manager ? `<span class="pill bg-amber-100 text-amber-800">needs manager: ${esc(data.needs_manager_reason)}</span>` : ''}<span class="pill pill-${data.urgency === 'high' ? 'high' : data.urgency === 'low' ? 'low' : 'medium'}">${esc(data.urgency)}</span><span class="text-slate-500 ml-auto">lane: ${esc(data.lane)} · ${esc(data.case.case_ref)}${data.compared_to_version ? ` · current is v${data.compared_to_version}` : ''}</span></div>
+          <div class="message-body text-sm bg-white rounded-md p-3 border border-slate-200">${esc(data.draft_text)}</div>
+          ${data.staff_notes ? `<div class="text-xs text-slate-600 mt-2"><strong>Staff notes:</strong> ${esc(data.staff_notes)}</div>` : ''}
+          ${data.server_findings.length ? `<ul class="text-xs mt-2 space-y-0.5">${data.server_findings.map((f) => `<li class="${f.severity === 'fail' ? 'text-red-700' : 'text-amber-700'}"><i class="fas ${f.severity === 'fail' ? 'fa-circle-xmark' : 'fa-triangle-exclamation'} mr-1"></i>${esc(f.rule)}: ${esc(f.detail)}</li>`).join('')}</ul>` : ''}
+        </div>`
+      } catch (err) { out.innerHTML = `<p class="text-sm text-red-700">${esc(err.response?.data?.problems?.[0] || err.response?.data?.error || err.message)}</p>` }
+      e.target.disabled = false
+    }
+    document.getElementById('pe-preview-btn').onclick = async () => {
+      const pre = document.getElementById('pe-preview')
+      if (!pre.classList.contains('hidden')) { pre.classList.add('hidden'); return }
+      try { const { data } = await axios.get('/api/prompt/preview', { params: { body: body.value } }); pre.textContent = `(${data.chars} characters · policy file + ${data.parts.custom_prompt_chars} chars custom + ${data.parts.kb_rules} knowledge-base rule${data.parts.kb_rules === 1 ? '' : 's'})\n\n${data.system_prompt}`; pre.classList.remove('hidden') } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+    }
+    app.querySelectorAll('[data-v] [data-act]').forEach((b) => {
+      b.onclick = async () => {
+        const v = Number(b.closest('[data-v]').dataset.v); const h = d.history.find((x) => x.version === v)
+        if (b.dataset.act === 'view') { alert(`Version ${v}\n\n${h.body || '(empty)'}`); return }
+        if (b.dataset.act === 'load') { body.value = h.body; runCheck(); body.scrollIntoView({ behavior: 'smooth', block: 'start' }); toast(`v${v} loaded into the editor — not saved yet`); return }
+        if (!confirm(`Roll back to version ${v}? This creates a new version with v${v}'s text; nothing is deleted.`)) return
+        try { const { data } = await axios.post(`/api/prompt/rollback/${v}`); toast(`Rolled back — saved as v${data.version}`); renderPromptEditor() } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+      }
     })
   }
 

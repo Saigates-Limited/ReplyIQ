@@ -232,3 +232,16 @@ R2 bucket (token needs "Workers R2 Storage: Edit"), Gmail attachments shown in c
 - **Decision Trees** (`/decision-trees`): flowchart cards built from the lanes in `reply_instructions.md` — Step 0, Faults by days since delivery
   (0–30 / 31–90 / 91–180 / 181–365 / 365+), Battery, Item not received, Locked phone, Change of mind, Partial refund, Paid repair, eSIM/charger —
   with the "Never" list pinned at the top. Category filter; cards remember open/closed state. Static content (`TREES` in `app.js`) — update it when the policy changes.
+
+## Phase 10b (LIVE 2026-10-13) — Custom system prompt (managers only)
+- **Where**: Settings → "Custom system prompt" card → `/settings/prompt`. Agents get 403 on every `/api/prompt/*` route, including reads.
+- **Assembled system message** (`assembleSystemPrompt` in `src/ai.ts`), fixed order: `reply_instructions.md` → custom prompt
+  (`## Additional instructions from Saigates Ltd management`, wrapper says it can never relax Never/Step 0) → knowledge-base rules.
+- **Versioned, append-only** (`system_prompt_versions`): every save is a new row; roll back = new version with the old text
+  (`restored_from`). DB triggers refuse UPDATE and DELETE. Saving identical text is rejected. Empty body = no custom prompt.
+- **Checks**: same forbidden-content rules as the knowledge base (`validateSystemPrompt` → `validateRuleText`) + 4 000-char cap; live as you type.
+- **Test before saving**: `POST /api/prompt/test {body, case_id, mode}` generates a throwaway draft with the unsaved text through the
+  normal `generateDraft` + `serverChecks` + manager-decision path; nothing is written to `drafts` and the case is untouched.
+- **Audit**: `drafts.system_prompt_version` records the version in force for every real draft; history shows "N drafts" per version.
+- API: `GET /api/prompt` · `POST /api/prompt/check` · `POST /api/prompt` · `POST /api/prompt/rollback/:v` · `GET /api/prompt/preview?body=&mode=` · `POST /api/prompt/test`.
+- Migration **0012_system_prompt.sql**. App tolerates its absence (editor shows a banner; drafts run without a custom prompt).

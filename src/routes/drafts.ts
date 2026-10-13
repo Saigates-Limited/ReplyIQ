@@ -3,6 +3,7 @@ import { getDb, type Bindings } from '../db'
 import type { Vars } from '../auth'
 import { generateDraft, serverChecks, MODEL, DRAFT_MODES, type CaseRow, type MessageRow, type EventRow, type DraftMode } from '../ai'
 import { loadActiveRules } from '../kb'
+import { loadCurrentPrompt } from '../systemPrompt'
 
 export const draftsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
@@ -16,6 +17,26 @@ const DRAFT_JOINS = `
   LEFT JOIN users au ON au.id = d.approved_by
   LEFT JOIN users su ON su.id = d.sent_recorded_by
 `
+
+/** needs_manager: the model's flag OR any Step-0 / rule trigger we can verify from the data. Shared with the prompt test route. */
+export function decideManager(result: { needs_manager: boolean; urgency: string }, kase: CaseRow, messages: MessageRow[], findings: { rule: string }[], mode: DraftMode) {
+  const threadText = messages.filter((m) => m.direction === 'inbound').map((m) => m.body).join('\n').toLowerCase()
+  const legal = /\b(consumer rights act|trading standards|legal action|solicitor|chargeback|a[- ]to[- ]z|a-z claim|section 75|small claims|ombudsman)\b/.test(threadText)
+  const batterySafety = /\b(swollen|swelling|bulging|burning|smoke|smoking|very hot|too hot|overheat)/.test(threadText) && /\b(battery|charg|hot|burn|smoke|swell|bulg)/.test(threadText)
+  const reasons: string[] = []
+  if (kase.refund_issued === true) reasons.push('refund already issued')
+  if (kase.a_to_z_open === true) reasons.push('A-to-Z claim open')
+  if (kase.chargeback_open === true) reasons.push('chargeback open')
+  if (legal) reasons.push('customer mentions legal/A-to-Z/chargeback')
+  if (batterySafety) reasons.push('swollen/hot/burning battery')
+  if (kase.battery_flag === true) reasons.push('battery/heat flag on order')
+  if (findings.some((f) => f.rule === 'refund_over_15')) reasons.push('refund above £15')
+  if (mode !== 'customer') reasons.push('statement to Amazon / Seller Central')
+  if (result.needs_manager && !reasons.length) reasons.push('flagged by model')
+  const needsManager = result.needs_manager || reasons.length > 0
+  const urgency = batterySafety || kase.battery_flag === true ? 'high' : result.urgency
+  return { needsManager, reasons, urgency }
+}
 
 async function loadDraft(sql: ReturnType<typeof getDb>, id: number) {
   const [d] = await sql.unsafe(`SELECT ${DRAFT_SELECT} FROM drafts d ${DRAFT_JOINS} WHERE d.id = $1`, [id])
@@ -45,39 +66,28 @@ draftsApi.post('/cases/:id/drafts', async (c) => {
       return c.json({ error: 'No customer message on this case to reply to. Use a Seller Central mode instead.' }, 400)
 
     const kbRules = await loadActiveRules(sql, mode)
-    const { result, payload, kbRuleIds } = await generateDraft(c.env, kase, messages, { events, mode, kbRules })
+    const promptVersion = await loadCurrentPrompt(sql)
+    const { result, payload, kbRuleIds } = await generateDraft(c.env, kase, messages, { events, mode, kbRules, customPrompt: promptVersion?.body })
     const findings = serverChecks(result.draft, kase, mode)
     const checkResult = findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS'
+    const { needsManager, reasons, urgency } = decideManager(result, kase, messages, findings, mode)
 
-    // needs_manager: the model's flag OR any Step-0 / rule trigger we can verify from the data.
-    const threadText = messages.filter((m) => m.direction === 'inbound').map((m) => m.body).join('\n').toLowerCase()
-    const legal = /\b(consumer rights act|trading standards|legal action|solicitor|chargeback|a[- ]to[- ]z|a-z claim|section 75|small claims|ombudsman)\b/.test(threadText)
-    const batterySafety = /\b(swollen|swelling|bulging|burning|smoke|smoking|very hot|too hot|overheat)/.test(threadText) && /\b(battery|charg|hot|burn|smoke|swell|bulg)/.test(threadText)
-    const reasons: string[] = []
-    if (kase.refund_issued === true) reasons.push('refund already issued')
-    if (kase.a_to_z_open === true) reasons.push('A-to-Z claim open')
-    if (kase.chargeback_open === true) reasons.push('chargeback open')
-    if (legal) reasons.push('customer mentions legal/A-to-Z/chargeback')
-    if (batterySafety) reasons.push('swollen/hot/burning battery')
-    if (kase.battery_flag === true) reasons.push('battery/heat flag on order')
-    if (findings.some((f) => f.rule === 'refund_over_15')) reasons.push('refund above £15')
-    if (mode !== 'customer') reasons.push('statement to Amazon / Seller Central')
-    if (result.needs_manager && !reasons.length) reasons.push('flagged by model')
-    const needsManager = result.needs_manager || reasons.length > 0
-    const urgency = batterySafety || kase.battery_flag === true ? 'high' : result.urgency
-
-    const insert = (withKb: boolean) => sql`
+    // Optional audit columns arrive with migrations 0011 (kb_rule_ids) and 0012 (system_prompt_version).
+    // Detect once per request and omit whichever is missing so drafting keeps working before they are applied.
+    const cols = await sql<{ column_name: string }[]>`SELECT column_name FROM information_schema.columns WHERE table_name = 'drafts' AND column_name IN ('kb_rule_ids','system_prompt_version')`
+    const hasKb = cols.some((x) => x.column_name === 'kb_rule_ids'), hasSpv = cols.some((x) => x.column_name === 'system_prompt_version')
+    const [d] = await sql`
       INSERT INTO drafts (case_id, tree, draft_text, original_text, staff_notes, check_result, check_findings, server_findings,
-                          needs_manager, needs_manager_reason, urgency, model, created_by, mode ${withKb ? sql`, kb_rule_ids` : sql``})
+                          needs_manager, needs_manager_reason, urgency, model, created_by, mode
+                          ${hasKb ? sql`, kb_rule_ids` : sql``} ${hasSpv ? sql`, system_prompt_version` : sql``})
       VALUES (${caseId}, ${result.lane}, ${result.draft}, ${result.draft}, ${result.staff_notes}, ${checkResult},
               ${sql.json([])}, ${sql.json(findings)},
-              ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${MODEL}, ${user.id}, ${mode} ${withKb ? sql`, string_to_array(${kbRuleIds.join(',')}, ',')::int[]` : sql``})
+              ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${MODEL}, ${user.id}, ${mode}
+              ${hasKb ? sql`, string_to_array(${kbRuleIds.join(',')}, ',')::int[]` : sql``} ${hasSpv ? sql`, ${promptVersion?.version ?? null}` : sql``})
       RETURNING id`
-    // kb_rule_ids column arrives with migration 0011; fall back gracefully if it has not been applied yet.
-    const [d] = await insert(true).catch((e: any) => (/kb_rule_ids/.test(String(e?.message)) ? insert(false) : Promise.reject(e)))
     const draft = await loadDraft(sql, d.id)
     // Return what was sent to the model so the agent can see exactly what left the server.
-    return c.json({ draft, sent_to_model: payload, kb_rules_applied: kbRules.map((r) => ({ id: r.id, title: r.title })) }, 201)
+    return c.json({ draft, sent_to_model: payload, kb_rules_applied: kbRules.map((r) => ({ id: r.id, title: r.title })), system_prompt_version: promptVersion?.version ?? null }, 201)
   } finally {
     await sql.end()
   }

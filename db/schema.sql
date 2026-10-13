@@ -311,3 +311,20 @@ CREATE OR REPLACE FUNCTION public.refuse_delete() RETURNS trigger AS $$
 BEGIN RAISE EXCEPTION 'Deleting % rows is disabled — retire/archive instead', TG_TABLE_NAME; END $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_kb_rules_no_delete ON public.kb_rules;
 CREATE TRIGGER trg_kb_rules_no_delete BEFORE DELETE ON public.kb_rules FOR EACH ROW EXECUTE FUNCTION public.refuse_delete();
+
+-- ── 0012 Custom system prompt (manager-only; append-only version history; policy → custom → KB) ──
+CREATE TABLE IF NOT EXISTS public.system_prompt_versions (
+  version       SERIAL PRIMARY KEY,
+  body          TEXT NOT NULL CHECK (length(body) <= 4000),
+  note          TEXT,
+  restored_from INTEGER,
+  created_by    INTEGER REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.drafts ADD COLUMN IF NOT EXISTS system_prompt_version INTEGER;
+CREATE OR REPLACE FUNCTION public.refuse_update() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'Updating % rows is disabled — save a new version instead', TG_TABLE_NAME; END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_spv_no_delete ON public.system_prompt_versions;
+CREATE TRIGGER trg_spv_no_delete BEFORE DELETE ON public.system_prompt_versions FOR EACH ROW EXECUTE FUNCTION public.refuse_delete();
+DROP TRIGGER IF EXISTS trg_spv_no_update ON public.system_prompt_versions;
+CREATE TRIGGER trg_spv_no_update BEFORE UPDATE ON public.system_prompt_versions FOR EACH ROW EXECUTE FUNCTION public.refuse_update();
