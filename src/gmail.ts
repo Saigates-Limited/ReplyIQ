@@ -229,19 +229,14 @@ function encodeHeaderUtf8(v: string) {
   return /[^\x20-\x7e]/.test(v) ? `=?UTF-8?B?${btoa(unescape(encodeURIComponent(v)))}?=` : v
 }
 
-/** Plain text → simple HTML: blank line = new paragraph, single newline = <br>, URLs become links. Everything is escaped. */
+/** Plain text → minimal HTML that survives Amazon Buyer-Seller Messaging's sanitiser, which strips inline styles and
+ *  collapses <p> margins. So: no CSS, single newline = <br>, blank line = <br><br> (an explicit empty line), URLs linked. */
 export function textToHtml(text: string): string {
   const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
   const linkify = (t: string) => t.replace(/(https?:\/\/[^\s<]+[^\s<.,;:!?)\]])/g, (u) => `<a href="${u}">${u}</a>`)
   const paras = text.replace(/\r\n/g, '\n').trim().split(/\n{2,}/)
-  const html = paras.map((p) => {
-    const lines = p.split('\n').map((l) => linkify(esc(l)))
-    // Bulleted lists (- or •) become <ul>
-    if (lines.length > 1 && lines.every((l) => /^\s*(?:-|•|\*)\s+/.test(l)))
-      return `<ul style="margin:0 0 1em 1.2em;padding:0">${lines.map((l) => `<li>${l.replace(/^\s*(?:-|•|\*)\s+/, '')}</li>`).join('')}</ul>`
-    return `<p style="margin:0 0 1em 0">${lines.join('<br>')}</p>`
-  }).join('')
-  return `<!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222">${html}</body></html>`
+  const html = paras.map((p) => p.split('\n').map((l) => linkify(esc(l))).join('<br>\n')).join('<br>\n<br>\n')
+  return `<html><body>${html}</body></html>`
 }
 
 const b64wrap = (s: string) => btoa(unescape(encodeURIComponent(s))).replace(/(.{76})/g, '$1\r\n')
