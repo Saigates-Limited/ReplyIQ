@@ -693,6 +693,7 @@
                   title="${!canApprove ? (fails.length ? 'Fix failing checks first' : d.needs_manager ? 'Only a manager can approve this draft' : '') : ''}">
                   <i class="fas fa-check mr-1"></i>Approve
                 </button>` : ''}
+              ${d.status === 'draft' && !canApprove ? `<span class="block w-full text-right text-[11px] ${fails.length ? 'text-red-700' : 'text-violet-700'}" style="flex-basis:100%">${fails.length ? `<i class="fas fa-lock mr-1"></i>Approval is blocked while a check is <strong>FAIL</strong>. Edit the reply to fix it (or press <strong>Save edits</strong> to re-run the checks), then Approve.` : `<i class="fas fa-user-shield mr-1"></i>Needs a manager's approval${isManager ? '' : ' — ask a manager'}.`}</span>` : ''}
               ${d.status === 'approved' ? `
                 <button id="unapprove-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-slate-800">Withdraw approval</button>
                 ${(!d.mode || d.mode === 'customer') && kase.source === 'gmail' && kase.customer_reply_to ? `

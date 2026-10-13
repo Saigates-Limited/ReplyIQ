@@ -352,7 +352,12 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
 
   // ── Battery: stop using/charging is mandatory; RM label + UN3481 are expected and allowed.
   // battery_flag (set from a return reason mentioning heat/overheating) forces the rule even if the draft avoids the words.
-  const batteryCase = kase.battery_flag === true || /\b(battery|batteries|swollen|swelling|bulging|overheat(?:ing|s)?|very hot|too hot|burning smell|smoke|smoking)\b/.test(d)
+  // A battery SAFETY case = the order is flagged, OR the draft describes a battery problem (drain/fault/swelling/heat).
+  // Merely mentioning "battery health" in a pre-sale or general enquiry is not a safety case.
+  const batterySafetyWords = /\b(swollen|swelling|bulging|overheat(?:ing|s)?|very hot|too hot|burning smell|smoke|smoking)\b/.test(d)
+  const batteryProblem = /\b(battery|batteries)\b[^.]{0,80}\b(drain|drains|draining|dies|dying|fault|faulty|problem|issue|not (?:holding|lasting)|won't (?:hold|charge|last)|does ?n[o']t (?:hold|charge|last)|replace|replacement|return|inspection)\b/.test(d)
+    || /\b(drain|drains|draining|dies|dying|fault|faulty|problem|issue|replace|replacement)\b[^.]{0,80}\b(battery|batteries)\b/.test(d)
+  const batteryCase = kase.battery_flag === true || batterySafetyWords || batteryProblem
   if (batteryCase) {
     if (!/\bstop (?:using|charging)\b|\bdo not (?:use|charge)\b|\bdon't (?:use|charge)\b|\bstopped? (?:using|charging)\b|\bnot (?:to )?(?:use|charge)\b/.test(d))
       add('battery_stop_using', toAmazon ? 'warn' : 'fail', 'Battery/heat case does not tell the customer to stop using and charging the phone')
@@ -368,8 +373,11 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
   if (/\b(crime reference|police reference|police report)\b/.test(d) && accessoryOnly) add('inr_police_accessory', 'fail', 'Mentions a police crime reference on an accessory-only order')
 
   // ── Return checklist: expected whenever a return is arranged
-  const arrangesReturn = /\b(return label|return (?:the|your) (?:phone|device|item)|send (?:it|the (?:phone|device)) back|returns? (?:process|request|for inspection)|arrange (?:a |the )?return)\b/.test(d)
-  if (arrangesReturn && !/\b(sign out of icloud|find my|factory reset|remove (?:the|your) sim)\b/.test(d))
+  // Checklist is required when a return is actually being ARRANGED now — not when the draft merely explains that a
+  // return is possible (pre-sale enquiries, "if you change your mind you can request a return within 30 days").
+  const arrangesReturn = /\b(return label|return (?:the|your) (?:phone|device|item)|send (?:it|the (?:phone|device)) back|returns? for inspection|arrange (?:a |the )?return|we (?:will|'ll|have) (?:arrange|set up|open|raise|issue)[^.]{0,40}\breturn)\b/.test(d)
+  const hypotheticalOnly = !arrangesReturn || /\b(if you (?:change your mind|decide|wish|would like|prefer|want)|should you (?:change|wish|decide)|you can (?:request|start|open) a return|option to return)\b/.test(d) && !/\b(return label|return for inspection|arrange (?:a |the )?return|we (?:will|'ll|have) (?:arrange|set up|open|raise|issue))\b/.test(d)
+  if (arrangesReturn && !hypotheticalOnly && !/\b(sign out of icloud|find my|factory reset|remove (?:the|your) sim)\b/.test(d))
     add('return_checklist', 'warn', 'Arranges a return but omits the return checklist (sign out of iCloud/Find My, factory reset, remove SIM, pack securely)')
 
   // ── Off-platform (bank transfer for accepted repair handled above)
