@@ -32,6 +32,19 @@ async function hasSpapiCols(sql: ReturnType<typeof getDb>) {
   return spapiColsKnown
 }
 const spapiExpr = (has: boolean, expr: string) => (has ? expr : expr.replace(/cases\.delivery_date_source, cases\.spapi_synced_at,/g, 'NULL::text AS delivery_date_source, NULL::timestamptz AS spapi_synced_at,').replace(/(?<!cases\.)\bdelivery_date_source, spapi_synced_at,/g, 'NULL::text AS delivery_date_source, NULL::timestamptz AS spapi_synced_at,'))
+// Carrier desk (migration 0015): the parcel's status for the inbox chip. Before the migration both are NULL.
+let carrierColsKnown: boolean | null = null
+async function hasCarrierCols(sql: ReturnType<typeof getDb>) {
+  if (carrierColsKnown !== null) return carrierColsKnown
+  const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'carrier_cases' AND column_name = 'customer_update_due'`
+  carrierColsKnown = !!r
+  return carrierColsKnown
+}
+const CARRIER_EXPR = `cases.carrier_issue,
+  (SELECT CASE WHEN cc.status IN ('awaiting_carrier','claim_submitted','escalated') AND cc.sla_due_at < now() THEN 'sla_breach' ELSE cc.status END
+     FROM carrier_cases cc WHERE cc.case_id = cases.id ORDER BY (cc.status IN ('paid','partially_paid','rejected','closed')), cc.updated_at DESC LIMIT 1) AS carrier_status,
+  EXISTS (SELECT 1 FROM carrier_cases cc WHERE cc.case_id = cases.id AND cc.customer_update_due) AS carrier_update_due,`
+const CARRIER_NULL = `NULL::text AS carrier_issue, NULL::text AS carrier_status, FALSE AS carrier_update_due,`
 const archExpr = (has: boolean, expr: string) => (has ? expr : expr.replace(/cases\.archived_at IS NULL/g, 'TRUE').replace(/cases\.archived_at IS NOT NULL/g, 'FALSE').replace(/cases\.archived_at,/g, 'NULL::timestamptz AS archived_at,'))
 
 // Columns returned to the agent UI. PII columns (last name, email, phone,
@@ -84,11 +97,13 @@ casesApi.get('/', async (c) => {
     // Queue order (agreed with Saigates): overdue first, then Red (angry) / Purple (dispute), then everyone else by deadline.
     // "Deadline" is the earlier of the 24h customer-reply deadline and any open Amazon event deadline.
     const has = await hasArchiveCols(sql)
+    const carrierCols = await hasCarrierCols(sql)
     const rows = await sql.unsafe(
       mailboxExpr(await hasMailboxCol(sql), spapiExpr(await hasSpapiCols(sql), archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS},
               (SELECT COUNT(*) FROM messages m WHERE m.case_id = cases.id AND m.kind <> 'event')::int AS message_count,
               (SELECT status FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_status,
               (SELECT needs_manager FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_needs_manager,
+              ${carrierCols ? CARRIER_EXPR : CARRIER_NULL}
               ${DEADLINE_EXPR} AS effective_deadline
        FROM cases LEFT JOIN users u ON u.id = cases.assigned_to
        WHERE CASE WHEN $1 = 'archived' THEN cases.archived_at IS NOT NULL
@@ -237,6 +252,9 @@ const EDITABLE = {
   tone: 'tone', // staff override of the AI label
   chargeback_open: 'bool',
   battery_flag: 'bool',
+  // Delivery address for carrier investigations. PII: shown to staff and sent to the CARRIER only, never to OpenAI
+  // (ai.ts redacts it from every payload).
+  customer_address: 'address',
 } as const
 
 function coerce(kind: string, v: unknown): { ok: true; value: unknown } | { ok: false; error: string } {
@@ -265,6 +283,8 @@ function coerce(kind: string, v: unknown): { ok: true; value: unknown } | { ok: 
     }
     case 'notes':
       return { ok: true, value: String(v).slice(0, 5000) }
+    case 'address':
+      return { ok: true, value: String(v).replace(/\s*\n\s*/g, ', ').trim().slice(0, 300) }
     case 'tone':
       return (TONES as readonly string[]).includes(String(v)) ? { ok: true, value: v } : { ok: false, error: 'Invalid tone' }
   }

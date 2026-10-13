@@ -156,6 +156,8 @@ export function buildPayload(kase: CaseRow, messages: MessageRow[], opts: { even
   }
   const stamp = (v: string | null | undefined) => (v ? new Date(v).toISOString().slice(0, 16).replace('T', ' ') : 'unknown')
   const fromOf = (m: MessageRow) => {
+    // Carrier desk updates (Royal Mail / DPD investigation progress) are facts from our side, not Amazon notices
+    if (m.kind === 'event' && /^Carrier update/i.test(m.sender ?? '')) return 'carrier_update'
     if (m.kind === 'event') return 'amazon_event'
     if (m.direction === 'inbound') return /amazon customer service|on behalf of/i.test(m.sender ?? '') ? 'amazon_cs_on_behalf_of_customer' : 'customer'
     return 'saigates'

@@ -96,7 +96,7 @@ gmailApi.post('/disconnect', requireManager, async (c) => {
 // PATCH /api/gmail/mailboxes/:id {label?, enabled?, is_default?} (manager)
 gmailApi.patch('/mailboxes/:id', requireManager, async (c) => {
   const id = Number(c.req.param('id'))
-  const body = (await c.req.json().catch(() => ({}))) as { label?: string; enabled?: boolean; is_default?: boolean }
+  const body = (await c.req.json().catch(() => ({}))) as { label?: string; enabled?: boolean; is_default?: boolean; carrier_mail?: boolean }
   const sql = getDb(c.env)
   try {
     if (!(await hasMultiMailbox(sql))) return c.json({ error: 'Run db/migrations/0013_multi_mailbox.sql first' }, 503)
@@ -105,6 +105,8 @@ gmailApi.patch('/mailboxes/:id', requireManager, async (c) => {
     if (body.label !== undefined) await sql`UPDATE gmail_connection SET label = ${String(body.label).trim().slice(0, 40) || 'Mailbox'} WHERE id = ${id}`
     if (body.enabled !== undefined) await sql`UPDATE gmail_connection SET enabled = ${Boolean(body.enabled)} WHERE id = ${id}`
     if (body.is_default === true) { await sql`UPDATE gmail_connection SET is_default = FALSE`; await sql`UPDATE gmail_connection SET is_default = TRUE WHERE id = ${id}` }
+    // Carrier desk (migration 0015): also poll this mailbox for Royal Mail / DPD / FedEx / Evri mail
+    if (body.carrier_mail !== undefined) await sql`UPDATE gmail_connection SET carrier_mail = ${Boolean(body.carrier_mail)} WHERE id = ${id}`
     return c.json({ ok: true, mailbox: { ...(await getConnection(sql, id))!, refresh_token_enc: undefined } })
   } finally {
     await sql.end()
@@ -342,6 +344,8 @@ sendApi.post('/drafts/:id/send', async (c) => {
                  VALUES (${kase.id}, 'outbound', ${'Saigates Support (' + user.name + ')'}, ${d.draft_text}, ${subject}, ${sent.id}, now())`
         await tx`UPDATE cases SET status = 'awaiting_customer', updated_at = now() WHERE id = ${kase.id} AND status = 'open'`
       })
+      // Carrier desk: the customer has now heard the latest carrier news
+      await sql`UPDATE carrier_cases SET customer_update_due = FALSE WHERE case_id = ${kase.id} AND customer_update_due`.catch(() => {})
       return c.json({ ok: true, gmail_message_id: sent.id })
     } catch (e: any) {
       await sql`UPDATE drafts SET status = 'approved', updated_at = now() WHERE id = ${id} AND status = 'sending'`

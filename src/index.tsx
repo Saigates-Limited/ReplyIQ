@@ -11,6 +11,8 @@ import { spapiApi } from './routes/spapi'
 import { kbApi } from './routes/kb'
 import { promptApi } from './routes/prompt'
 import { templatesApi } from './routes/templates'
+import { carrierApi } from './routes/carrier'
+import { syncCarrierMail, prepareDueDrafts } from './carrier/service'
 import { runSync } from './sync'
 import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
@@ -95,6 +97,7 @@ app.route('/api/messages', messagesApi) // tone override
 app.route('/api/kb', kbApi) // knowledge base rules for the drafting model
 app.route('/api/prompt', promptApi) // custom system prompt (manager only)
 app.route('/api/templates', templatesApi) // ready-to-use reply templates
+app.route('/api/carrier', carrierApi) // carrier desk: Royal Mail / DPD / FedEx / Evri investigations and claims
 
 // SPA pages
 app.get('/', (c) => c.html(page(c.get('user'))))
@@ -124,6 +127,8 @@ app.get('/api/settings', (c) =>
 app.get('/atoz', (c) => c.html(page(c.get('user'))))
 app.get('/returns', (c) => c.html(page(c.get('user'))))
 app.get('/chargebacks', (c) => c.html(page(c.get('user'))))
+app.get('/carriers', (c) => c.html(page(c.get('user'))))
+app.get('/carriers/:id', (c) => c.html(page(c.get('user'))))
 
 app.onError((err, c) => {
   console.error(err)
@@ -140,10 +145,22 @@ export default {
         try {
           const conn = await sql`SELECT 1 FROM gmail_connection LIMIT 1`
           if (!conn.length) return
-          const r = await runSync(env, sql, 'cron')
-          console.log('gmail sync', JSON.stringify(r))
+          try {
+            const r = await runSync(env, sql, 'cron')
+            console.log('gmail sync', JSON.stringify(r))
+          } catch (e) {
+            console.error('gmail sync failed', e)
+          }
+          // Carrier desk: read carrier mail, update parcel statuses, prepare (never send) due chases / claim packs.
+          try {
+            const cr = await syncCarrierMail(env, sql)
+            const pr = await prepareDueDrafts(sql)
+            console.log('carrier sync', JSON.stringify({ ...cr, ...pr }))
+          } catch (e) {
+            if (!/relation "(carrier_|app_settings)/.test(String((e as Error)?.message))) console.error('carrier sync failed', e)
+          }
         } catch (e) {
-          console.error('gmail sync failed', e)
+          console.error('scheduled run failed', e)
         } finally {
           await sql.end()
         }

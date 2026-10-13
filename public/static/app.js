@@ -68,7 +68,8 @@
   function route() {
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
     const p = location.pathname
-    setActiveNav(m || p === '/inbox' ? 'messages' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
+    const cm = p.match(/^\/carriers\/(\d+)$/)
+    setActiveNav(m || p === '/inbox' ? 'messages' : p.startsWith('/carriers') ? 'carriers' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
     refreshBadges()
     document.getElementById('sidebar')?.classList.remove('open')
     if (m) renderInbox(Number(m[1]))
@@ -84,6 +85,8 @@
     else if (p === '/atoz') renderTracker('atoz')
     else if (p === '/returns') renderTracker('return')
     else if (p === '/chargebacks') renderTracker('chargeback')
+    else if (cm && carrierUI) carrierUI.renderParcel(Number(cm[1]))
+    else if (p === '/carriers' && carrierUI) carrierUI.renderDesk()
     else renderDashboard()
   }
   document.getElementById('sidebar-toggle')?.addEventListener('click', () => document.getElementById('sidebar').classList.toggle('open'))
@@ -123,6 +126,7 @@
       const set = (k, v) => { const el = document.querySelector(`[data-badge="${k}"]`); if (el) el.textContent = v ? String(v) : '' }
       set('atoz', data.atoz); set('returns', data.returns); set('chargebacks', data.chargebacks); set('messages', data.messages)
       if (data.kb_pending !== undefined) set('kb', data.kb_pending)
+      if (carrierUI) set('carriers', await carrierUI.badgeCount())
     } catch {}
     badgeTimer = setTimeout(refreshBadges, 120000)
   }
@@ -141,6 +145,9 @@
   })
   const ME = window.CURRENT_USER || { role: 'agent' }
   const isManager = ME.role === 'manager'
+
+  // Carrier desk (public/static/carrier.js). Function declarations below are hoisted, so they can be handed over here.
+  const carrierUI = window.RiqCarrier ? window.RiqCarrier({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderCase: (id) => renderCase(id), renderError: (e) => renderError(e), refreshBadges: () => refreshBadges(), generate: (id, mode) => generate(id, mode) }) : null
 
   // ---------- header clock ----------
   const clock = document.getElementById('header-clock')
@@ -343,6 +350,8 @@
               ${data.events.length ? `<div class="mt-3 space-y-1">${data.events.map((e) => `<a href="/${e.kind.startsWith('atoz') ? 'atoz' : e.kind === 'chargeback' ? 'chargebacks' : 'returns'}" data-link class="block text-xs rounded-md px-2 py-1 notice ${EVENT_CLASS(e.kind)} text-left"><strong>${esc(EVENT_LABEL[e.kind] || e.kind)}</strong> · ${esc(e.status)}${e.amount ? ` · £${Number(e.amount).toFixed(2)}` : ''}${e.deadline_at ? ` · due ${fmtDateTime(e.deadline_at)}` : ''}</a>`).join('')}</div>` : ''}
             </section>
 
+            <section id="carrier-panel" class="bg-white rounded-xl shadow-sm p-5 hidden"></section>
+
             <section id="customer-panel" class="bg-white rounded-xl shadow-sm p-5">
               <h2 class="font-semibold mb-3"><i class="far fa-user mr-2 text-slate-400"></i>Customer</h2>
               <dl class="text-sm grid grid-cols-3 gap-y-2">
@@ -410,6 +419,7 @@
     wireFields(id)
     wireTicket(id, k)
     wireAmazonOrder(id, k)
+    carrierUI?.mountCasePanel(id, k)
     renderDraftWorkspace(id, k, data.drafts, data.events)
     const sc = document.getElementById('chat-scroll'); if (sc) sc.scrollTop = sc.scrollHeight
     document.querySelectorAll('#inbox-list .ticket-item').forEach((el) => el.classList.toggle('active', Number(el.dataset.caseId) === id))
@@ -499,6 +509,9 @@
       const day = dayjs(m.sent_at).format('ddd DD MMM YYYY')
       const sep = day !== lastDay ? `<div class="day-sep">${day}</div>` : ''
       lastDay = day
+      if (m.kind === 'event' && !m.event_id && /^Carrier update/.test(m.sender || '')) {
+        return `${sep}<div class="notice notice-carrier"><div class="font-semibold"><i class="fas fa-truck-fast mr-1"></i>${esc(m.sender)}</div><div class="message-body">${esc(m.body)}</div><div class="opacity-70 mt-1">${fmtDateTime(m.sent_at)} · internal, from the carrier desk</div></div>`
+      }
       if (m.kind === 'event') {
         const e = evById[m.event_id]
         const kind = e?.kind || 'return_request'
@@ -1163,7 +1176,7 @@
         </div>
         <div class="mt-0.5 text-[11px] text-slate-500">${esc(k.customer_first_name)} ${esc(k.customer_last_name || '')} · <span class="font-mono">${esc(k.order_id || k.case_ref)}</span></div>
         <div class="mt-1 flex items-center justify-between gap-2 text-[10px]">
-          <span class="flex items-center gap-1 flex-wrap">${statusBadge(k.status)}${toneChip(k.tone)}${k.open_atoz ? '<span class="pill" style="background:#ede9fe;color:#6d28d9">A-to-Z</span>' : ''}${k.open_returns ? '<span class="pill" style="background:#cffafe;color:#155e75">RETURN</span>' : ''}${k.open_chargebacks ? '<span class="pill" style="background:#ffe4e6;color:#9f1239">CHARGEBACK</span>' : ''}${k.battery_flag ? '<span class="pill" style="background:#dc2626;color:#fff"><i class="fas fa-fire"></i></span>' : ''}</span>
+          <span class="flex items-center gap-1 flex-wrap">${statusBadge(k.status)}${toneChip(k.tone)}${k.open_atoz ? '<span class="pill" style="background:#ede9fe;color:#6d28d9">A-to-Z</span>' : ''}${k.open_returns ? '<span class="pill" style="background:#cffafe;color:#155e75">RETURN</span>' : ''}${k.open_chargebacks ? '<span class="pill" style="background:#ffe4e6;color:#9f1239">CHARGEBACK</span>' : ''}${k.battery_flag ? '<span class="pill" style="background:#dc2626;color:#fff"><i class="fas fa-fire"></i></span>' : ''}${k.carrier_status ? `<span class="pill ${k.carrier_status === 'sla_breach' || k.carrier_update_due ? 'bg-sky-600 text-white' : 'bg-sky-100 text-sky-800'}" title="Carrier: ${esc(k.carrier_status.replace(/_/g, ' '))}${k.carrier_update_due ? ' — news for the customer' : ''}"><i class="fas fa-truck-fast"></i>${k.carrier_update_due ? ' NEWS' : ''}</span>` : k.carrier_issue ? '<span class="pill bg-amber-100 text-amber-800" title="Customer reports a delivery problem"><i class="fas fa-truck-fast"></i>?</span>' : ''}</span>
           <span class="${d.cls} whitespace-nowrap"><i class="far fa-clock"></i> ${esc(d.label)}</span>
         </div>
       </a>`
@@ -1238,6 +1251,7 @@
           <ul class="text-sm grid sm:grid-cols-2 gap-x-6 gap-y-1">${alerts.map(({ k, t, cls }) => `<li class="flex gap-2 min-w-0"><span class="${cls} font-medium whitespace-nowrap">${t}:</span><a href="/cases/${k.id}" data-link class="truncate hover:underline">${esc(k.subject)} <span class="text-slate-400 font-mono text-xs">${esc(k.order_id || k.case_ref)}</span></a></li>`).join('')}</ul>
           <a href="/inbox" data-link class="inline-block mt-3 px-3 py-1.5 rounded-md bg-red-600 text-white text-sm font-medium">Open inbox →</a>
         </div>` : '<div class="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"><i class="fas fa-circle-check mr-1"></i>Nothing overdue and no hot conversations. Nice.</div>'}
+        <div id="carrier-strip"></div>
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
           <div class="kpi" style="--kpi:#2563eb"><div class="l">Open conversations</div><div class="v">${counts.messages}</div><div class="text-xs text-slate-500">${due4h.length} due within 4h</div></div>
           <div class="kpi" style="--kpi:#dc2626"><div class="l">Overdue replies</div><div class="v ${overdue.length ? 'text-red-700' : ''}">${overdue.length}</div><div class="text-xs text-slate-500">24h Amazon target</div></div>
@@ -1258,6 +1272,7 @@
           </div>
         </div>
       </section>`
+    if (carrierUI) carrierUI.dashboardStrip().then((html) => { const el = document.getElementById('carrier-strip'); if (el) el.innerHTML = html })
   }
 
 

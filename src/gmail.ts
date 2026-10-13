@@ -94,6 +94,7 @@ export type GmailConnection = {
   label: string
   enabled: boolean
   is_default: boolean
+  carrier_mail?: boolean // migration 0015: also poll this mailbox for carrier mail
   email_address: string
   refresh_token_enc: string
   scopes: string
@@ -114,14 +115,23 @@ export async function hasMultiMailbox(sql: Sql) {
   multiKnown = !!r
   return multiKnown
 }
-const CONN_COLS = (multi: boolean) =>
-  multi ? `g.id, g.label, g.enabled, g.is_default` : `g.id, 'Mailbox'::text AS label, TRUE AS enabled, TRUE AS is_default`
+const CONN_COLS = (multi: boolean, carrier: boolean) =>
+  (multi ? `g.id, g.label, g.enabled, g.is_default` : `g.id, 'Mailbox'::text AS label, TRUE AS enabled, TRUE AS is_default`) +
+  (carrier ? `, g.carrier_mail` : `, FALSE AS carrier_mail`)
+let carrierColKnown: boolean | null = null
+async function hasCarrierMailCol(sql: Sql) {
+  if (carrierColKnown !== null) return carrierColKnown
+  const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'gmail_connection' AND column_name = 'carrier_mail'`
+  carrierColKnown = !!r
+  return carrierColKnown
+}
 
 /** All connected mailboxes, default first. */
 export async function listConnections(sql: Sql): Promise<GmailConnection[]> {
   const multi = await hasMultiMailbox(sql)
+  const carrier = await hasCarrierMailCol(sql)
   return sql.unsafe(`
-    SELECT ${CONN_COLS(multi)}, g.email_address, g.refresh_token_enc, g.scopes, g.connected_at, g.last_sync_at, g.last_sync_status, g.last_sync_error, g.last_sync_new_msgs,
+    SELECT ${CONN_COLS(multi, carrier)}, g.email_address, g.refresh_token_enc, g.scopes, g.connected_at, g.last_sync_at, g.last_sync_status, g.last_sync_error, g.last_sync_new_msgs,
            u.name AS connected_by_name
     FROM gmail_connection g LEFT JOIN users u ON u.id = g.connected_by
     ORDER BY ${multi ? 'g.is_default DESC,' : ''} g.id ASC`) as unknown as Promise<GmailConnection[]>
@@ -272,6 +282,46 @@ export async function sendReply(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ raw: rawUrl, threadId: args.threadId }),
   })
+}
+
+/** A plain business email (carrier investigations and chases). New thread unless threadId is given.
+ *  `from` may be a verified "Send mail as" alias of the connected Gmail account (e.g. ecom@saigates.com);
+ *  Gmail replaces an unverified alias with the account's own address. */
+export async function sendEmail(
+  token: string,
+  args: { fromName: string; from: string; to: string; cc?: string[]; subject: string; body: string; threadId?: string; inReplyTo?: string; references?: string }
+) {
+  const boundary = `=_riq_${crypto.randomUUID().replace(/-/g, '')}`
+  const clean = (v: string) => v.replace(/[\r\n]+/g, ' ').trim() // no header injection
+  const headers = [
+    `From: ${encodeHeaderUtf8(clean(args.fromName))} <${clean(args.from)}>`,
+    `To: ${clean(args.to)}`,
+    ...(args.cc?.length ? [`Cc: ${args.cc.map(clean).join(', ')}`] : []),
+    `Subject: ${encodeHeaderUtf8(clean(args.subject))}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+  ]
+  if (args.inReplyTo) headers.push(`In-Reply-To: ${clean(args.inReplyTo)}`)
+  if (args.references) headers.push(`References: ${clean(args.references)}`)
+  const text = args.body.replace(/\r\n/g, '\n').trim()
+  const parts = [
+    `--${boundary}`, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', b64wrap(text),
+    `--${boundary}`, 'Content-Type: text/html; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', b64wrap(textToHtml(text)),
+    `--${boundary}--`, '',
+  ]
+  const raw = headers.join('\r\n') + '\r\n\r\n' + parts.join('\r\n')
+  const rawUrl = btoa(unescape(encodeURIComponent(raw))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return gapi<{ id: string; threadId: string }>(token, '/messages/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(args.threadId ? { raw: rawUrl, threadId: args.threadId } : { raw: rawUrl }),
+  })
+}
+
+/** RFC Message-ID of a message we just sent (for threading carrier replies). */
+export async function messageIdHeader(token: string, id: string) {
+  const m = await gapi<GmailMessage>(token, `/messages/${id}?format=metadata&metadataHeaders=Message-ID`)
+  return header(m, 'Message-ID') || null
 }
 
 /** Attachment parts of a message (anything with a filename and an attachmentId). Inline images included. */

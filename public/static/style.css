@@ -211,3 +211,10 @@ html.dark .dt-then::before, html.dark .dt-branches::before, html.dark .dt-branch
 html.dark .text-red-900 { color:#fecaca; }
 .line-clamp-2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 html.dark #prompt-editor .bg-emerald-50 { background-color:#052e16; }
+
+/* ── Carrier desk ── */
+.notice-carrier { background:#f0f9ff; border-color:#7dd3fc; color:#0c4a6e; }
+html.dark .notice-carrier { background:#082f49; border-color:#0369a1; color:#bae6fd; }
+html.dark .bg-sky-50 { background-color:#082f49; } html.dark .border-sky-200 { border-color:#0369a1; } html.dark .text-sky-900 { color:#bae6fd; }
+html.dark .border-amber-300 { border-color:#92400e; }
+html.dark .bg-rose-100 { background-color:#881337; } html.dark .text-rose-800 { color:#fecdd3; }

@@ -284,3 +284,75 @@ R2 bucket (token needs "Workers R2 Storage: Edit"), Gmail attachments shown in c
 - **Custom system prompt**: seed text (company, voice, seller position, house style) saved as a new version via the editor.
 - **Decision Trees** rebuilt to the new lanes. Gmail From name is now "Customer Support Team".
 - OpenAI JSON parsing is more tolerant and logs the finish reason / head of any non-JSON reply.
+
+## Phase 13 (BRANCH `feature/carrier-desk`, not deployed) — Carrier desk: customer message → carrier investigation → claim → payout
+
+One loop instead of two tools. A customer writes "it says delivered but I never got it"; ReplyIQ already knows the order,
+the tracking number, the carrier, the ship date and the price, so the Royal Mail / DPD email is ready before anyone asks.
+
+```
+customer message ──► detect issue (no AI) ──► parcel "Ready to raise" + investigation email prepared
+                                                          │  one click: Approve & send (from ecom@ via the carrier mailbox)
+                                                          ▼
+carrier mail (every 15 min) ──► match by tracking / case ref / thread ──► classify ──► status + next email prepared
+   auto-ack: store case ref, clock keeps running          holding reply: clock restarts
+   "asked us for X": Needs us                            "lost – claim": claim pack prepared, customer flagged "tell the customer"
+   "delivered (GPS/POD)": Rejected → challenge or tell   "claim settled £X": Paid / Partially paid
+reply late (3 wd RM, 5 wd DPD/FedEx/Evri, 10 wd claims) ──► chase prepared automatically, threaded into the carrier's own email
+```
+
+**What's new**
+- **Case screen → Carrier panel**: what the customer reported, the tracking/carrier from Amazon, an optional delivery
+  address (sent to the carrier only), and **Open carrier investigation**. Shows each parcel's status, carrier case
+  reference, working days waiting, next step, ready emails, and a blue **"New carrier news for the customer"** banner
+  with *Draft customer update* (the AI sees carrier events on the timeline as `carrier_update`, facts only).
+- **Carrier desk** (`/carriers`): KPI tiles (open by carrier, chase now, needs us, tell the customer, £ at risk,
+  £ recovered), views (Chase now · Needs us · Waiting · All open · Closed · Everything) and **Review N ready emails**:
+  a queue that opens each prepared email in turn — edit if needed, then *Approve & send* or *Skip*.
+- **Parcel page** (`/carriers/:id`): full timeline (our emails, carrier emails with their classification, notes),
+  editable details (status, value, claimed, paid, refs, claim ref…), and *Prepare an email*: investigation, chase,
+  reply with info, challenge, claim pack, postage refund.
+- **Dashboard strip** and **sidebar badge** (chase now + needs us + customer updates). Inbox items show a truck chip
+  (`NEWS` when there is carrier news for the customer; `?` when the customer reported a delivery problem but no parcel is open).
+- **Import** from the old Carrier Claims Desk dashboard (manager, Settings ⚙ on the carrier desk). Idempotent; never
+  overwrites a parcel ReplyIQ already tracks live (it only fills gaps and merges case references).
+
+**Safety (same discipline as customer replies)**
+- Carrier emails are written from **server-side templates, not the AI** — they need the recipient's name and address,
+  which never go to OpenAI. Zero model cost, instant.
+- Sending is only `POST /api/carrier/drafts/:id/send`, one click from the review screen, with gates: the text on screen
+  must equal the saved text; the recipient must be a carrier domain (royalmail.com, dpd.co.uk, dpd.uk, dpdgroup.co.uk,
+  fedex.com, evri.com, parcelforce.co.uk, plus any a manager adds); no `[MISSING: …]` left; challenges (and claim packs
+  over £500) need a manager; claim packs can never be emailed; atomic one-send claim.
+- The cron only **reads** Gmail and **prepares** drafts (one live draft per parcel and kind, enforced by a unique index).
+- Carrier cases are closed, never deleted (DB trigger), so recovery figures stay right.
+
+**Setup after merging**
+1. Supabase SQL editor: run `db/migrations/0015_carrier_desk.sql` (additive, safe to re-run). Deploy.
+2. Gmail page → *Connect a mailbox* → sign in as **saigateslimited@gmail.com** (it receives copies of
+   ecom@saigates.com) and label it "Carriers".
+3. Carrier desk → ⚙ Settings: tick that mailbox under *Mailboxes that receive carrier mail*; set *From address* to
+   `ecom@saigates.com` **only if** it is a verified "Send mail as" alias in that Gmail account (otherwise Gmail sends
+   from the account's own address); Cc `sagar.patel@saigates.com` if wanted; check the signature and DPD/FedEx/Evri addresses.
+4. Optional: import `carrier-claims-export.json` (Settings ⚙ → Import). Press *Check carrier mail* once.
+
+**API** (all staff unless noted): `GET /api/carrier/cases?view=` · `GET /api/carrier/summary` · `GET /api/carrier/cases/:id` ·
+`GET /api/carrier/for-case/:caseId` · `POST /api/carrier/open {case_id, issue?, force?}` · `POST /api/carrier/cases` ·
+`PATCH /api/carrier/cases/:id` · `POST /api/carrier/cases/:id/drafts {kind}` · `PATCH /api/carrier/drafts/:id` ·
+`POST /api/carrier/drafts/:id/send` · `POST /api/carrier/drafts/:id/discard` · `POST /api/carrier/cases/:id/claim-submitted` ·
+`POST /api/carrier/cases/:id/note` · `POST /api/carrier/sync {days?}` · `GET|PUT /api/carrier/settings` (PUT manager) ·
+`POST /api/carrier/import` (manager). `PATCH /api/gmail/mailboxes/:id {carrier_mail}` (manager).
+
+**Code**: `src/carrier/` — `detect.ts` (customer wording → issue), `carriers.ts` (registry, tracking formats),
+`classify.ts` (carrier email → auto-ack / holding / info request / lost / delivered / rejected / settled / escalation),
+`engine.ts` (status rules, SLA, next email), `templates.ts` (emails + claim pack), `workdays.ts` (England & Wales
+working days, bank holidays to end-2027 — extend the list yearly), `service.ts` (DB + Gmail). Route: `src/routes/carrier.ts`.
+UI: `public/static/carrier.js`.
+
+**Tests**: `npm run test:unit` (detection, classification on real carrier wording, working days, status rules, templates) ·
+`npm run test:e2e` (drives the real app against a throwaway local Postgres with a fake Gmail: customer message →
+auto-prepared investigation → send gates → auto-ack/holding reply → lost → claim pack → claim submitted → part payment →
+overdue chase threaded into Royal Mail's thread → customer-update flag → manager/placeholder gates → import).
+
+**Also fixed**: `src/sync.ts` used `markSeen()` before declaring it, so any Amazon thread with no parseable customer text
+threw a ReferenceError and stopped that mailbox's sync run.

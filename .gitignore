@@ -36,3 +36,4 @@ lerna-debug.log*
 .dev.vars
 .wrangler/
 dist/
+.e2e/

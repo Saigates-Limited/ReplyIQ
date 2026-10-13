@@ -185,6 +185,7 @@ draftsApi.post('/drafts/:id/record-sent', async (c) => {
       }
       await tx`UPDATE cases SET status = 'awaiting_customer', updated_at = now() WHERE id = ${d.case_id} AND status = 'open'`
     })
+    if (!toAmazon) await sql`UPDATE carrier_cases SET customer_update_due = FALSE WHERE case_id = ${d.case_id} AND customer_update_due`.catch(() => {})
     return c.json({ draft: await loadDraft(sql, id) })
   } finally {
     await sql.end()

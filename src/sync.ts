@@ -6,6 +6,7 @@ import { classifyNotice, parseSellerReplyCopy, parseAtoz, parseReturnAuth, parse
 import { classifyTone } from './tone'
 import { listAttachments } from './gmail'
 import { isAllowedType } from './attachments'
+import { onCustomerMessage } from './carrier/service'
 
 const AMAZON_DOMAIN = 'marketplace.amazon.co.uk'
 const DEFAULT_LOOKBACK = 'newer_than:1h' // generous relative to the 15-min cron so a missed run cannot drop mail
@@ -192,6 +193,7 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
     result.remaining = Math.max(0, todo.length - threadIds.length)
 
     const pendingTone: { messageId: number; caseId: number; text: string }[] = []
+    const pendingCarrier: { caseId: number; text: string; at: Date }[] = []
     let processed = 0
     let quotaHit: string | null = null
     for (const tid of threadIds) {
@@ -217,8 +219,9 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
 
       const inbound = msgs.filter((m) => !isOurs(m, ourEmails) && parseAddress(header(m, 'From')).address.endsWith(`@${AMAZON_DOMAIN}`))
       // Amazon also sends non-customer notices from this domain (e.g. order confirmations). Skip threads with no customer text.
-      if (inbound.length && !parseAmazonBody(messageBody(inbound[inbound.length - 1])).text) { result.skipped.push({ thread: tid, reason: `no customer text parsed; subject="${header(inbound[0], 'Subject').slice(0, 80)}"` }); await markSeen(); continue }
+      // (markSeen must be declared before first use: using it above its declaration threw a ReferenceError and aborted the mailbox's sync)
       const markSeen = () => markSeenFor(sql, seenKey(tid))
+      if (inbound.length && !parseAmazonBody(messageBody(inbound[inbound.length - 1])).text) { result.skipped.push({ thread: tid, reason: `no customer text parsed; subject="${header(inbound[0], 'Subject').slice(0, 80)}"` }); await markSeen(); continue }
       if (!inbound.length) { result.skipped.push({ thread: tid, reason: `no inbound from @${AMAZON_DOMAIN}; from=${parseAddress(header(msgs[0], 'From')).address}` }); await markSeen(); continue }
 
       const first = inbound[0]
@@ -275,6 +278,8 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
         await recordAttachments(sql, m, ins.id, kase.id)
         await sql`UPDATE messages SET attachments_checked_at = now() WHERE id = ${ins.id}`.catch(() => {})
         if (!ours) pendingTone.push({ messageId: ins.id, caseId: kase.id, text: body })
+        // Carrier desk: "not arrived" / "empty box" / "delivered but not received" → flag the case and (setting) open a ready-to-send investigation
+        if (!ours) pendingCarrier.push({ caseId: kase.id, text: body, at: new Date(Number(m.internalDate)) })
         if (!ours && /\b(hot|heat|heating|overheat|burn|smok|swell|swollen|bulg)/i.test(body)) await sql`UPDATE cases SET battery_flag = TRUE WHERE id = ${kase.id}`
       }
 
@@ -301,6 +306,12 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
           await sql`UPDATE cases SET tone = ${tone.label} WHERE id = ${p.caseId} AND (SELECT id FROM messages WHERE case_id = ${p.caseId} AND direction = 'inbound' ORDER BY sent_at DESC LIMIT 1) = ${p.messageId}`
         }
       } catch (e) { console.error('tone failed', e) }
+    }
+    // Carrier issues: latest message per case only (an older "where is it?" must not reopen a settled parcel)
+    const latestPerCase = new Map<number, { text: string; at: Date }>()
+    for (const p of pendingCarrier) if (!latestPerCase.has(p.caseId) || latestPerCase.get(p.caseId)!.at < p.at) latestPerCase.set(p.caseId, p)
+    for (const [caseId, p] of latestPerCase) {
+      try { await onCustomerMessage(env, sql, caseId, p.text, p.at) } catch (e) { console.error('carrier detect failed', e) }
     }
     if (quotaHit) result.remaining = Math.max(0, todo.length - processed)
     result.rateLimited = !!quotaHit
