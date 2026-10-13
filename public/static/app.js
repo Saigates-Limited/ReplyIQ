@@ -924,6 +924,19 @@
 
   // ---------- INBOX (3-pane: ticket list | conversation+draft) ----------
   let inboxCases = [], inboxNow = null
+  let toneFilter = new Set(JSON.parse(localStorage.getItem('riq.tones') || '[]'))
+  const selected = new Set()
+  const TONE_CHIPS = [...Object.keys(TONE_META), 'none']
+  function toneFilterBar() {
+    return `<div id="tone-filter" class="px-3 py-1.5 border-b border-slate-100 flex flex-wrap gap-1 items-center">
+      ${TONE_CHIPS.map((t) => `<button data-tone="${t}" class="tone tone-${t} ${toneFilter.size && !toneFilter.has(t) ? 'opacity-30' : ''}" style="cursor:pointer" title="Toggle">${t === 'none' ? 'NO LABEL' : TONE_META[t].word}</button>`).join('')}
+      ${toneFilter.size ? '<button id="tone-clear" class="text-[10px] text-slate-500 underline ml-1">clear</button>' : ''}
+    </div>`
+  }
+  function wireToneFilter() {
+    document.querySelectorAll('#tone-filter [data-tone]').forEach((b) => (b.onclick = () => { const t = b.dataset.tone; toneFilter.has(t) ? toneFilter.delete(t) : toneFilter.add(t); localStorage.setItem('riq.tones', JSON.stringify([...toneFilter])); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); filterInboxList() }))
+    document.getElementById('tone-clear')?.addEventListener('click', () => { toneFilter.clear(); localStorage.setItem('riq.tones', '[]'); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); filterInboxList() })
+  }
   async function renderInbox(caseId) {
     if (!document.getElementById('inbox-list')) {
       app.innerHTML = `
@@ -935,7 +948,19 @@
                 ${[['active', 'Active'], ['open', 'Open'], ['awaiting_customer', 'Awaiting customer'], ['resolved', 'Resolved'], ['all', 'All'], ...(isManager ? [['archived', 'Archived']] : [])].map(([v, l]) => `<option value="${v}" ${listFilter === v ? 'selected' : ''}>${l}</option>`).join('')}
               </select>
             </div>
-            <p class="px-3 py-1 text-[10px] text-slate-400 border-b border-slate-100">Overdue → <span class="tone tone-angry">ANGRY</span>/<span class="tone tone-dispute">DISPUTE</span> → by deadline</p>
+            ${toneFilterBar()}
+            <div id="bulk-bar" class="hidden px-3 py-2 border-b border-slate-200 bg-slate-50 text-xs">
+              <div class="flex items-center justify-between mb-1"><span><strong id="bulk-count">0</strong> selected</span><button id="bulk-clear" class="text-slate-500 underline">clear</button></div>
+              <div class="flex flex-wrap gap-1">
+                <button data-bulk="resolve" class="px-2 py-1 rounded bg-emerald-600 text-white"><i class="fas fa-check mr-1"></i>Mark resolved</button>
+                <select data-bulk-select="status" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Set status…</option><option value="open">Open</option><option value="awaiting_customer">Awaiting customer</option></select>
+                <select data-bulk-select="assign" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Assign to…</option><option value="__none">Unassigned</option></select>
+                <select data-bulk-select="tone" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Change tone…</option>${Object.entries(TONE_META).map(([v, m]) => `<option value="${v}">${m.word}</option>`).join('')}</select>
+                ${isManager ? '<button data-bulk="archive" class="px-2 py-1 rounded border border-slate-300 text-slate-700"><i class="fas fa-box-archive mr-1"></i>Archive</button>' : ''}
+              </div>
+              <div class="mt-1 text-[10px] text-slate-400"><i class="fas fa-shield-halved"></i> Bulk actions never send email. Resolve skips open A-to-Z / chargeback, battery flags and drafts awaiting a manager.</div>
+            </div>
+            <div class="px-3 py-1 text-[10px] text-slate-400 border-b border-slate-100 flex items-center justify-between"><span>Overdue → <span class="tone tone-angry">ANGRY</span>/<span class="tone tone-dispute">DISPUTE</span> → by deadline</span><label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="select-all"> all visible</label></div>
             <div id="inbox-list" class="pane-scroll"><p class="p-4 text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p></div>
             <div id="inbox-count" class="px-3 py-1.5 text-[10px] text-slate-400 border-t border-slate-100"></div>
           </div>
@@ -943,7 +968,9 @@
             <div class="h-full flex items-center justify-center text-slate-400 text-sm p-10 text-center"><div><i class="fas fa-comments text-4xl mb-3 block text-slate-200"></i>Select a conversation</div></div>
           </div></div>
         </section>`
-      document.getElementById('inbox-filter').onchange = (e) => { listFilter = e.target.value; localStorage.setItem('riq.filter', listFilter); loadInboxList() }
+      document.getElementById('inbox-filter').onchange = (e) => { listFilter = e.target.value; localStorage.setItem('riq.filter', listFilter); selected.clear(); loadInboxList() }
+      wireToneFilter()
+      wireBulkBar()
       await loadInboxList()
     }
     if (caseId) renderCase(caseId)
@@ -956,14 +983,14 @@
   function filterInboxList() {
     const el = document.getElementById('inbox-list'); if (!el) return
     const q = searchTerm
-    const rows = inboxCases.filter((k) => !q || [k.order_id, k.customer_first_name, k.customer_last_name, k.subject, k.case_ref].some((v) => String(v || '').toLowerCase().includes(q)))
+    const rows = inboxCases.filter((k) => (!q || [k.order_id, k.customer_first_name, k.customer_last_name, k.subject, k.case_ref].some((v) => String(v || '').toLowerCase().includes(q))) && (!toneFilter.size || toneFilter.has(k.tone || 'none')))
     const cur = Number((location.pathname.match(/^\/cases\/(\d+)$/) || [])[1])
     el.innerHTML = rows.length ? rows.map((k) => {
       const d = deadlineInfo(k, inboxNow)
       const pri = k.tone === 'angry' || k.tone === 'dispute' || k.battery_flag || d.urgency === 0 ? 'high' : d.urgency === 1 || k.open_atoz || k.open_chargebacks ? 'medium' : 'low'
       return `<a href="/cases/${k.id}" data-link data-case-id="${k.id}" class="ticket-item ${k.id === cur ? 'active' : ''} ${d.urgency === 0 ? 'overdue' : ''}">
         <div class="flex items-start justify-between gap-2">
-          <div class="text-sm font-medium leading-snug line-clamp-2">${esc(k.subject)}</div>
+          <label class="flex items-start gap-2 min-w-0" onclick="event.stopPropagation()"><input type="checkbox" data-select="${k.id}" class="mt-1" ${selected.has(k.id) ? 'checked' : ''}><span class="text-sm font-medium leading-snug line-clamp-2">${esc(k.subject)}</span></label>
           <span class="pill pill-${pri}">${pri.toUpperCase()}</span>
         </div>
         <div class="mt-0.5 text-[11px] text-slate-500">${esc(k.customer_first_name)} ${esc(k.customer_last_name || '')} · <span class="font-mono">${esc(k.order_id || k.case_ref)}</span></div>
@@ -974,6 +1001,46 @@
       </a>`
     }).join('') : '<p class="p-6 text-sm text-slate-400 text-center">No conversations match.</p>'
     const c = document.getElementById('inbox-count'); if (c) c.textContent = `${rows.length} of ${inboxCases.length} conversation(s)`
+    el.querySelectorAll('[data-select]').forEach((cb) => { cb.onclick = (e) => { e.stopPropagation(); const id = Number(cb.dataset.select); cb.checked ? selected.add(id) : selected.delete(id); updateBulkBar() } })
+    const sa = document.getElementById('select-all'); if (sa) { sa.checked = rows.length > 0 && rows.every((k) => selected.has(k.id)); sa.onchange = () => { rows.forEach((k) => (sa.checked ? selected.add(k.id) : selected.delete(k.id))); filterInboxList() } }
+    updateBulkBar()
+  }
+  function updateBulkBar() {
+    const bar = document.getElementById('bulk-bar'); if (!bar) return
+    bar.classList.toggle('hidden', selected.size === 0)
+    document.getElementById('bulk-count').textContent = selected.size
+  }
+  async function wireBulkBar() {
+    const bar = document.getElementById('bulk-bar'); if (!bar) return
+    try { const { data } = await axios.get('/api/cases/' + (inboxCases[0]?.id || 1)); const sel = bar.querySelector('[data-bulk-select="assign"]'); (data.staff || []).forEach((u) => { const o = document.createElement('option'); o.value = u.id; o.textContent = u.name; sel.appendChild(o) }) } catch {}
+    document.getElementById('bulk-clear').onclick = () => { selected.clear(); filterInboxList() }
+    const run = async (action, value) => {
+      const ids = [...selected]
+      const label = { resolve: 'mark as resolved', status: `set status to ${value}`, assign: 'assign', tone: `set tone to ${value}`, archive: 'archive' }[action]
+      if (!confirm(`${label} ${ids.length} case(s)?`)) return
+      try {
+        const { data } = await axios.post('/api/cases/bulk', { ids, action, value })
+        showBulkResult(data)
+        selected.clear(); await loadInboxList(); refreshBadges()
+        const cur = Number((location.pathname.match(/^\/cases\/(\d+)$/) || [])[1]); if (cur && ids.includes(cur)) renderCase(cur)
+      } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+    }
+    bar.querySelectorAll('[data-bulk]').forEach((b) => (b.onclick = () => run(b.dataset.bulk)))
+    bar.querySelectorAll('[data-bulk-select]').forEach((sel) => (sel.onchange = () => { if (!sel.value) return; const v = sel.value === '__none' ? null : sel.value; const a = sel.dataset.bulkSelect; sel.value = ''; run(a, v) }))
+  }
+  function showBulkResult(r) {
+    const verb = { resolve: 'resolved', status: 'updated', assign: 'assigned', tone: 'relabelled', archive: 'archived' }[r.action] || 'done'
+    if (!r.skipped.length) return toast(`${r.done.length} case(s) ${verb}`)
+    const modal = document.createElement('div')
+    modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50'
+    modal.innerHTML = `<div class="bg-white rounded-xl shadow-xl max-w-lg w-full p-5">
+      <h3 class="font-bold mb-1">${r.done.length} ${verb}, ${r.skipped.length} skipped</h3>
+      <p class="text-xs text-slate-500 mb-3">These need individual attention and were left unchanged:</p>
+      <ul class="text-sm space-y-1 max-h-72 overflow-auto">${r.skipped.map((s) => `<li class="flex gap-2"><a href="/cases/${s.id}" data-link class="font-mono text-xs text-sky-700 hover:underline whitespace-nowrap">${esc(s.case_ref || '#' + s.id)}</a><span class="text-slate-700">${esc(s.reason)}</span></li>`).join('')}</ul>
+      <div class="mt-4 text-right"><button id="bulk-ok" class="px-4 py-2 rounded-md bg-slate-900 text-white text-sm">OK</button></div></div>`
+    document.body.appendChild(modal)
+    modal.querySelector('#bulk-ok').onclick = () => modal.remove()
+    modal.addEventListener('click', (e) => { if (e.target.closest('a[data-link]')) modal.remove() })
   }
 
   // ---------- DASHBOARD ----------

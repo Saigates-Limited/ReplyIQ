@@ -84,6 +84,86 @@ casesApi.get('/', async (c) => {
   }
 })
 
+
+// POST /api/cases/bulk  { ids:number[], action:'resolve'|'status'|'assign'|'tone'|'archive', value? }
+// → { done:number[], skipped:[{id, case_ref, reason}] }
+// Bulk RESOLVE skips: open A-to-Z, open chargeback, battery_flag, or a draft awaiting manager approval.
+// There is deliberately NO bulk send: email leaves only via POST /api/drafts/:id/send and its gates.
+const BULK_ACTIONS = ['resolve', 'status', 'assign', 'tone', 'archive'] as const
+casesApi.post('/bulk', async (c) => {
+  const user = c.get('user')
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: unknown; action?: string; value?: unknown }
+  const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))] : []
+  const action = body.action as (typeof BULK_ACTIONS)[number]
+  if (!ids.length) return c.json({ error: 'No cases selected' }, 400)
+  if (ids.length > 200) return c.json({ error: 'Select at most 200 cases at a time' }, 400)
+  if (!BULK_ACTIONS.includes(action)) return c.json({ error: 'Unknown action' }, 400)
+  if (action === 'archive' && user.role !== 'manager') return c.json({ error: 'Only a manager can archive cases' }, 403)
+
+  let value: unknown = null
+  if (action === 'status') {
+    const r = coerce('status', body.value)
+    if (!r.ok || r.value === 'resolved') return c.json({ error: 'Status must be open or awaiting_customer (use Mark resolved for resolved)' }, 422)
+    value = r.value
+  } else if (action === 'assign') {
+    if (body.value !== null && body.value !== '' && body.value !== undefined) {
+      const r = coerce('user', body.value)
+      if (!r.ok) return c.json({ error: r.error }, 422)
+      value = r.value
+    }
+  } else if (action === 'tone') {
+    const r = coerce('tone', body.value)
+    if (!r.ok) return c.json({ error: r.error }, 422)
+    value = r.value
+  }
+
+  const sql = getDb(c.env)
+  try {
+    const list = ids.join(',')
+    const rows = await sql<any[]>`
+      SELECT c.id, c.case_ref, c.battery_flag, c.archived_at,
+        EXISTS (SELECT 1 FROM amazon_events e WHERE e.case_id = c.id AND e.kind LIKE 'atoz%' AND e.status NOT IN ('won','lost','closed')) AS open_atoz,
+        EXISTS (SELECT 1 FROM amazon_events e WHERE e.case_id = c.id AND e.kind = 'chargeback' AND e.status NOT IN ('won','lost','closed')) AS open_chargeback,
+        EXISTS (SELECT 1 FROM drafts d WHERE d.case_id = c.id AND d.status = 'draft' AND d.needs_manager = TRUE) AS manager_draft
+      FROM cases c WHERE c.id = ANY(string_to_array(${list}, ',')::int[])`
+    const found = new Map(rows.map((r) => [r.id, r]))
+    const done: number[] = []
+    const skipped: { id: number; case_ref: string | null; reason: string }[] = []
+    const todo: number[] = []
+    for (const id of ids) {
+      const r = found.get(id)
+      if (!r) { skipped.push({ id, case_ref: null, reason: 'not found' }); continue }
+      if (action === 'resolve') {
+        const why: string[] = []
+        if (r.open_atoz) why.push('open A-to-Z claim')
+        if (r.open_chargeback) why.push('open chargeback')
+        if (r.battery_flag) why.push('battery/heat flag')
+        if (r.manager_draft) why.push('draft awaiting manager')
+        if (why.length) { skipped.push({ id, case_ref: r.case_ref, reason: why.join(', ') }); continue }
+      }
+      if (action === 'archive' && r.archived_at) { skipped.push({ id, case_ref: r.case_ref, reason: 'already archived' }); continue }
+      todo.push(id)
+    }
+    if (todo.length) {
+      const tl = todo.join(',')
+      await sql.begin(async (tx) => {
+        if (action === 'resolve') await tx`UPDATE cases SET status = 'resolved' WHERE id = ANY(string_to_array(${tl}, ',')::int[])`
+        else if (action === 'status') await tx`UPDATE cases SET status = ${value as string} WHERE id = ANY(string_to_array(${tl}, ',')::int[])`
+        else if (action === 'assign') await tx`UPDATE cases SET assigned_to = ${value as number | null} WHERE id = ANY(string_to_array(${tl}, ',')::int[])`
+        else if (action === 'tone') {
+          await tx`UPDATE cases SET tone = ${value as string} WHERE id = ANY(string_to_array(${tl}, ',')::int[])`
+          await tx`UPDATE messages SET tone = ${value as string}, tone_source = 'staff'
+                   WHERE id IN (SELECT DISTINCT ON (case_id) id FROM messages WHERE case_id = ANY(string_to_array(${tl}, ',')::int[]) AND direction = 'inbound' AND kind <> 'event' ORDER BY case_id, sent_at DESC)`
+        } else if (action === 'archive') await tx`UPDATE cases SET archived_at = now(), archived_by = ${user.id} WHERE id = ANY(string_to_array(${tl}, ',')::int[])`
+      })
+      done.push(...todo)
+    }
+    return c.json({ done, skipped, action })
+  } finally {
+    await sql.end()
+  }
+})
+
 // GET /api/cases/:id  -> case + thread + drafts
 casesApi.get('/:id', async (c) => {
   const id = Number(c.req.param('id'))
