@@ -387,30 +387,42 @@ const LEGACY_ISSUE: Record<string, string> = {
 }
 const LEGACY_CARRIER: Record<string, CarrierId> = { 'Royal Mail': 'royal_mail', 'DPD': 'dpd', 'FedEx': 'fedex' }
 carrierApi.post('/import', requireManager, async (c) => {
+  // The UI sends the file in chunks (IMPORT_CHUNK parcels per request) so one request never exceeds the Worker's
+  // CPU budget — a single 120-parcel import used ~1.7 s CPU and tripped Cloudflare's limit, which then 503'd every request for minutes.
   const b = (await c.req.json().catch(() => ({}))) as { cases?: any[] }
   const list = Array.isArray(b.cases) ? b.cases.slice(0, 1000) : []
   if (!list.length) return c.json({ error: 'No cases in the file' }, 400)
   const sql = getDb(c.env)
   const out = { created: 0, updated: 0, skipped: [] as string[] }
+  const ts = (d: any) => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00Z`) : null)
   try {
+    // One lookup for all order ids and all tracking numbers in this chunk, instead of two queries per parcel
+    const orderIds = [...new Set(list.map((x) => (x.orderId ? String(x.orderId).slice(0, 60) : null)).filter(Boolean))] as string[]
+    const caseByOrder = new Map<string, number>()
+    if (orderIds.length) for (const r of await sql`SELECT DISTINCT ON (order_id) order_id, id FROM cases WHERE order_id = ANY(string_to_array(${orderIds.join('\u0001')}, E'\\x01')) ORDER BY order_id, id`) caseByOrder.set(r.order_id, r.id)
+    const keys = list.map((x) => ({ carrier: LEGACY_CARRIER[x.carrier], tracking: x.tracking ? normaliseTracking(String(x.tracking)) : null })).filter((k) => k.carrier && k.tracking)
+    const existingByKey = new Map<string, { id: number; source: string }>()
+    if (keys.length) for (const r of await sql`SELECT id, source, carrier, tracking FROM carrier_cases WHERE carrier = ANY(string_to_array(${keys.map((k) => k.carrier).join(',')}, ',')) AND tracking = ANY(string_to_array(${keys.map((k) => k.tracking).join('\u0001')}, E'\\x01'))`) existingByKey.set(`${r.carrier}:${r.tracking}`, r)
+
     for (const x of list) {
       const carrier = LEGACY_CARRIER[x.carrier]
       const status = LEGACY_STATUS[x.status]
       if (!carrier || !status) { out.skipped.push(`${x.id ?? x.tracking}: unknown carrier/status`); continue }
       const tracking = x.tracking ? normaliseTracking(String(x.tracking)) : null
       const orderId = x.orderId ? String(x.orderId).slice(0, 60) : null
-      const [kase] = orderId ? await sql`SELECT id FROM cases WHERE order_id = ${orderId} ORDER BY id LIMIT 1` : [null]
-      const ts = (d: any) => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00Z`) : null)
+      const refs = (x.caseRefs ?? []).map(String)
       const vals = {
-        case_id: kase?.id ?? null, carrier, tracking, order_id: orderId, issue: LEGACY_ISSUE[x.issue] ?? 'other', status, product: x.product ?? null,
-        value: x.value ?? null, posted_on: x.posted ?? null, carrier_refs: sql.json((x.caseRefs ?? []).map(String)) as any, claim_ref: x.claimRef ?? null,
+        case_id: (orderId && caseByOrder.get(orderId)) ?? null, carrier, tracking, order_id: orderId, issue: LEGACY_ISSUE[x.issue] ?? 'other', status, product: x.product ?? null,
+        value: x.value ?? null, posted_on: x.posted ?? null, carrier_refs: sql.json(refs) as any, claim_ref: x.claimRef ?? null,
         raised_at: ts(x.raised), last_us_at: ts(x.lastUs), last_carrier_at: ts(x.lastCarrier),
         carrier_reply_type: x.carrierReplyType === 'Auto-ack only' ? 'auto_ack' : x.carrierReplyType === 'Replied' ? 'replied' : x.carrierReplyType === 'Decision' ? 'decision' : null,
         sla_due_at: x.slaDue ? new Date(`${x.slaDue}T22:59:59Z`) : null, claimed: x.claimed ?? null, paid: x.paid ?? null, paid_on: x.paidDate ?? null,
         next_action: x.nextAction ?? null, next_due: x.nextDue ?? null, notes: x.notes ?? null, source: 'import',
         closed_at: CLOSED_STATUSES.includes(status) ? ts(x.closedOn) ?? new Date() : null,
       }
-      const existing = tracking ? (await sql`SELECT id, source FROM carrier_cases WHERE carrier = ${carrier} AND tracking = ${tracking}`)[0] : (await sql`SELECT id, source FROM carrier_cases WHERE carrier_refs ?| string_to_array(${(x.caseRefs ?? []).map(String).join(',')}, ',') AND tracking IS NULL LIMIT 1`)[0]
+      const existing = tracking
+        ? existingByKey.get(`${carrier}:${tracking}`)
+        : refs.length ? (await sql`SELECT id, source FROM carrier_cases WHERE carrier_refs ?| string_to_array(${refs.join('\u0001')}, E'\\x01') AND tracking IS NULL LIMIT 1`)[0] : undefined
       let id: number
       if (existing && existing.source === 'import') { await sql`UPDATE carrier_cases SET ${sql(vals as any)} WHERE id = ${existing.id}`; id = existing.id; out.updated++ }
       else if (existing) {
@@ -418,15 +430,23 @@ carrierApi.post('/import', requireManager, async (c) => {
         await sql`UPDATE carrier_cases SET case_id = COALESCE(case_id, ${vals.case_id}), order_id = COALESCE(order_id, ${vals.order_id}), product = COALESCE(product, ${vals.product}),
                     value = COALESCE(value, ${vals.value}), posted_on = COALESCE(posted_on, ${vals.posted_on}), claim_ref = COALESCE(claim_ref, ${vals.claim_ref}),
                     raised_at = LEAST(raised_at, ${vals.raised_at}), notes = COALESCE(notes, ${vals.notes}),
-                    carrier_refs = (SELECT COALESCE(jsonb_agg(DISTINCT r), '[]'::jsonb) FROM jsonb_array_elements_text(carrier_refs || ${JSON.stringify((x.caseRefs ?? []).map(String))}::text::jsonb) r)
+                    carrier_refs = (SELECT COALESCE(jsonb_agg(DISTINCT r), '[]'::jsonb) FROM jsonb_array_elements_text(carrier_refs || ${JSON.stringify(refs)}::text::jsonb) r)
                   WHERE id = ${existing.id}`
         id = existing.id; out.updated++
       }
       else { const [r] = await sql`INSERT INTO carrier_cases ${sql(vals as any)} RETURNING id`; id = r.id; out.created++ }
-      for (const ev of (x.timeline ?? []).slice(-15)) {
+      // Timeline notes: one statement per parcel (not one per note)
+      const events = (x.timeline ?? []).slice(-15)
+      if (events.length) {
+        const kinds = events.map((ev: any) => 'import_' + (ev.by ?? 'system'))
+        const clean = (t: any) => String(t ?? '').replace(/\u0001/g, ' ')
+        const bodies = events.map((ev: any) => clean(ev.text).slice(0, 500))
+        const summaries = events.map((ev: any) => clean(ev.text).slice(0, 200))
+        const when = events.map((ev: any) => (ts(ev.d) ?? new Date()).toISOString())
         await sql`INSERT INTO carrier_messages (carrier_case_id, direction, kind, body, summary, sent_at)
-                  SELECT ${id}, 'note', ${'import_' + (ev.by ?? 'system')}, ${String(ev.text ?? '').slice(0, 500)}, ${String(ev.text ?? '').slice(0, 200)}, ${ts(ev.d) ?? new Date()}
-                  WHERE NOT EXISTS (SELECT 1 FROM carrier_messages WHERE carrier_case_id = ${id} AND kind LIKE 'import_%' AND body = ${String(ev.text ?? '').slice(0, 500)})`
+                  SELECT ${id}, 'note', n.kind, n.body, n.summary, n.sent_at::timestamptz
+                  FROM unnest(string_to_array(${kinds.join('\u0001')}, E'\\x01'), string_to_array(${bodies.join('\u0001')}, E'\\x01'), string_to_array(${summaries.join('\u0001')}, E'\\x01'), string_to_array(${when.join('\u0001')}, E'\\x01')) AS n(kind, body, summary, sent_at)
+                  WHERE NOT EXISTS (SELECT 1 FROM carrier_messages m WHERE m.carrier_case_id = ${id} AND m.kind LIKE 'import_%' AND m.body = n.body)`
       }
     }
     return c.json(out)

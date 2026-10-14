@@ -281,7 +281,7 @@ window.RiqCarrier = function (h) {
         <label class="flex items-center gap-2"><input type="checkbox" data-s="auto_open" ${s.auto_open ? 'checked' : ''} ${ro}> When a customer reports a delivery problem, prepare the investigation email automatically (still needs your click to send)</label>
         <label class="flex items-center gap-2"><input type="checkbox" data-s="auto_chase" ${s.auto_chase ? 'checked' : ''} ${ro}> When a carrier's reply is late, prepare a chase email automatically</label>
       </section>
-      ${isManager ? `<section class="rounded-md border border-slate-200 p-3"><h3 class="field-label mb-1">Import from the old Carrier Claims Desk</h3><p class="text-xs text-slate-500 mb-2">Choose the <code>carrier-claims-export.json</code> file. Existing parcels are updated, nothing is deleted, nothing is sent.</p><input type="file" accept="application/json" data-import class="text-xs"></section>` : ''}
+      ${isManager ? `<section class="rounded-md border border-slate-200 p-3"><h3 class="field-label mb-1">Import from the old Carrier Claims Desk</h3><p class="text-xs text-slate-500 mb-2">Choose the <code>carrier-claims-export.json</code> file. Existing parcels are updated, nothing is deleted, nothing is sent.</p><input type="file" accept="application/json" data-import class="text-xs"><p class="text-xs text-slate-500 mt-1" data-import-status></p></section>` : ''}
       <div class="flex justify-end gap-2"><button data-x class="px-3 py-2 rounded-md border border-slate-300 text-sm">Close</button>${isManager ? '<button data-save class="px-3 py-2 rounded-md bg-slate-900 text-white text-sm">Save</button>' : ''}</div>
     </div>`
     document.body.appendChild(modal)
@@ -293,8 +293,15 @@ window.RiqCarrier = function (h) {
         const json = JSON.parse(await file.text())
         const cases = Array.isArray(json) ? json : json.cases
         if (!confirm(`Import ${cases?.length || 0} parcel(s)?`)) return
-        const { data: r } = await axios.post('/api/carrier/import', { cases }, { timeout: 120000 })
-        toast(`Imported: ${r.created} new, ${r.updated} updated${r.skipped.length ? `, ${r.skipped.length} skipped` : ''}`); modal.remove(); renderDesk()
+        // Chunked: the Worker has a small CPU budget per request, so 120 parcels in one go trips Cloudflare's limit
+        const CHUNK = 15, total = { created: 0, updated: 0, skipped: [] }
+        const label = modal.querySelector('[data-import-status]')
+        for (let i = 0; i < cases.length; i += CHUNK) {
+          if (label) label.textContent = `Importing ${Math.min(i + CHUNK, cases.length)} / ${cases.length}…`
+          const { data: r } = await axios.post('/api/carrier/import', { cases: cases.slice(i, i + CHUNK) }, { timeout: 60000 })
+          total.created += r.created; total.updated += r.updated; total.skipped.push(...(r.skipped || []))
+        }
+        toast(`Imported: ${total.created} new, ${total.updated} updated${total.skipped.length ? `, ${total.skipped.length} skipped` : ''}`); modal.remove(); renderDesk()
       } catch (ex) { err(ex) }
     })
     modal.querySelector('[data-save]')?.addEventListener('click', async () => {
