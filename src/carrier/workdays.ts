@@ -8,9 +8,16 @@ export const BANK_HOLIDAYS = new Set([
 ])
 export const BANK_HOLIDAYS_UNTIL = '2027-12-31'
 
+// Intl.DateTimeFormat construction is expensive (~1ms each, more on a cold isolate). The summary/list routes call these
+// helpers several times per carrier case, so build the formatters once per isolate and reuse them.
+let londonYmdFmt: Intl.DateTimeFormat | undefined
+let londonHourFmt: Intl.DateTimeFormat | undefined
+const ymdFmt = () => (londonYmdFmt ??= new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }))
+const hourFmt = () => (londonHourFmt ??= new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }))
+
 /** YYYY-MM-DD of an instant in London. */
 export function londonDate(d: Date): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
+  return ymdFmt().format(d)
 }
 
 const addDays = (ymd: string, n: number) => {
@@ -38,7 +45,7 @@ export function addWorkingDays(from: Date, n: number): string {
 export function endOfLondonDay(ymd: string): Date {
   // 23:59:59 London; BST/GMT offset worked out from the formatter
   const probe = new Date(`${ymd}T12:00:00Z`)
-  const hourInLondon = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }).format(probe))
+  const hourInLondon = Number(hourFmt().format(probe))
   const offsetH = hourInLondon - 12 // 1 in summer, 0 in winter
   return new Date(Date.parse(`${ymd}T23:59:59Z`) - offsetH * 3600_000)
 }

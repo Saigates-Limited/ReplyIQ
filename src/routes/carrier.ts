@@ -5,7 +5,7 @@ import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
 import { accessToken, listConnections, sendEmail, messageIdHeader } from '../gmail'
 import { CARRIERS, normaliseCarrier, normaliseTracking, carrierOfTracking, type CarrierId } from '../carrier/carriers'
-import { onOutbound, onClaimSubmitted, CLOSED_STATUSES, ON_US_STATUSES, STATUS_LABEL, type CarrierStatus } from '../carrier/engine'
+import { onOutbound, onClaimSubmitted, CLOSED_STATUSES, ON_US_STATUSES, WAITING_STATUSES, STATUS_LABEL, type CarrierStatus } from '../carrier/engine'
 import { ISSUE_LABEL, detectCarrierIssue } from '../carrier/detect'
 import { inboundLabel } from '../carrier/classify'
 import type { DraftKind } from '../carrier/templates'
@@ -49,22 +49,36 @@ carrierApi.get('/cases', async (c) => {
 })
 
 // GET /api/carrier/summary → KPI tiles (dashboard + carrier desk)
+// Summary is fetched on every page load and every badge refresh, so it is a single aggregate query:
+// loading + decorating every carrier case here pushed the Worker over its CPU budget once the desk filled up.
 carrierApi.get('/summary', async (c) => {
   const sql = getDb(c.env)
   try {
-    const rows = (await sql.unsafe(`${LIST_SQL}`)).map((k: any) => decorate(k))
-    const open = rows.filter((k: any) => !CLOSED_STATUSES.includes(k.status))
+    const closed = CLOSED_STATUSES.map((s) => `'${s}'`).join(',')
+    const waiting = WAITING_STATUSES.map((s) => `'${s}'`).join(',')
+    const onUs = ON_US_STATUSES.map((s) => `'${s}'`).join(',')
+    const [r] = await sql.unsafe(`
+      SELECT
+        COUNT(*) FILTER (WHERE status NOT IN (${closed}))::int AS open,
+        COUNT(*) FILTER (WHERE status IN (${waiting}) AND sla_due_at IS NOT NULL AND sla_due_at < now())::int AS chase_now,
+        COUNT(*) FILTER (WHERE status IN (${onUs}))::int AS on_us,
+        COUNT(*) FILTER (WHERE customer_update_due)::int AS customer_updates_due,
+        COALESCE(SUM(value) FILTER (WHERE status NOT IN (${closed})), 0)::float8 AS at_risk,
+        COALESCE(SUM(paid), 0)::float8 AS recovered,
+        (SELECT COUNT(*) FROM carrier_drafts d WHERE d.status IN ('draft','approved'))::int AS drafts_ready
+      FROM carrier_cases`)
+    const perCarrier = await sql.unsafe(`SELECT carrier, COUNT(*)::int AS n FROM carrier_cases WHERE status NOT IN (${closed}) GROUP BY carrier`)
     const byCarrier: Record<string, number> = {}
-    for (const k of open) byCarrier[k.carrier_label] = (byCarrier[k.carrier_label] ?? 0) + 1
+    for (const row of perCarrier as any[]) byCarrier[CARRIERS[row.carrier as CarrierId]?.label ?? row.carrier] = row.n
     return c.json({
-      open: open.length,
+      open: r.open,
       by_carrier: byCarrier,
-      chase_now: open.filter((k: any) => k.display_status === 'sla_breach').length,
-      on_us: open.filter((k: any) => ON_US_STATUSES.includes(k.status)).length,
-      customer_updates_due: rows.filter((k: any) => k.customer_update_due).length,
-      drafts_ready: rows.reduce((n: number, k: any) => n + (k.live_drafts?.length ?? 0), 0),
-      at_risk: Math.round(open.reduce((s: number, k: any) => s + Number(k.value ?? 0), 0) * 100) / 100,
-      recovered: Math.round(rows.reduce((s: number, k: any) => s + Number(k.paid ?? 0), 0) * 100) / 100,
+      chase_now: r.chase_now,
+      on_us: r.on_us,
+      customer_updates_due: r.customer_updates_due,
+      drafts_ready: r.drafts_ready,
+      at_risk: Math.round(Number(r.at_risk) * 100) / 100,
+      recovered: Math.round(Number(r.recovered) * 100) / 100,
       bank_holidays_until: BANK_HOLIDAYS_UNTIL,
     })
   } catch (e) { if (tableMissing(e)) return c.json({ open: 0, by_carrier: {}, chase_now: 0, on_us: 0, customer_updates_due: 0, drafts_ready: 0, at_risk: 0, recovered: 0, migration_needed: true }); throw e } finally { await sql.end() }
