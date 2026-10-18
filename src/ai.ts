@@ -188,7 +188,7 @@ export async function generateDraft(
   env: Bindings,
   kase: CaseRow,
   messages: MessageRow[],
-  opts: { events?: EventRow[]; mode?: DraftMode; kbRules?: KbRule[]; customPrompt?: string | null } = {}
+  opts: { events?: EventRow[]; mode?: DraftMode; kbRules?: KbRule[]; customPrompt?: string | null; revision?: { previousDraft: string; guidance: string } | null } = {}
 ): Promise<{ result: AiResult; payload: ReturnType<typeof buildPayload>; mode: DraftMode; kbRuleIds: number[]; systemPrompt: string }> {
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured on the server')
   const mode: DraftMode = opts.mode && DRAFT_MODES.includes(opts.mode) ? opts.mode : 'customer'
@@ -197,9 +197,13 @@ export async function generateDraft(
 
   const modeBlock = mode === 'customer' ? '' : `${MODE_INSTRUCTIONS[mode]}\nIn this mode the "reply" field holds the text to paste, not an email to the customer.\n\n`
   const eventsBlock = payload.events.length ? `AMAZON EVENTS ON THIS ORDER:\n${JSON.stringify(payload.events, null, 2)}\n\n` : ''
+  // Revision: the agent read the previous draft and asked for specific changes. The policy still wins over the guidance.
+  const revisionBlock = opts.revision?.guidance?.trim()
+    ? `\n\nPREVIOUS DRAFT (rejected by the agent):\n${opts.revision.previousDraft.slice(0, 6000)}\n\nCHANGES THE AGENT WANTS:\n${opts.revision.guidance.trim().slice(0, 2000)}\n\nRewrite the reply applying these changes. Keep everything else that was correct. If a requested change would break the policy above, do NOT apply it; say why under staff_notes instead.`
+    : ''
   const userMsg = `${modeBlock}CASE INPUT:\n${JSON.stringify(payload.caseInput, null, 2)}\n\n${eventsBlock}ORDER TIMELINE (oldest first):\n${payload.thread
     .map((m) => `[${m.from} @ ${m.sent_at}]\n${m.text}`)
-    .join('\n\n')}\n\nReturn the JSON object described under "## Output" and nothing else.`
+    .join('\n\n')}${revisionBlock}\n\nReturn the JSON object described under "## Output" and nothing else.`
 
   // Knowledge base (staff-added rules) is appended AFTER the policy file; the file itself is never changed.
   const kbRules = opts.kbRules ?? []

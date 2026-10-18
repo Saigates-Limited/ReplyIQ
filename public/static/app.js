@@ -8,12 +8,17 @@
   const fmtDate = (d) => (d ? dayjs(d).format('DD MMM YYYY') : '—')
   const fmtDateTime = (d) => (d ? dayjs(d).format('DD MMM YYYY, HH:mm') : '—')
   const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : '—')
-  const STATUS_LABEL = { open: 'Open', awaiting_customer: 'Awaiting customer', resolved: 'Resolved' }
+  const STATUS_LABEL = { open: 'Open', awaiting_customer: 'Awaiting customer', update_customer: 'Update customer', resolved: 'Resolved' }
   const STATUS_CLASS = {
     open: 'bg-blue-100 text-blue-800',
     awaiting_customer: 'bg-violet-100 text-violet-800',
+    update_customer: 'bg-amber-100 text-amber-800',
     resolved: 'bg-slate-200 text-slate-700',
   }
+  // Inbox folders (sidebar). "open" = every unresolved case (what used to be Active + Open).
+  const FOLDERS = [['open', 'Open'], ['awaiting_customer', 'Awaiting customer'], ['update_customer', 'Update customer'], ['resolved', 'Resolved'], ['all', 'All']]
+  const folderList = () => [...FOLDERS, ...(isManager ? [['archived', 'Archive']] : [])]
+  const FOLDER_ICON = { open: 'fa-envelope-open', awaiting_customer: 'fa-hourglass-half', update_customer: 'fa-bell', resolved: 'fa-circle-check', all: 'fa-layer-group', archived: 'fa-box-archive' }
 
   // Tone labels (AI-suggested, staff can override). Order = severity rank.
   const TONE_META = {
@@ -69,11 +74,13 @@
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
     const p = location.pathname
     const cm = p.match(/^\/carriers\/(\d+)$/)
-    setActiveNav(m || p === '/inbox' ? 'messages' : p.startsWith('/carriers') ? 'carriers' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
+    const fm = p.match(/^\/inbox\/([a-z_]+)$/)
+    if (fm && folderList().some(([v]) => v === fm[1])) { listFilter = fm[1]; localStorage.setItem('riq.filter', listFilter) }
+    setActiveNav(m || p === '/inbox' || fm ? 'messages' : p.startsWith('/carriers') ? 'carriers' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
     refreshBadges()
     document.getElementById('sidebar')?.classList.remove('open')
     if (m) renderInbox(Number(m[1]))
-    else if (p === '/inbox') renderInbox(null)
+    else if (p === '/inbox' || fm) renderInbox(null)
     else if (p === '/staff') renderStaff()
     else if (p === '/gmail') renderGmail()
     else if (p === '/policy') renderPolicy()
@@ -117,6 +124,7 @@
   })
   function setActiveNav(name) {
     document.querySelectorAll('.nav-tab').forEach((a) => a.classList.toggle('active', a.dataset.nav === name))
+    document.querySelectorAll('[data-folder]').forEach((a) => a.classList.toggle('active', name === 'messages' && a.dataset.folder === listFilter))
   }
   let badgeTimer = 0
   async function refreshBadges() {
@@ -125,6 +133,7 @@
       const { data } = await axios.get('/api/events/counts')
       const set = (k, v) => { const el = document.querySelector(`[data-badge="${k}"]`); if (el) el.textContent = v ? String(v) : '' }
       set('atoz', data.atoz); set('returns', data.returns); set('chargebacks', data.chargebacks); set('messages', data.messages)
+      set('folder-open', data.messages); set('folder-awaiting_customer', data.awaiting_customer); set('folder-update_customer', data.update_customer)
       if (data.kb_pending !== undefined) set('kb', data.kb_pending)
       if (carrierUI) set('carriers', await carrierUI.badgeCount())
     } catch {}
@@ -155,7 +164,8 @@
   tick(); setInterval(tick, 30000)
 
   // ---------- CASE LIST ----------
-  let listFilter = localStorage.getItem('riq.filter') || 'active'
+  let listFilter = localStorage.getItem('riq.filter') || 'open'
+  if (listFilter === 'active') listFilter = 'open'
 
   async function renderList() {
     app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading cases…</p>`
@@ -172,7 +182,7 @@
     const urgent = cases.filter((k) => k.status !== 'resolved' && dlOf(k) && !dayjs(dlOf(k)).isBefore(now) && dayjs(dlOf(k)).diff(now, 'minute') < 240).length
     const hot = cases.filter((k) => k.status !== 'resolved' && (k.tone === 'angry' || k.tone === 'dispute')).length
 
-    const filters = [['active', 'Active'], ['open', 'Open'], ['awaiting_customer', 'Awaiting customer'], ['resolved', 'Resolved'], ['all', 'All'], ...(isManager ? [['archived', 'Archived']] : [])]
+    const filters = folderList()
 
     app.innerHTML = `
       <section id="case-list-section">
@@ -492,13 +502,17 @@
     const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB')
     return `<div class="mt-2 flex flex-wrap gap-2">${list.map((a) => {
       const url = `/api/gmail/attachments/${a.id}`
-      const img = /^image\/(jpeg|png|gif|webp)$/.test(a.mime_type)
+      const img = /^image\/(jpe?g|png|gif|webp)$/i.test(a.mime_type) || /\.(jpe?g|png|gif|webp)$/i.test(a.filename || "")
       const warn = a.amazon_allowed ? '' : '<span class="ml-1 text-[9px] px-1 rounded bg-amber-100 text-amber-800" title="Amazon would not accept this type if sent back">not Amazon-allowed</span>'
       return img
-        ? `<a href="${url}" target="_blank" rel="noopener" class="block"><img src="${url}" alt="${esc(a.filename)}" loading="lazy" class="max-h-40 max-w-[220px] rounded-md border border-slate-200 object-cover bg-slate-100"><div class="text-[10px] text-slate-500 mt-0.5">${esc(a.filename)} · ${fmtSize(a.size_bytes)}${warn}</div></a>`
+        ? `<a href="${url}" target="_blank" rel="noopener" class="block attachment-thumb" data-att="${a.id}"><div class="relative h-40 w-[220px] rounded-md border border-slate-200 bg-slate-100 overflow-hidden flex items-center justify-center text-slate-400 text-xs"><span class="att-state"><i class="fas fa-spinner fa-spin"></i></span><img src="${url}" alt="${esc(a.filename)}" loading="lazy" class="absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity"></div><div class="text-[10px] text-slate-500 mt-0.5"><i class="fas fa-image mr-1"></i>${esc(a.filename)} · ${fmtSize(a.size_bytes)}${warn}</div></a>`
         : `<a href="${url}" target="_blank" rel="noopener" class="attachment-chip"><i class="fas ${a.mime_type === 'application/pdf' ? 'fa-file-pdf text-red-600' : 'fa-paperclip'}"></i>${esc(a.filename)} <span class="text-slate-400">${fmtSize(a.size_bytes)}</span>${warn}</a>`
     }).join('')}</div><div class="text-[9px] text-slate-400 mt-1"><i class="fas fa-lock"></i> Attachments are shown to staff only — never sent to the AI</div>`
   }
+
+  // Image thumbnails: show a spinner until the proxy answers; on failure say so instead of leaving a blank box
+  document.addEventListener('load', (e) => { const img = e.target; if (img.tagName === 'IMG' && img.closest('.attachment-thumb')) { img.classList.remove('opacity-0'); img.parentElement.querySelector('.att-state')?.remove() } }, true)
+  document.addEventListener('error', (e) => { const img = e.target; if (img.tagName === 'IMG' && img.closest('.attachment-thumb')) { const st = img.parentElement.querySelector('.att-state'); if (st) st.innerHTML = '<i class="fas fa-triangle-exclamation text-amber-500 mr-1"></i>Could not load — click to open'; img.remove() } }, true)
 
   function chatItems(messages, events, attachments) {
     const attsByMsg = {}
@@ -722,6 +736,16 @@
               ${d.status === 'sending' ? '<span class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Sending…</span>' : ''}
             </span>
           </div>
+          ${locked ? '' : `
+          <section id="revise-panel" class="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/60 p-3">
+            <label class="field-label text-indigo-900" for="revise-text"><i class="fas fa-wand-magic-sparkles mr-1"></i>Not right? Tell the AI what to change</label>
+            <textarea id="revise-text" class="field-input text-sm mt-1" rows="2" placeholder="e.g. Shorter. Offer the repair option first, not the return. Don't mention the 30-day window. Ask for a photo of the screen."></textarea>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <button id="revise-btn" class="px-3 py-1.5 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700"><i class="fas fa-rotate mr-1"></i>Rewrite with these changes</button>
+              <span class="text-[11px] text-indigo-900/70">Your note is an instruction to the AI, never pasted into the reply. The policy still wins over your note. The current draft is kept in the history as superseded.</span>
+            </div>
+            ${d.agent_guidance ? `<div class="mt-2 text-[11px] text-indigo-900/80"><i class="fas fa-clock-rotate-left mr-1"></i>This version was rewritten from your request: <em>“${esc(d.agent_guidance)}”</em></div>` : ''}
+          </section>`}
           <dl class="mt-3 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
             <div>Generated ${fmtDateTime(d.created_at)} by ${esc(d.created_by_name || '—')}</div>
             ${d.edited_at ? `<div>Edited ${fmtDateTime(d.edited_at)} by ${esc(d.edited_by_name || '—')}</div>` : ''}
@@ -765,6 +789,24 @@
     document.getElementById('save-draft-btn')?.addEventListener('click', () =>
       act(() => axios.patch(`/api/drafts/${d.id}`, { draft_text: text.value, staff_notes: notes.value }), 'Draft saved and re-checked')
     )
+    const reviseBtn = document.getElementById('revise-btn'), reviseText = document.getElementById('revise-text')
+    if (reviseBtn) {
+      const go = async () => {
+        const guidance = reviseText.value.trim()
+        if (guidance.length < 3) { toast('Say what you want changed first', 'err'); reviseText.focus(); return }
+        reviseBtn.disabled = true; reviseBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Rewriting…'
+        try {
+          await axios.post(`/api/drafts/${d.id}/revise`, { guidance, draft_text: text.value }, { timeout: 90000 })
+          toast('Rewritten — review the new draft')
+          refresh()
+        } catch (err) {
+          toast(err.response?.data?.error || err.message, 'err')
+          reviseBtn.disabled = false; reviseBtn.innerHTML = '<i class="fas fa-rotate mr-1"></i>Rewrite with these changes'
+        }
+      }
+      reviseBtn.onclick = go
+      reviseText.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') go() })
+    }
     document.getElementById('copy-draft-btn').onclick = async () => {
       await navigator.clipboard.writeText(text.value)
       toast('Reply copied to clipboard')
@@ -1118,15 +1160,25 @@
     document.querySelectorAll('#tone-filter [data-tone]').forEach((b) => (b.onclick = () => { const t = b.dataset.tone; toneFilter.has(t) ? toneFilter.delete(t) : toneFilter.add(t); localStorage.setItem('riq.tones', JSON.stringify([...toneFilter])); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); filterInboxList() }))
     document.getElementById('tone-clear')?.addEventListener('click', () => { toneFilter.clear(); localStorage.setItem('riq.tones', '[]'); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); filterInboxList() })
   }
+  let inboxShellFilter = null
   async function renderInbox(caseId) {
-    if (!document.getElementById('inbox-list')) {
+    const shell = document.getElementById('inbox-list')
+    if (shell && inboxShellFilter !== listFilter) {
+      // Same inbox shell, different folder → update the heading/select and reload the list
+      inboxShellFilter = listFilter
+      const name = document.getElementById('inbox-folder-name'); if (name) name.innerHTML = `<i class="fas ${FOLDER_ICON[listFilter] || ''} mr-1 text-slate-400"></i>${esc((folderList().find(([v]) => v === listFilter) || ['', listFilter])[1])}`
+      const sel = document.getElementById('inbox-filter'); if (sel) sel.value = listFilter
+      selected.clear(); await loadInboxList()
+    }
+    if (!shell) {
+      inboxShellFilter = listFilter
       app.innerHTML = `
         <section class="inbox ${caseId ? 'show-detail' : ''}">
           <div class="pane pane-list">
             <div class="px-3 py-2 border-b border-slate-100 flex items-center justify-between gap-2">
-              <h1 class="font-semibold text-sm"><i class="fas fa-inbox mr-1 text-slate-400"></i>Inbox</h1>
-              <select id="inbox-filter" class="field-input py-1 text-xs mt-0" style="width:auto">
-                ${[['active', 'Active'], ['open', 'Open'], ['awaiting_customer', 'Awaiting customer'], ['resolved', 'Resolved'], ['all', 'All'], ...(isManager ? [['archived', 'Archived']] : [])].map(([v, l]) => `<option value="${v}" ${listFilter === v ? 'selected' : ''}>${l}</option>`).join('')}
+              <h1 class="font-semibold text-sm"><i class="fas fa-inbox mr-1 text-slate-400"></i>Inbox <span class="text-slate-400 font-normal">/</span> <span id="inbox-folder-name"><i class="fas ${FOLDER_ICON[listFilter] || ''} mr-1 text-slate-400"></i>${esc((folderList().find(([v]) => v === listFilter) || ['', listFilter])[1])}</span></h1>
+              <select id="inbox-filter" class="field-input py-1 text-xs mt-0" style="width:auto" title="Folder">
+                ${folderList().map(([v, l]) => `<option value="${v}" ${listFilter === v ? 'selected' : ''}>${l}</option>`).join('')}
               </select>
             </div>
             ${toneFilterBar()}
@@ -1134,7 +1186,7 @@
               <div class="flex items-center justify-between mb-1"><span><strong id="bulk-count">0</strong> selected</span><button id="bulk-clear" class="text-slate-500 underline">clear</button></div>
               <div class="flex flex-wrap gap-1">
                 <button data-bulk="resolve" class="px-2 py-1 rounded bg-emerald-600 text-white"><i class="fas fa-check mr-1"></i>Mark resolved</button>
-                <select data-bulk-select="status" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Set status…</option><option value="open">Open</option><option value="awaiting_customer">Awaiting customer</option></select>
+                <select data-bulk-select="status" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Set status…</option><option value="open">Open</option><option value="awaiting_customer">Awaiting customer</option><option value="update_customer">Update customer</option></select>
                 <select data-bulk-select="assign" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Assign to…</option><option value="__none">Unassigned</option></select>
                 <select data-bulk-select="tone" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Change tone…</option>${Object.entries(TONE_META).map(([v, m]) => `<option value="${v}">${m.word}</option>`).join('')}</select>
                 ${isManager ? '<button data-bulk="archive" class="px-2 py-1 rounded border border-slate-300 text-slate-700"><i class="fas fa-box-archive mr-1"></i>Archive</button>' : ''}
@@ -1149,7 +1201,7 @@
             <div class="h-full flex items-center justify-center text-slate-400 text-sm p-10 text-center"><div><i class="fas fa-comments text-4xl mb-3 block text-slate-200"></i>Select a conversation</div></div>
           </div></div>
         </section>`
-      document.getElementById('inbox-filter').onchange = (e) => { listFilter = e.target.value; localStorage.setItem('riq.filter', listFilter); selected.clear(); loadInboxList() }
+      document.getElementById('inbox-filter').onchange = (e) => { navigate(`/inbox/${e.target.value}`) }
       wireToneFilter()
       wireBulkBar()
       await loadInboxList()

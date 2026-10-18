@@ -44,6 +44,13 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
       <nav id="side-nav" class="side-nav hidden lg:block px-2 pb-4 text-sm">
         <a href="/" data-link data-nav="dashboard" class="nav-tab" title="Dashboard"><i class="fas fa-gauge w-5"></i><span class="nav-label">Dashboard</span></a>
         <a href="/inbox" data-link data-nav="messages" class="nav-tab" title="Inbox"><i class="fas fa-inbox w-5"></i><span class="nav-label">Inbox</span> <span class="nav-badge" data-badge="messages"></span></a>
+        <div class="nav-sub" id="inbox-folders">
+          <a href="/inbox/open" data-link data-folder="open" class="nav-tab nav-sub-tab" title="Open"><i class="fas fa-envelope-open w-5"></i><span class="nav-label">Open</span> <span class="nav-badge" data-badge="folder-open"></span></a>
+          <a href="/inbox/awaiting_customer" data-link data-folder="awaiting_customer" class="nav-tab nav-sub-tab" title="Awaiting customer"><i class="fas fa-hourglass-half w-5"></i><span class="nav-label">Awaiting customer</span> <span class="nav-badge nav-badge-muted" data-badge="folder-awaiting_customer"></span></a>
+          <a href="/inbox/update_customer" data-link data-folder="update_customer" class="nav-tab nav-sub-tab" title="Update customer"><i class="fas fa-bell w-5"></i><span class="nav-label">Update customer</span> <span class="nav-badge nav-badge-amber" data-badge="folder-update_customer"></span></a>
+          <a href="/inbox/resolved" data-link data-folder="resolved" class="nav-tab nav-sub-tab" title="Resolved"><i class="fas fa-circle-check w-5"></i><span class="nav-label">Resolved</span></a>
+          ${user.role === 'manager' ? `<a href="/inbox/archived" data-link data-folder="archived" class="nav-tab nav-sub-tab" title="Archive"><i class="fas fa-box-archive w-5"></i><span class="nav-label">Archive</span></a>` : ''}
+        </div>
         <a href="/atoz" data-link data-nav="atoz" class="nav-tab" title="A-to-Z claims"><i class="fas fa-scale-balanced w-5"></i><span class="nav-label">A-to-Z claims</span> <span class="nav-badge" data-badge="atoz"></span></a>
         <a href="/returns" data-link data-nav="returns" class="nav-tab" title="Returns"><i class="fas fa-rotate-left w-5"></i><span class="nav-label">Returns</span> <span class="nav-badge" data-badge="returns"></span></a>
         <a href="/chargebacks" data-link data-nav="chargebacks" class="nav-tab" title="Chargebacks"><i class="fas fa-credit-card w-5"></i><span class="nav-label">Chargebacks</span> <span class="nav-badge" data-badge="chargebacks"></span></a>

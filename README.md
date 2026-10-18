@@ -285,7 +285,7 @@ R2 bucket (token needs "Workers R2 Storage: Edit"), Gmail attachments shown in c
 - **Decision Trees** rebuilt to the new lanes. Gmail From name is now "Customer Support Team".
 - OpenAI JSON parsing is more tolerant and logs the finish reason / head of any non-JSON reply.
 
-## Phase 13 (BRANCH `feature/carrier-desk`, not deployed) — Carrier desk: customer message → carrier investigation → claim → payout
+## Phase 13 (LIVE 2026-10-14) — Carrier desk: customer message → carrier investigation → claim → payout
 
 One loop instead of two tools. A customer writes "it says delivered but I never got it"; ReplyIQ already knows the order,
 the tracking number, the carrier, the ship date and the price, so the Royal Mail / DPD email is ready before anyone asks.
@@ -356,3 +356,35 @@ overdue chase threaded into Royal Mail's thread → customer-update flag → man
 
 **Also fixed**: `src/sync.ts` used `markSeen()` before declaring it, so any Amazon thread with no parseable customer text
 threw a ReferenceError and stopped that mailbox's sync run.
+
+## Phase 14 (LIVE 2026-10-18) — Free-plan CPU fixes, photo attachments, "Request changes", Inbox folders
+
+**Why the Carrier desk 503'd.** Cloudflare's Workers *Free* plan gives each request ~10 ms CPU. Two things blew it: the
+carrier summary decorated every case in JS (building an `Intl.DateTimeFormat` per row), and the legacy import did ~1.7 s
+of CPU in one request. Once an isolate overruns, Cloudflare fails *every* later request on it (`exceededCpu` → 503) until
+it is recycled, which is why the whole app went down for minutes after an import. Fixes:
+- `/api/carrier/summary` is one aggregate SQL query; Intl formatters are cached per isolate (`src/carrier/workdays.ts`).
+- Import is chunked by the browser (15 parcels / request) with batched lookups and one `INSERT … unnest` per parcel.
+- Attachment proxy decodes with the native `Uint8Array.fromBase64` (24 ms for 9 MB vs 2.5 s with `atob` + loop) and
+  skips `JSON.parse` on the multi-MB Gmail response. **This is why photos were not showing**: the old decode exceeded the
+  CPU limit on anything bigger than ~100 KB, so the `<img>` silently failed.
+- Recommendation parked by Sagar: Workers Paid (US$5/mo) lifts the limit to 30 s/request. Remind once everything is functional.
+
+**Photos in chat.** Thumbnails now show a spinner until the proxy answers and a visible "Could not load — click to open"
+if it fails. `image/jpg` and extension-based types are accepted. Responses are `Cache-Control: private, max-age=3600`.
+
+**"Not right? Tell the AI what to change."** Under every editable draft: the agent writes the change they want
+(e.g. "offer the repair first, drop the 30-day line"), presses *Rewrite with these changes*, and the model rewrites the
+reply with the previous draft + the instruction appended to the normal prompt. The policy still overrides the note; if a
+requested change would break it, the model refuses it under staff notes. The old draft is marked `discarded`; the new one
+records `revision_of` and `agent_guidance` (migration **0016**, optional — works without it, just no audit trail).
+`POST /api/drafts/:id/revise {guidance, draft_text?}`.
+
+**Inbox folders** (sidebar, under Inbox): **Open** (every unresolved case — the old *Active* + *Open* merged) ·
+**Awaiting customer** · **Update customer** (new status: we owe the customer news, e.g. a carrier decision) ·
+**Resolved** · **Archive** (managers). URLs `/inbox/<folder>`; counts come from `/api/events/counts`
+(`messages`, `awaiting_customer`, `update_customer`, `resolved`, `archived`). `update_customer` is a new `cases.status`
+value (no DB change — the column has no CHECK). Bulk "Set status…" and the case-status dropdown include it.
+
+### Migrations
+1. `db/migrations/0016_draft_revisions.sql` — optional audit columns for revisions (safe to re-run).

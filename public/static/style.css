@@ -218,3 +218,11 @@ html.dark .notice-carrier { background:#082f49; border-color:#0369a1; color:#bae
 html.dark .bg-sky-50 { background-color:#082f49; } html.dark .border-sky-200 { border-color:#0369a1; } html.dark .text-sky-900 { color:#bae6fd; }
 html.dark .border-amber-300 { border-color:#92400e; }
 html.dark .bg-rose-100 { background-color:#881337; } html.dark .text-rose-800 { color:#fecdd3; }
+
+/* Inbox sub-folders */
+.side-nav .nav-sub { margin-left:1.1rem; padding-left:.4rem; border-left:1px solid #1e293b; margin-bottom:.25rem; }
+.side-nav .nav-sub-tab { padding:.35rem .6rem; font-size:.8rem; color:#94a3b8; margin-bottom:.05rem; }
+.side-nav .nav-sub-tab i { font-size:.7rem; }
+.side-nav .nav-sub-tab.active { background:#1d4ed8; color:#fff; }
+.nav-badge-amber { background:#f59e0b; color:#0f172a; }
+html.sb-collapsed .side-nav .nav-sub { margin-left:0; padding-left:0; border-left:0; }

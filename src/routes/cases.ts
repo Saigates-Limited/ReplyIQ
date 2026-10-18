@@ -89,7 +89,8 @@ const EVENT_FLAGS = `
   (SELECT MIN(e.deadline_at) FROM amazon_events e WHERE e.case_id = cases.id AND e.deadline_at IS NOT NULL AND e.status IN ('open','info_requested'))::timestamptz AS event_deadline
 `
 
-// GET /api/cases?status=open|awaiting_customer|resolved|all  (default: not resolved)
+// GET /api/cases?status=open|awaiting_customer|update_customer|resolved|all|archived  (default "active" = open, i.e. everything not resolved)
+// Folders: Open (= every unresolved case, incl. awaiting/update) · Awaiting customer · Update customer · Resolved · Archive
 casesApi.get('/', async (c) => {
   const sql = getDb(c.env)
   const status = c.req.query('status') ?? 'active'
@@ -108,7 +109,7 @@ casesApi.get('/', async (c) => {
        FROM cases LEFT JOIN users u ON u.id = cases.assigned_to
        WHERE CASE WHEN $1 = 'archived' THEN cases.archived_at IS NOT NULL
                   WHEN $1 = 'all' THEN cases.archived_at IS NULL
-                  WHEN $1 = 'active' THEN cases.status <> 'resolved' AND cases.archived_at IS NULL
+                  WHEN $1 IN ('active','open') THEN cases.status <> 'resolved' AND cases.archived_at IS NULL
                   ELSE cases.status = $1 AND cases.archived_at IS NULL END
        ORDER BY
          CASE WHEN cases.status <> 'resolved' AND ${DEADLINE_EXPR} < now() THEN 0 ELSE 1 END,
@@ -141,7 +142,7 @@ casesApi.post('/bulk', async (c) => {
   let value: unknown = null
   if (action === 'status') {
     const r = coerce('status', body.value)
-    if (!r.ok || r.value === 'resolved') return c.json({ error: 'Status must be open or awaiting_customer (use Mark resolved for resolved)' }, 422)
+    if (!r.ok || r.value === 'resolved') return c.json({ error: 'Status must be open, awaiting_customer or update_customer (use Mark resolved for resolved)' }, 422)
     value = r.value
   } else if (action === 'assign') {
     if (body.value !== null && body.value !== '' && body.value !== undefined) {
@@ -263,7 +264,7 @@ function coerce(kind: string, v: unknown): { ok: true; value: unknown } | { ok: 
     case 'text':
       return { ok: true, value: String(v).trim().slice(0, 200) }
     case 'status':
-      return ['open', 'awaiting_customer', 'resolved'].includes(String(v))
+      return ['open', 'awaiting_customer', 'update_customer', 'resolved'].includes(String(v))
         ? { ok: true, value: v }
         : { ok: false, error: 'Invalid status' }
     case 'bool':

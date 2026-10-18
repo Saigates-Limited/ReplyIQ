@@ -209,10 +209,20 @@ export const getThread = (token: string, id: string) =>
 export const header = (m: GmailMessage, name: string) =>
   m.payload.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? ''
 
-function decodeB64Url(s: string) {
+/** base64url → bytes. Uses the native decoder (microseconds per MB); the atob + per-char loop fallback costs
+ *  ~100 ms CPU per MB, which is more than a Free-plan Worker gets for the whole request. */
+export function b64UrlToBytes(s: string): Uint8Array {
+  const U = Uint8Array as any
+  if (typeof U.fromBase64 === 'function') {
+    try { return U.fromBase64(s, { alphabet: 'base64url', lastChunkHandling: 'loose' }) } catch { /* fall through */ }
+  }
   const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/'))
-  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
-  return new TextDecoder('utf-8').decode(bytes)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+function decodeB64Url(s: string) {
+  return new TextDecoder('utf-8').decode(b64UrlToBytes(s))
 }
 
 /** Prefer text/plain; fall back to stripped text/html. */
@@ -340,7 +350,16 @@ export function listAttachments(m: GmailMessage) {
 
 /** Fetch attachment bytes from Gmail (gmail.readonly scope). Returned as a Uint8Array. */
 export async function getAttachment(token: string, messageId: string, attachmentId: string): Promise<Uint8Array> {
-  const data = await gapi<{ data: string; size: number }>(token, `/messages/${messageId}/attachments/${attachmentId}`)
-  const bin = atob(data.data.replace(/-/g, '+').replace(/_/g, '/'))
-  return Uint8Array.from(bin, (c) => c.charCodeAt(0))
+  // Not via gapi(): JSON.parse on a multi-MB response is CPU we cannot afford. Pull the "data" field out of the raw text.
+  const res = await fetch(`${API}/messages/${messageId}/attachments/${attachmentId}`, { headers: { Authorization: `Bearer ${token}` } })
+  const txt = await res.text()
+  if (!res.ok) {
+    if (isQuota(res.status, txt)) throw new GmailQuotaError('Gmail rate limit reached. Try again in a minute.')
+    throw new Error(`Gmail API ${res.status} on attachments: ${txt.slice(0, 200)}`)
+  }
+  const i = txt.indexOf('"data"')
+  if (i === -1) throw new Error('Gmail attachment response had no data')
+  const start = txt.indexOf('"', txt.indexOf(':', i) + 1) + 1
+  const end = txt.indexOf('"', start)
+  return b64UrlToBytes(txt.slice(start, end))
 }

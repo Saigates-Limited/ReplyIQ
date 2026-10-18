@@ -253,13 +253,17 @@ gmailApi.get('/attachments/:id', async (c) => {
     const [mrow] = (await hasMultiMailbox(sql)) ? await sql`SELECT mailbox_id FROM messages WHERE id = ${a.message_id}` : [{ mailbox_id: null }]
     const { token } = await accessToken(c.env, sql, mrow?.mailbox_id ?? null)
     const bytes = await getAttachment(token, a.gmail_message_id, a.gmail_attachment_id)
-    const safeType = /^(image\/(jpeg|png|gif|webp)|application\/pdf)$/.test(a.mime_type) ? a.mime_type : 'application/octet-stream'
+    // Normalise what senders put in Content-Type ("image/jpg", "IMAGE/JPEG", octet-stream with a .png name)
+    const ext = String(a.filename).toLowerCase().match(/\.(jpe?g|png|gif|webp|pdf)$/)?.[1]
+    const byExt: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf' }
+    const mt = String(a.mime_type).toLowerCase().replace('image/jpg', 'image/jpeg')
+    const safeType = /^(image\/(jpeg|png|gif|webp)|application\/pdf)$/.test(mt) ? mt : (ext && byExt[ext]) || 'application/octet-stream'
     const disposition = safeType === 'application/octet-stream' ? 'attachment' : 'inline'
     return new Response(bytes, {
       headers: {
         'Content-Type': safeType,
         'Content-Disposition': `${disposition}; filename="${String(a.filename).replace(/[^\w.\- ]/g, '_')}"`,
-        'Cache-Control': 'private, no-store',
+        'Cache-Control': 'private, max-age=3600',
         'X-Content-Type-Options': 'nosniff',
         'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
       },

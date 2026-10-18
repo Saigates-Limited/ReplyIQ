@@ -43,6 +43,50 @@ async function loadDraft(sql: ReturnType<typeof getDb>, id: number) {
   return d
 }
 
+type Sql = ReturnType<typeof getDb>
+
+/** Generate + store one draft for a case. Shared by "Generate draft" and "Request changes" (revision). */
+async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: number, mode: DraftMode,
+  revision?: { previousDraft: string; guidance: string; previousDraftId: number } | null) {
+  const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${caseId}`
+  if (!kase) return { error: 'Case not found', status: 404 as const }
+  const messages = await sql<MessageRow[]>`SELECT direction, body, sent_at, sender, kind, id FROM messages WHERE case_id = ${caseId} ORDER BY sent_at ASC`
+  // Attachment METADATA only (filename/type/size) so the model knows photos exist; bytes never leave Gmail/R2.
+  const atts = await sql<{ message_id: number; filename: string; mime_type: string; size_bytes: number }[]>`SELECT message_id, filename, mime_type, size_bytes FROM attachments WHERE case_id = ${caseId}`.catch(() => [] as any[])
+  for (const m of messages as any[]) m.attachments = atts.filter((a) => a.message_id === m.id)
+  const events = await sql<EventRow[]>`
+    SELECT kind, status, amount, currency, received_at, deadline_at, return_reason, customer_comment, authorisation, policy_check, item_description
+    FROM amazon_events WHERE case_id = ${caseId} ORDER BY received_at ASC`
+  if (!messages.length && !events.length) return { error: 'Case has no messages to reply to', status: 400 as const }
+  if (mode === 'customer' && !messages.some((m) => m.direction === 'inbound' && m.kind !== 'event'))
+    return { error: 'No customer message on this case to reply to. Use a Seller Central mode instead.', status: 400 as const }
+
+  const kbRules = await loadActiveRules(sql, mode)
+  const promptVersion = await loadCurrentPrompt(sql)
+  const { result, payload, kbRuleIds } = await generateDraft(env, kase, messages, { events, mode, kbRules, customPrompt: promptVersion?.body, revision })
+  const findings = serverChecks(result.draft, kase, mode)
+  const checkResult = findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS'
+  const { needsManager, reasons, urgency } = decideManager(result, kase, messages, findings, mode)
+
+  // Optional audit columns arrive with migrations 0011 (kb_rule_ids), 0012 (system_prompt_version) and 0016 (revision_of, agent_guidance).
+  // Detect once per request and omit whichever is missing so drafting keeps working before they are applied.
+  const cols = await sql<{ column_name: string }[]>`SELECT column_name FROM information_schema.columns WHERE table_name = 'drafts' AND column_name IN ('kb_rule_ids','system_prompt_version','revision_of','agent_guidance')`
+  const has = (n: string) => cols.some((x) => x.column_name === n)
+  const hasKb = has('kb_rule_ids'), hasSpv = has('system_prompt_version'), hasRev = has('revision_of') && has('agent_guidance')
+  const [d] = await sql`
+    INSERT INTO drafts (case_id, tree, draft_text, original_text, staff_notes, check_result, check_findings, server_findings,
+                        needs_manager, needs_manager_reason, urgency, model, created_by, mode
+                        ${hasKb ? sql`, kb_rule_ids` : sql``} ${hasSpv ? sql`, system_prompt_version` : sql``} ${hasRev ? sql`, revision_of, agent_guidance` : sql``})
+    VALUES (${caseId}, ${result.lane}, ${result.draft}, ${result.draft}, ${result.staff_notes}, ${checkResult},
+            ${sql.json([])}, ${sql.json(findings)},
+            ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${MODEL}, ${userId}, ${mode}
+            ${hasKb ? sql`, string_to_array(${kbRuleIds.join(',')}, ',')::int[]` : sql``} ${hasSpv ? sql`, ${promptVersion?.version ?? null}` : sql``}
+            ${hasRev ? sql`, ${revision?.previousDraftId ?? null}, ${revision?.guidance ?? null}` : sql``})
+    RETURNING id`
+  const draft = await loadDraft(sql, d.id)
+  return { draft, payload, kbRules, promptVersion }
+}
+
 // POST /api/cases/:id/drafts  → generate a new draft with OpenAI (server-side only)
 draftsApi.post('/cases/:id/drafts', async (c) => {
   const caseId = Number(c.req.param('id'))
@@ -52,42 +96,36 @@ draftsApi.post('/cases/:id/drafts', async (c) => {
   const mode: DraftMode = DRAFT_MODES.includes(body.mode as DraftMode) ? (body.mode as DraftMode) : 'customer'
   const sql = getDb(c.env)
   try {
-    const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${caseId}`
-    if (!kase) return c.json({ error: 'Case not found' }, 404)
-    const messages = await sql<MessageRow[]>`SELECT direction, body, sent_at, sender, kind, id FROM messages WHERE case_id = ${caseId} ORDER BY sent_at ASC`
-    // Attachment METADATA only (filename/type/size) so the model knows photos exist; bytes never leave Gmail/R2.
-    const atts = await sql<{ message_id: number; filename: string; mime_type: string; size_bytes: number }[]>`SELECT message_id, filename, mime_type, size_bytes FROM attachments WHERE case_id = ${caseId}`.catch(() => [] as any[])
-    for (const m of messages as any[]) m.attachments = atts.filter((a) => a.message_id === m.id)
-    const events = await sql<EventRow[]>`
-      SELECT kind, status, amount, currency, received_at, deadline_at, return_reason, customer_comment, authorisation, policy_check, item_description
-      FROM amazon_events WHERE case_id = ${caseId} ORDER BY received_at ASC`
-    if (!messages.length && !events.length) return c.json({ error: 'Case has no messages to reply to' }, 400)
-    if (mode === 'customer' && !messages.some((m) => m.direction === 'inbound' && m.kind !== 'event'))
-      return c.json({ error: 'No customer message on this case to reply to. Use a Seller Central mode instead.' }, 400)
-
-    const kbRules = await loadActiveRules(sql, mode)
-    const promptVersion = await loadCurrentPrompt(sql)
-    const { result, payload, kbRuleIds } = await generateDraft(c.env, kase, messages, { events, mode, kbRules, customPrompt: promptVersion?.body })
-    const findings = serverChecks(result.draft, kase, mode)
-    const checkResult = findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS'
-    const { needsManager, reasons, urgency } = decideManager(result, kase, messages, findings, mode)
-
-    // Optional audit columns arrive with migrations 0011 (kb_rule_ids) and 0012 (system_prompt_version).
-    // Detect once per request and omit whichever is missing so drafting keeps working before they are applied.
-    const cols = await sql<{ column_name: string }[]>`SELECT column_name FROM information_schema.columns WHERE table_name = 'drafts' AND column_name IN ('kb_rule_ids','system_prompt_version')`
-    const hasKb = cols.some((x) => x.column_name === 'kb_rule_ids'), hasSpv = cols.some((x) => x.column_name === 'system_prompt_version')
-    const [d] = await sql`
-      INSERT INTO drafts (case_id, tree, draft_text, original_text, staff_notes, check_result, check_findings, server_findings,
-                          needs_manager, needs_manager_reason, urgency, model, created_by, mode
-                          ${hasKb ? sql`, kb_rule_ids` : sql``} ${hasSpv ? sql`, system_prompt_version` : sql``})
-      VALUES (${caseId}, ${result.lane}, ${result.draft}, ${result.draft}, ${result.staff_notes}, ${checkResult},
-              ${sql.json([])}, ${sql.json(findings)},
-              ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${MODEL}, ${user.id}, ${mode}
-              ${hasKb ? sql`, string_to_array(${kbRuleIds.join(',')}, ',')::int[]` : sql``} ${hasSpv ? sql`, ${promptVersion?.version ?? null}` : sql``})
-      RETURNING id`
-    const draft = await loadDraft(sql, d.id)
+    const r = await createDraft(c.env, sql, caseId, user.id, mode)
+    if ('error' in r) return c.json({ error: r.error }, r.status)
     // Return what was sent to the model so the agent can see exactly what left the server.
-    return c.json({ draft, sent_to_model: payload, kb_rules_applied: kbRules.map((r) => ({ id: r.id, title: r.title })), system_prompt_version: promptVersion?.version ?? null }, 201)
+    return c.json({ draft: r.draft, sent_to_model: r.payload, kb_rules_applied: r.kbRules.map((x) => ({ id: x.id, title: x.title })), system_prompt_version: r.promptVersion?.version ?? null }, 201)
+  } finally {
+    await sql.end()
+  }
+})
+
+// POST /api/drafts/:id/revise {guidance} → the agent says what to change; the model rewrites; the old draft is superseded.
+// Guidance is an instruction to the model, never pasted into the reply, and the policy still overrides it.
+draftsApi.post('/drafts/:id/revise', async (c) => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id)) return c.json({ error: 'Invalid id' }, 400)
+  const user = c.get('user')
+  const body = (await c.req.json().catch(() => ({}))) as { guidance?: string; draft_text?: string }
+  const guidance = String(body.guidance ?? '').trim()
+  if (guidance.length < 3) return c.json({ error: 'Say what you want changed (a sentence or two is enough).' }, 400)
+  if (guidance.length > 2000) return c.json({ error: 'Keep the change request under 2,000 characters.' }, 400)
+  const sql = getDb(c.env)
+  try {
+    const prev = await loadDraft(sql, id)
+    if (!prev) return c.json({ error: 'Draft not found' }, 404)
+    if (!['draft', 'approved'].includes(prev.status)) return c.json({ error: `Draft is ${prev.status}; generate a new one instead.` }, 409)
+    // If the agent typed edits in the box before asking, revise from what is on screen.
+    const previousDraft = typeof body.draft_text === 'string' && body.draft_text.trim() ? body.draft_text.slice(0, 20000) : prev.draft_text
+    const r = await createDraft(c.env, sql, prev.case_id, user.id, prev.mode ?? 'customer', { previousDraft, guidance, previousDraftId: id })
+    if ('error' in r) return c.json({ error: r.error }, r.status)
+    await sql`UPDATE drafts SET status = 'discarded', updated_at = now() WHERE id = ${id} AND status IN ('draft','approved')`
+    return c.json({ draft: r.draft, superseded: id }, 201)
   } finally {
     await sql.end()
   }
