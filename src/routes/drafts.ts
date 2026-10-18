@@ -45,6 +45,16 @@ async function loadDraft(sql: ReturnType<typeof getDb>, id: number) {
 
 type Sql = ReturnType<typeof getDb>
 
+// Optional drafts columns, detected once per isolate (an information_schema query on every draft is CPU we do not have on the Free plan).
+let draftColsCache: Set<string> | null = null
+async function draftCols(sql: Sql) {
+  if (!draftColsCache) {
+    const rows = await sql<{ column_name: string }[]>`SELECT column_name FROM information_schema.columns WHERE table_name = 'drafts' AND column_name IN ('kb_rule_ids','system_prompt_version','revision_of','agent_guidance')`
+    draftColsCache = new Set(rows.map((r) => r.column_name))
+  }
+  return draftColsCache
+}
+
 /** Generate + store one draft for a case. Shared by "Generate draft" and "Request changes" (revision). */
 async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: number, mode: DraftMode,
   revision?: { previousDraft: string; guidance: string; previousDraftId: number } | null) {
@@ -70,8 +80,8 @@ async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: numb
 
   // Optional audit columns arrive with migrations 0011 (kb_rule_ids), 0012 (system_prompt_version) and 0016 (revision_of, agent_guidance).
   // Detect once per request and omit whichever is missing so drafting keeps working before they are applied.
-  const cols = await sql<{ column_name: string }[]>`SELECT column_name FROM information_schema.columns WHERE table_name = 'drafts' AND column_name IN ('kb_rule_ids','system_prompt_version','revision_of','agent_guidance')`
-  const has = (n: string) => cols.some((x) => x.column_name === n)
+  const cols = await draftCols(sql)
+  const has = (n: string) => cols.has(n)
   const hasKb = has('kb_rule_ids'), hasSpv = has('system_prompt_version'), hasRev = has('revision_of') && has('agent_guidance')
   const [d] = await sql`
     INSERT INTO drafts (case_id, tree, draft_text, original_text, staff_notes, check_result, check_findings, server_findings,

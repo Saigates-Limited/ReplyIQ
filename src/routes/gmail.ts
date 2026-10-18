@@ -289,15 +289,41 @@ export const sendApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 // POST /api/drafts/:id/send — the ONLY place in the system that sends email.
 // Gates: approved status, manager approval honoured, text unchanged since approval, server checks clean,
 // one send per draft, Gmail-sourced case with a reply-to address.
+// One-step flow: {confirm_text, final_text?}. If final_text is given it is saved as the draft (re-checked), the draft is
+// approved by the sender (same gates as /approve: no FAIL findings; needs_manager → manager only) and then sent. Nothing
+// is skipped — the three steps simply happen in one request so staff press one button instead of three.
 sendApi.post('/drafts/:id/send', async (c) => {
   const id = Number(c.req.param('id'))
   const user = c.get('user')
-  const body = (await c.req.json().catch(() => ({}))) as { confirm_text?: string }
+  const body = (await c.req.json().catch(() => ({}))) as { confirm_text?: string; final_text?: string; staff_notes?: string }
   const sql = getDb(c.env)
   try {
-    const [d] = await sql`SELECT * FROM drafts WHERE id = ${id}`
+    let [d] = await sql`SELECT * FROM drafts WHERE id = ${id}`
     if (!d) return c.json({ error: 'Draft not found' }, 404)
     if (d.status === 'sent') return c.json({ error: 'This draft has already been sent' }, 409)
+    if (d.status === 'sending') return c.json({ error: 'Draft is already being sent' }, 409)
+    if (d.status === 'discarded') return c.json({ error: 'This draft was discarded' }, 409)
+    if (typeof body.final_text === 'string' && (!d.mode || d.mode === 'customer')) {
+      // Save edits (if any) + approve in one go
+      const text = body.final_text.trim()
+      if (!text) return c.json({ error: 'Reply is empty' }, 400)
+      const [kase0] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${d.case_id}`
+      const findings = serverChecks(text, kase0, 'customer')
+      const fail = findings.filter((f) => f.severity === 'fail')
+      if (fail.length) {
+        await sql`UPDATE drafts SET draft_text = ${text}, server_findings = ${sql.json(findings)}, check_result = 'FAIL', status = 'draft', approved_by = NULL, approved_at = NULL, edited_by = ${user.id}, edited_at = now(), updated_at = now() WHERE id = ${id} AND status IN ('draft','approved')`
+        return c.json({ error: 'Cannot send: ' + fail.map((f) => f.detail).join('; '), findings }, 422)
+      }
+      if (d.needs_manager && user.role !== 'manager') return c.json({ error: 'This reply needs a manager to approve and send it.' }, 403)
+      const changed = text !== String(d.draft_text).trim()
+      await sql`UPDATE drafts SET draft_text = ${text}, server_findings = ${sql.json(findings)}, check_result = 'PASS',
+                  staff_notes = COALESCE(${typeof body.staff_notes === 'string' ? body.staff_notes : null}, staff_notes),
+                  edited_by = CASE WHEN ${changed} THEN ${user.id} ELSE edited_by END, edited_at = CASE WHEN ${changed} THEN now() ELSE edited_at END,
+                  status = 'approved', approved_by = COALESCE(CASE WHEN ${changed} THEN NULL ELSE approved_by END, ${user.id}), approved_at = COALESCE(CASE WHEN ${changed} THEN NULL ELSE approved_at END, now()), updated_at = now()
+                WHERE id = ${id} AND status IN ('draft','approved')`
+      ;[d] = await sql`SELECT * FROM drafts WHERE id = ${id}`
+      body.confirm_text = text
+    }
     if (d.status !== 'approved') return c.json({ error: 'Only approved drafts can be sent' }, 403)
     if (d.needs_manager && !d.approved_by) return c.json({ error: 'Manager approval missing' }, 403)
     // Seller Central / chargeback statements are never emailed to the customer.

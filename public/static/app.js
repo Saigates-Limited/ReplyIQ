@@ -698,6 +698,9 @@
     const warns = server.filter((f) => f.severity === 'warn')
     const locked = d.status === 'sent'
     const canApprove = d.status === 'draft' && !fails.length && (!d.needs_manager || isManager)
+    // One-step send: customer reply on a Gmail case → "Send to customer" saves edits, approves and sends in one go
+    const oneStep = !locked && (!d.mode || d.mode === 'customer') && kase.gmail_thread_id && kase.customer_reply_to && ['draft', 'approved'].includes(d.status)
+    const canSend = oneStep && !fails.length && (!d.needs_manager || isManager)
 
     return `
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -712,19 +715,25 @@
           <label class="field-label" for="draft-text">${d.mode && d.mode !== 'customer' ? 'Text to paste into Seller Central' : 'Customer-facing reply'} ${locked ? '(sent — read only)' : '(edit freely)'}</label>
           <textarea id="draft-text" class="field-input font-sans leading-relaxed" rows="14" ${locked ? 'readonly' : ''}>${esc(d.draft_text)}</textarea>
           <div class="mt-2 flex flex-wrap items-center gap-2">
-            ${locked ? '' : `<button id="save-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm"><i class="far fa-floppy-disk mr-1"></i>Save edits</button>`}
+            ${locked ? '' : `<button id="save-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm" title="${oneStep ? 'Optional — Send saves your edits automatically. Use this to re-run the checks without sending.' : ''}"><i class="far fa-floppy-disk mr-1"></i>${oneStep ? 'Save & re-check' : 'Save edits'}</button>`}
             ${locked || (d.mode && d.mode !== 'customer') ? '' : `<select id="template-pick" class="field-input py-1.5 text-sm mt-0" style="width:auto;max-width:16rem" title="Replace the text with a ready-made reply, then fill in the [placeholders]"><option value="">Insert template…</option></select>`}
             <button id="copy-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm"><i class="far fa-copy mr-1"></i>Copy reply</button>
             <span id="draft-save-indicator" class="text-xs text-slate-400"></span>
             <span class="ml-auto flex items-center gap-2">
-              ${d.status === 'draft' ? `
+              ${oneStep ? `
+                <button id="discard-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-red-700">Discard</button>
+                <button id="send-btn" ${canSend ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canSend ? 'bg-emerald-700 text-white hover:bg-emerald-800' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}"
+                  title="${!canSend ? (fails.length ? 'Fix failing checks first' : 'Only a manager can send this reply') : 'Saves your edits, approves and sends in one step'}">
+                  <i class="fas fa-paper-plane mr-1"></i>Send to customer
+                </button>
+                ${!canSend ? `<span class="block w-full text-right text-[11px] ${fails.length ? 'text-red-700' : 'text-violet-700'}" style="flex-basis:100%">${fails.length ? `<i class="fas fa-lock mr-1"></i>Sending is blocked while a check is <strong>FAIL</strong>. Edit the reply (or use <em>Tell the AI what to change</em>) and it re-checks on send.` : `<i class="fas fa-user-shield mr-1"></i>Needs a manager to send${isManager ? '' : ' — ask a manager'}.`}</span>` : ''}` : d.status === 'draft' ? `
                 <button id="discard-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-red-700">Discard</button>
                 <button id="approve-btn" ${canApprove ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canApprove ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}"
                   title="${!canApprove ? (fails.length ? 'Fix failing checks first' : d.needs_manager ? 'Only a manager can approve this draft' : '') : ''}">
                   <i class="fas fa-check mr-1"></i>Approve
                 </button>` : ''}
               ${d.status === 'draft' && !canApprove ? `<span class="block w-full text-right text-[11px] ${fails.length ? 'text-red-700' : 'text-violet-700'}" style="flex-basis:100%">${fails.length ? `<i class="fas fa-lock mr-1"></i>Approval is blocked while a check is <strong>FAIL</strong>. Edit the reply to fix it (or press <strong>Save edits</strong> to re-run the checks), then Approve.` : `<i class="fas fa-user-shield mr-1"></i>Needs a manager's approval${isManager ? '' : ' — ask a manager'}.`}</span>` : ''}
-              ${d.status === 'approved' ? `
+              ${!oneStep && d.status === 'approved' ? `
                 <button id="unapprove-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-slate-800">Withdraw approval</button>
                 ${(!d.mode || d.mode === 'customer') && kase.gmail_thread_id && kase.customer_reply_to ? `
                 <button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800">
@@ -846,9 +855,10 @@
             <dt class="text-slate-500">From</dt><dd class="col-span-3 font-mono text-xs" id="send-from">connected mailbox</dd>
             <dt class="text-slate-500">To</dt><dd class="col-span-3 font-mono text-xs break-all">${esc(kase.customer_reply_to)}</dd>
             <dt class="text-slate-500">Case</dt><dd class="col-span-3">${esc(kase.case_ref)} · ${esc(kase.subject)}</dd>
-            <dt class="text-slate-500">Approved by</dt><dd class="col-span-3">${esc(d.approved_by_name || '—')} ${d.needs_manager ? '<span class="text-violet-700">(manager)</span>' : ''}</dd>
+            <dt class="text-slate-500">Approved by</dt><dd class="col-span-3">${esc(d.approved_by_name || ME.name + ' (on send)')} ${d.needs_manager ? '<span class="text-violet-700">(manager)</span>' : ''}</dd>
           </dl>
-          <pre class="message-body text-sm bg-slate-50 border border-slate-200 rounded-md p-3 max-h-64 overflow-auto font-sans">${esc(d.draft_text)}</pre>
+          <pre class="message-body text-sm bg-slate-50 border border-slate-200 rounded-md p-3 max-h-64 overflow-auto font-sans">${esc(text.value.trim())}</pre>
+          ${text.value.trim() !== d.draft_text.trim() ? '<p class="text-xs text-amber-700 mt-2"><i class="fas fa-pen mr-1"></i>Includes your unsaved edits — they are saved, re-checked and approved as part of sending.</p>' : ''}
           <div class="mt-4 flex justify-end gap-2">
             <button id="send-cancel" class="px-4 py-2 rounded-md border border-slate-300 text-sm">Cancel</button>
             <button id="send-now" class="px-4 py-2 rounded-md bg-emerald-700 text-white text-sm font-medium"><i class="fas fa-paper-plane mr-1"></i>Send now</button>
@@ -861,7 +871,7 @@
       modal.querySelector('#send-now').onclick = async () => {
         const b = modal.querySelector('#send-now'); b.disabled = true; b.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Sending…'
         try {
-          await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: d.draft_text }, { timeout: 60000 })
+          await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: text.value.trim(), final_text: text.value.trim(), staff_notes: notes.value }, { timeout: 60000 })
           modal.remove(); toast('Reply sent to the customer'); refresh()
         } catch (err) {
           b.disabled = false; b.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send now'
@@ -1232,7 +1242,15 @@
           <span class="${d.cls} whitespace-nowrap"><i class="far fa-clock"></i> ${esc(d.label)}</span>
         </div>
       </a>`
-    }).join('') : '<p class="p-6 text-sm text-slate-400 text-center">No conversations match.</p>'
+    }).join('') : inboxCases.length
+      ? `<div class="p-6 text-sm text-slate-500 text-center"><i class="fas fa-filter mr-1"></i>${inboxCases.length} conversation${inboxCases.length === 1 ? '' : 's'} in this folder, hidden by your ${toneFilter.size && q ? 'tone filter and search' : toneFilter.size ? 'tone filter' : 'search'}.<br><button id="inbox-show-all" class="mt-2 px-3 py-1.5 rounded-md bg-slate-900 text-white text-xs">Show all ${inboxCases.length}</button></div>`
+      : '<p class="p-6 text-sm text-slate-400 text-center">Nothing in this folder.</p>'
+    document.getElementById('inbox-show-all')?.addEventListener('click', () => {
+      toneFilter.clear(); localStorage.setItem('riq.tones', '[]'); searchTerm = ''
+      const si = document.getElementById('global-search'); if (si) si.value = ''
+      const tf = document.getElementById('tone-filter'); if (tf) { tf.outerHTML = toneFilterBar(); wireToneFilter() }
+      filterInboxList()
+    })
     const c = document.getElementById('inbox-count'); if (c) c.textContent = `${rows.length} of ${inboxCases.length} conversation(s)`
     el.querySelectorAll('[data-select]').forEach((cb) => { cb.onclick = (e) => { e.stopPropagation(); const id = Number(cb.dataset.select); cb.checked ? selected.add(id) : selected.delete(id); updateBulkBar() } })
     const sa = document.getElementById('select-all'); if (sa) { sa.checked = rows.length > 0 && rows.every((k) => selected.has(k.id)); sa.onchange = () => { rows.forEach((k) => (sa.checked ? selected.add(k.id) : selected.delete(k.id))); filterInboxList() } }

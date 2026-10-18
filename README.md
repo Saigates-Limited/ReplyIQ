@@ -388,3 +388,14 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 
 ### Migrations
 1. `db/migrations/0016_draft_revisions.sql` — optional audit columns for revisions (safe to re-run).
+
+### Phase 14b (LIVE 2026-10-18) — one-step send, inbox empty-state, revise CPU fix
+- **Send to customer is one step.** On a Gmail customer reply the only primary button is *Send to customer*: it saves
+  whatever is in the editor, re-runs the guardrail checks, approves (same gates as before: no FAIL, needs-manager → manager
+  only) and sends, in one request (`POST /api/drafts/:id/send {final_text, confirm_text, staff_notes?}`). The confirm
+  dialog shows the exact text going out. *Save & re-check* stays as an optional button. Approve/Mark-as-sent remain for
+  Seller Central modes and non-Gmail cases.
+- **Inbox "Open 28 but nothing listed"**: the tone-chip filter (persisted in localStorage) was hiding every row. The empty
+  state now says "28 conversations in this folder, hidden by your tone filter" with a *Show all* button.
+- **503 on "Rewrite with these changes"**: `/api/drafts/:id/revise` tripped the Free-plan CPU limit (an isolate already
+  hot from a 40 s sync). The optional-column probe is now cached per isolate; the Workers Paid recommendation stands.
