@@ -102,6 +102,8 @@ casesApi.get('/', async (c) => {
     const rows = await sql.unsafe(
       mailboxExpr(await hasMailboxCol(sql), spapiExpr(await hasSpapiCols(sql), archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS},
               (SELECT COUNT(*) FROM messages m WHERE m.case_id = cases.id AND m.kind <> 'event')::int AS message_count,
+              (SELECT LEFT(regexp_replace(m.body, '\\s+', ' ', 'g'), 160) FROM messages m WHERE m.case_id = cases.id AND m.kind <> 'event' ORDER BY m.sent_at DESC LIMIT 1) AS last_preview,
+              (SELECT m.direction FROM messages m WHERE m.case_id = cases.id AND m.kind <> 'event' ORDER BY m.sent_at DESC LIMIT 1) AS last_direction,
               (SELECT status FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_status,
               (SELECT needs_manager FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_needs_manager,
               ${carrierCols ? CARRIER_EXPR : CARRIER_NULL}

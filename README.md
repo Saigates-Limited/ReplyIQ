@@ -402,3 +402,9 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - **Inbox paging**: 50 or 100 conversations per page (remembered per browser, `riq.pageSize`), pager in the list footer
   ("1–50 of 81 · Page 1 / 2"). "All visible" selects the current page. Page resets to 1 when the folder, tone filter or
   search changes. Paging is client-side over the folder's rows.
+- **Inbox layout tidy-up (wide screens)**: list pane widens with the screen (340 → 400 → 460 px) and the whole inbox is
+  capped at 2000 px and centred on TVs / ultrawides; case view capped at 1700 px. Each row is now one-line subject
+  (ellipsis, full text on hover), name · order · message count, a one-line preview of the latest message ("You:" when
+  ours), then badges + deadline. Tone chips live behind a **Tone** toggle (badge shows how many are active); bulk actions
+  are a single compact row that appears only when something is selected. `GET /api/cases` now returns `last_preview` and
+  `last_direction`.

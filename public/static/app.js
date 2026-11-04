@@ -1160,15 +1160,22 @@
   let toneFilter = new Set(JSON.parse(localStorage.getItem('riq.tones') || '[]'))
   const selected = new Set()
   const TONE_CHIPS = [...Object.keys(TONE_META), 'none']
+  let toneOpen = false
   function toneFilterBar() {
-    return `<div id="tone-filter" class="px-3 py-1.5 border-b border-slate-100 flex flex-wrap gap-1 items-center">
+    return `<div id="tone-filter" class="px-3 py-1.5 border-b border-slate-100 flex-wrap gap-1 items-center ${toneOpen ? 'flex' : 'hidden'}">
       ${TONE_CHIPS.map((t) => `<button data-tone="${t}" class="tone tone-${t} ${toneFilter.size && !toneFilter.has(t) ? 'opacity-30' : ''}" style="cursor:pointer" title="Toggle">${t === 'none' ? 'NO LABEL' : TONE_META[t].word}</button>`).join('')}
       ${toneFilter.size ? '<button id="tone-clear" class="text-[10px] text-slate-500 underline ml-1">clear</button>' : ''}
     </div>`
   }
+  function syncToneButton() {
+    const b = document.getElementById('tone-toggle'); if (!b) return
+    b.classList.toggle('on', toneFilter.size > 0 || toneOpen)
+    b.innerHTML = `<i class="fas fa-filter"></i> Tone${toneFilter.size ? ` <span class="font-bold">${toneFilter.size}</span>` : ''}`
+  }
   function wireToneFilter() {
     document.querySelectorAll('#tone-filter [data-tone]').forEach((b) => (b.onclick = () => { const t = b.dataset.tone; toneFilter.has(t) ? toneFilter.delete(t) : toneFilter.add(t); localStorage.setItem('riq.tones', JSON.stringify([...toneFilter])); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); page = 1; filterInboxList() }))
     document.getElementById('tone-clear')?.addEventListener('click', () => { toneFilter.clear(); localStorage.setItem('riq.tones', '[]'); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); page = 1; filterInboxList() })
+    syncToneButton()
   }
   let inboxShellFilter = null
   // Paging: 50 or 100 per page (remembered); page resets when the folder / filter / search changes
@@ -1194,19 +1201,21 @@
                 ${folderList().map(([v, l]) => `<option value="${v}" ${listFilter === v ? 'selected' : ''}>${l}</option>`).join('')}
               </select>
             </div>
-            ${toneFilterBar()}
-            <div id="bulk-bar" class="hidden px-3 py-2 border-b border-slate-200 bg-slate-50 text-xs">
-              <div class="flex items-center justify-between mb-1"><span><strong id="bulk-count">0</strong> selected</span><button id="bulk-clear" class="text-slate-500 underline">clear</button></div>
-              <div class="flex flex-wrap gap-1">
-                <button data-bulk="resolve" class="px-2 py-1 rounded bg-emerald-600 text-white"><i class="fas fa-check mr-1"></i>Mark resolved</button>
-                <select data-bulk-select="status" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Set status…</option><option value="open">Open</option><option value="awaiting_customer">Awaiting customer</option><option value="update_customer">Update customer</option></select>
-                <select data-bulk-select="assign" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Assign to…</option><option value="__none">Unassigned</option></select>
-                <select data-bulk-select="tone" class="field-input py-1 text-xs mt-0" style="width:auto"><option value="">Change tone…</option>${Object.entries(TONE_META).map(([v, m]) => `<option value="${v}">${m.word}</option>`).join('')}</select>
-                ${isManager ? '<button data-bulk="archive" class="px-2 py-1 rounded border border-slate-300 text-slate-700"><i class="fas fa-box-archive mr-1"></i>Archive</button>' : ''}
-              </div>
-              <div class="mt-1 text-[10px] text-slate-400"><i class="fas fa-shield-halved"></i> Bulk actions never send email. Resolve skips open A-to-Z / chargeback, battery flags and drafts awaiting a manager.</div>
+            <div class="list-toolbar">
+              <label class="flex items-center gap-1.5 cursor-pointer" title="Select everything on this page"><input type="checkbox" id="select-all"> <span>Select page</span></label>
+              <button id="tone-toggle" class="tb-btn" title="Filter by customer tone"><i class="fas fa-filter"></i> Tone</button>
+              <span class="ml-auto text-slate-400" title="Sort order: overdue first, then angry / dispute, then by deadline"><i class="fas fa-arrow-down-wide-short"></i> urgency</span>
             </div>
-            <div class="px-3 py-1 text-[10px] text-slate-400 border-b border-slate-100 flex items-center justify-between"><span>Overdue → <span class="tone tone-angry">ANGRY</span>/<span class="tone tone-dispute">DISPUTE</span> → by deadline</span><label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="select-all"> all visible</label></div>
+            ${toneFilterBar()}
+            <div id="bulk-bar" class="hidden border-b border-slate-200 bg-slate-50 text-xs">
+              <span class="font-semibold mr-1"><span id="bulk-count">0</span> selected</span>
+              <button data-bulk="resolve" class="px-2 py-1 rounded bg-emerald-600 text-white" title="Skips open A-to-Z / chargeback, battery flags and drafts awaiting a manager"><i class="fas fa-check mr-1"></i>Resolve</button>
+              <select data-bulk-select="status" class="field-input text-xs mt-0" style="width:auto"><option value="">Status…</option><option value="open">Open</option><option value="awaiting_customer">Awaiting customer</option><option value="update_customer">Update customer</option></select>
+              <select data-bulk-select="assign" class="field-input text-xs mt-0" style="width:auto"><option value="">Assign…</option><option value="__none">Unassigned</option></select>
+              <select data-bulk-select="tone" class="field-input text-xs mt-0" style="width:auto"><option value="">Tone…</option>${Object.entries(TONE_META).map(([v, m]) => `<option value="${v}">${m.word}</option>`).join('')}</select>
+              ${isManager ? '<button data-bulk="archive" class="px-2 py-1 rounded border border-slate-300 text-slate-700" title="Archive (keeps everything, hides from queue)"><i class="fas fa-box-archive"></i></button>' : ''}
+              <button id="bulk-clear" class="text-slate-500 underline ml-auto">clear</button>
+            </div>
             <div id="inbox-list" class="pane-scroll"><p class="p-4 text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p></div>
             <div id="inbox-count" class="px-3 py-1.5 text-[10px] text-slate-400 border-t border-slate-100"></div>
           </div>
@@ -1215,6 +1224,7 @@
           </div></div>
         </section>`
       document.getElementById('inbox-filter').onchange = (e) => { navigate(`/inbox/${e.target.value}`) }
+      document.getElementById('tone-toggle').onclick = () => { toneOpen = !toneOpen; document.getElementById('tone-filter').classList.toggle('hidden', !toneOpen); document.getElementById('tone-filter').classList.toggle('flex', toneOpen); syncToneButton() }
       wireToneFilter()
       wireBulkBar()
       await loadInboxList()
@@ -1239,13 +1249,15 @@
       const d = deadlineInfo(k, inboxNow)
       const pri = k.tone === 'angry' || k.tone === 'dispute' || k.battery_flag || d.urgency === 0 ? 'high' : d.urgency === 1 || k.open_atoz || k.open_chargebacks ? 'medium' : 'low'
       return `<a href="/cases/${k.id}" data-link data-case-id="${k.id}" class="ticket-item ${k.id === cur ? 'active' : ''} ${d.urgency === 0 ? 'overdue' : ''}">
-        <div class="flex items-start justify-between gap-2">
-          <label class="flex items-start gap-2 min-w-0" onclick="event.stopPropagation()"><input type="checkbox" data-select="${k.id}" class="mt-1" ${selected.has(k.id) ? 'checked' : ''}><span class="text-sm font-medium leading-snug line-clamp-2">${esc(k.subject)}</span></label>
-          <span class="pill pill-${pri}">${pri.toUpperCase()}</span>
+        <div class="flex items-center gap-2">
+          <label class="flex items-center shrink-0" onclick="event.stopPropagation()"><input type="checkbox" data-select="${k.id}" ${selected.has(k.id) ? 'checked' : ''}></label>
+          <span class="ticket-subject flex-1 min-w-0" title="${esc(k.subject)}">${esc(k.subject)}</span>
+          <span class="pill pill-${pri} shrink-0">${pri.toUpperCase()}</span>
         </div>
-        <div class="mt-0.5 text-[11px] text-slate-500">${esc(k.customer_first_name)} ${esc(k.customer_last_name || '')} · <span class="font-mono">${esc(k.order_id || k.case_ref)}</span></div>
-        <div class="mt-1 flex items-center justify-between gap-2 text-[10px]">
-          <span class="flex items-center gap-1 flex-wrap">${statusBadge(k.status)}${toneChip(k.tone)}${k.open_atoz ? '<span class="pill" style="background:#ede9fe;color:#6d28d9">A-to-Z</span>' : ''}${k.open_returns ? '<span class="pill" style="background:#cffafe;color:#155e75">RETURN</span>' : ''}${k.open_chargebacks ? '<span class="pill" style="background:#ffe4e6;color:#9f1239">CHARGEBACK</span>' : ''}${k.battery_flag ? '<span class="pill" style="background:#dc2626;color:#fff"><i class="fas fa-fire"></i></span>' : ''}${k.carrier_status ? `<span class="pill ${k.carrier_status === 'sla_breach' || k.carrier_update_due ? 'bg-sky-600 text-white' : 'bg-sky-100 text-sky-800'}" title="Carrier: ${esc(k.carrier_status.replace(/_/g, ' '))}${k.carrier_update_due ? ' — news for the customer' : ''}"><i class="fas fa-truck-fast"></i>${k.carrier_update_due ? ' NEWS' : ''}</span>` : k.carrier_issue ? '<span class="pill bg-amber-100 text-amber-800" title="Customer reports a delivery problem"><i class="fas fa-truck-fast"></i>?</span>' : ''}</span>
+        <div class="mt-0.5 pl-6 text-[11px] text-slate-500 flex items-center gap-2 min-w-0"><span class="truncate">${esc(k.customer_first_name)} ${esc(k.customer_last_name || '')}</span><span class="font-mono text-slate-400 shrink-0">${esc(k.order_id || k.case_ref)}</span>${k.message_count > 1 ? `<span class="text-slate-400 shrink-0" title="${k.message_count} messages"><i class="far fa-comments"></i> ${k.message_count}</span>` : ''}</div>
+        ${k.last_preview ? `<div class="pl-6 ticket-preview" title="${esc(k.last_preview)}"><span class="who">${k.last_direction === 'outbound' ? 'You: ' : ''}</span>${esc(k.last_preview)}</div>` : ''}
+        <div class="mt-1 pl-6 flex items-center justify-between gap-2 text-[10px]">
+          <span class="flex items-center gap-1 overflow-hidden whitespace-nowrap">${statusBadge(k.status)}${toneChip(k.tone)}${k.open_atoz ? '<span class="pill" style="background:#ede9fe;color:#6d28d9">A-to-Z</span>' : ''}${k.open_returns ? '<span class="pill" style="background:#cffafe;color:#155e75">RETURN</span>' : ''}${k.open_chargebacks ? '<span class="pill" style="background:#ffe4e6;color:#9f1239">CHARGEBACK</span>' : ''}${k.battery_flag ? '<span class="pill" style="background:#dc2626;color:#fff"><i class="fas fa-fire"></i></span>' : ''}${k.carrier_status ? `<span class="pill ${k.carrier_status === 'sla_breach' || k.carrier_update_due ? 'bg-sky-600 text-white' : 'bg-sky-100 text-sky-800'}" title="Carrier: ${esc(k.carrier_status.replace(/_/g, ' '))}${k.carrier_update_due ? ' — news for the customer' : ''}"><i class="fas fa-truck-fast"></i>${k.carrier_update_due ? ' NEWS' : ''}</span>` : k.carrier_issue ? '<span class="pill bg-amber-100 text-amber-800" title="Customer reports a delivery problem"><i class="fas fa-truck-fast"></i>?</span>' : ''}</span>
           <span class="${d.cls} whitespace-nowrap"><i class="far fa-clock"></i> ${esc(d.label)}</span>
         </div>
       </a>`
