@@ -118,7 +118,7 @@
   syncTheme()
   let searchTerm = ''
   document.getElementById('global-search')?.addEventListener('input', (e) => {
-    searchTerm = e.target.value.trim().toLowerCase()
+    searchTerm = e.target.value.trim().toLowerCase(); page = 1
     if (!location.pathname.startsWith('/inbox') && !location.pathname.startsWith('/cases/')) navigate('/inbox')
     else filterInboxList()
   })
@@ -1167,10 +1167,13 @@
     </div>`
   }
   function wireToneFilter() {
-    document.querySelectorAll('#tone-filter [data-tone]').forEach((b) => (b.onclick = () => { const t = b.dataset.tone; toneFilter.has(t) ? toneFilter.delete(t) : toneFilter.add(t); localStorage.setItem('riq.tones', JSON.stringify([...toneFilter])); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); filterInboxList() }))
-    document.getElementById('tone-clear')?.addEventListener('click', () => { toneFilter.clear(); localStorage.setItem('riq.tones', '[]'); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); filterInboxList() })
+    document.querySelectorAll('#tone-filter [data-tone]').forEach((b) => (b.onclick = () => { const t = b.dataset.tone; toneFilter.has(t) ? toneFilter.delete(t) : toneFilter.add(t); localStorage.setItem('riq.tones', JSON.stringify([...toneFilter])); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); page = 1; filterInboxList() }))
+    document.getElementById('tone-clear')?.addEventListener('click', () => { toneFilter.clear(); localStorage.setItem('riq.tones', '[]'); document.getElementById('tone-filter').outerHTML = toneFilterBar(); wireToneFilter(); page = 1; filterInboxList() })
   }
   let inboxShellFilter = null
+  // Paging: 50 or 100 per page (remembered); page resets when the folder / filter / search changes
+  let pageSize = [50, 100].includes(Number(localStorage.getItem('riq.pageSize'))) ? Number(localStorage.getItem('riq.pageSize')) : 50
+  let page = 1
   async function renderInbox(caseId) {
     const shell = document.getElementById('inbox-list')
     if (shell && inboxShellFilter !== listFilter) {
@@ -1220,6 +1223,7 @@
     else document.querySelector('.inbox')?.classList.remove('show-detail')
   }
   async function loadInboxList() {
+    page = 1
     try { const { data } = await axios.get('/api/cases', { params: { status: listFilter } }); inboxCases = data.cases; inboxNow = dayjs(data.now) } catch (err) { return renderError(err) }
     filterInboxList()
   }
@@ -1228,7 +1232,10 @@
     const q = searchTerm
     const rows = inboxCases.filter((k) => (!q || [k.order_id, k.customer_first_name, k.customer_last_name, k.subject, k.case_ref].some((v) => String(v || '').toLowerCase().includes(q))) && (!toneFilter.size || toneFilter.has(k.tone || 'none')))
     const cur = Number((location.pathname.match(/^\/cases\/(\d+)$/) || [])[1])
-    el.innerHTML = rows.length ? rows.map((k) => {
+    const pages = Math.max(1, Math.ceil(rows.length / pageSize))
+    if (page > pages) page = pages
+    const pageRows = rows.slice((page - 1) * pageSize, page * pageSize)
+    el.innerHTML = rows.length ? pageRows.map((k) => {
       const d = deadlineInfo(k, inboxNow)
       const pri = k.tone === 'angry' || k.tone === 'dispute' || k.battery_flag || d.urgency === 0 ? 'high' : d.urgency === 1 || k.open_atoz || k.open_chargebacks ? 'medium' : 'low'
       return `<a href="/cases/${k.id}" data-link data-case-id="${k.id}" class="ticket-item ${k.id === cur ? 'active' : ''} ${d.urgency === 0 ? 'overdue' : ''}">
@@ -1251,9 +1258,21 @@
       const tf = document.getElementById('tone-filter'); if (tf) { tf.outerHTML = toneFilterBar(); wireToneFilter() }
       filterInboxList()
     })
-    const c = document.getElementById('inbox-count'); if (c) c.textContent = `${rows.length} of ${inboxCases.length} conversation(s)`
+    const c = document.getElementById('inbox-count')
+    if (c) {
+      const from = rows.length ? (page - 1) * pageSize + 1 : 0, to = Math.min(page * pageSize, rows.length)
+      c.innerHTML = `<div class="flex items-center justify-between gap-2 flex-wrap">
+        <span>${rows.length ? `${from}–${to} of ${rows.length}` : '0'}${rows.length !== inboxCases.length ? ` (${inboxCases.length} in folder)` : ''}</span>
+        <span class="flex items-center gap-1">
+          ${pages > 1 ? `<button data-page="prev" class="px-1.5 py-0.5 rounded border border-slate-300 ${page === 1 ? 'opacity-40' : 'hover:bg-slate-100'}" ${page === 1 ? 'disabled' : ''} title="Previous page"><i class="fas fa-chevron-left"></i></button><span class="px-1">Page ${page} / ${pages}</span><button data-page="next" class="px-1.5 py-0.5 rounded border border-slate-300 ${page === pages ? 'opacity-40' : 'hover:bg-slate-100'}" ${page === pages ? 'disabled' : ''} title="Next page"><i class="fas fa-chevron-right"></i></button>` : ''}
+          <select id="page-size" class="field-input py-0 text-[10px] mt-0 ml-1" style="width:auto;height:1.4rem" title="Per page">${[50, 100].map((n) => `<option value="${n}" ${pageSize === n ? 'selected' : ''}>${n} / page</option>`).join('')}</select>
+        </span></div>`
+      c.querySelector('[data-page="prev"]')?.addEventListener('click', () => { page--; filterInboxList(); el.scrollTop = 0 })
+      c.querySelector('[data-page="next"]')?.addEventListener('click', () => { page++; filterInboxList(); el.scrollTop = 0 })
+      c.querySelector('#page-size').onchange = (e) => { pageSize = Number(e.target.value); localStorage.setItem('riq.pageSize', String(pageSize)); page = 1; filterInboxList() }
+    }
     el.querySelectorAll('[data-select]').forEach((cb) => { cb.onclick = (e) => { e.stopPropagation(); const id = Number(cb.dataset.select); cb.checked ? selected.add(id) : selected.delete(id); updateBulkBar() } })
-    const sa = document.getElementById('select-all'); if (sa) { sa.checked = rows.length > 0 && rows.every((k) => selected.has(k.id)); sa.onchange = () => { rows.forEach((k) => (sa.checked ? selected.add(k.id) : selected.delete(k.id))); filterInboxList() } }
+    const sa = document.getElementById('select-all'); if (sa) { sa.checked = pageRows.length > 0 && pageRows.every((k) => selected.has(k.id)); sa.onchange = () => { pageRows.forEach((k) => (sa.checked ? selected.add(k.id) : selected.delete(k.id))); filterInboxList() } }
     updateBulkBar()
   }
   function updateBulkBar() {

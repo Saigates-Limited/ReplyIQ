@@ -399,3 +399,6 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
   state now says "28 conversations in this folder, hidden by your tone filter" with a *Show all* button.
 - **503 on "Rewrite with these changes"**: `/api/drafts/:id/revise` tripped the Free-plan CPU limit (an isolate already
   hot from a 40 s sync). The optional-column probe is now cached per isolate; the Workers Paid recommendation stands.
+- **Inbox paging**: 50 or 100 conversations per page (remembered per browser, `riq.pageSize`), pager in the list footer
+  ("1–50 of 81 · Page 1 / 2"). "All visible" selects the current page. Page resets to 1 when the folder, tone filter or
+  search changes. Paging is client-side over the folder's rows.
