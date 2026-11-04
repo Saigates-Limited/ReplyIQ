@@ -112,6 +112,7 @@ casesApi.get('/', async (c) => {
                   WHEN $1 IN ('active','open') THEN cases.status <> 'resolved' AND cases.archived_at IS NULL
                   ELSE cases.status = $1 AND cases.archived_at IS NULL END
        ORDER BY
+         CASE WHEN cases.status = 'resolved' THEN 1 ELSE 0 END,  -- in "All", resolved cases sink to the bottom
          CASE WHEN cases.status <> 'resolved' AND ${DEADLINE_EXPR} < now() THEN 0 ELSE 1 END,
          CASE WHEN cases.tone IN ('angry','dispute') THEN 0 ELSE 1 END,
          ${DEADLINE_EXPR} ASC NULLS LAST`))),
@@ -197,7 +198,7 @@ casesApi.post('/bulk', async (c) => {
       })
       done.push(...todo)
     }
-    return c.json({ done, skipped, action })
+    return c.json({ done, skipped, action, value })
   } finally {
     await sql.end()
   }

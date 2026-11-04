@@ -33,11 +33,11 @@
   const EVENT_LABEL = { atoz_claim: 'A-to-Z claim', atoz_info_request: 'A-to-Z: info requested', atoz_decision: 'A-to-Z decision', return_request: 'Return request', chargeback: 'Chargeback' }
   const EVENT_CLASS = (kind) => (kind.startsWith('atoz') ? 'notice-atoz' : kind === 'chargeback' ? 'notice-chargeback' : 'notice-return')
 
-  function toast(msg, kind = 'ok') {
-    toastEl.textContent = msg
+  function toast(msg, kind = 'ok', html = false) {
+    if (html) toastEl.innerHTML = msg; else toastEl.textContent = msg
     toastEl.className = `fixed bottom-4 right-4 px-4 py-2 rounded-lg shadow-lg text-sm text-white ${kind === 'ok' ? 'bg-emerald-600' : 'bg-red-600'}`
     clearTimeout(toastEl._t)
-    toastEl._t = setTimeout(() => toastEl.classList.add('hidden'), 2500)
+    toastEl._t = setTimeout(() => toastEl.classList.add('hidden'), html ? 6000 : 2500)
   }
 
   // Deadline = 24h after last customer message, or the earliest open Amazon event deadline (whichever is sooner).
@@ -1281,7 +1281,13 @@
   }
   function showBulkResult(r) {
     const verb = { resolve: 'resolved', status: 'updated', assign: 'assigned', tone: 'relabelled', archive: 'archived' }[r.action] || 'done'
-    if (!r.skipped.length) return toast(`${r.done.length} case(s) ${verb}`)
+    // Where did they go? Resolve/archive/status moves cases between folders; say so (and link) instead of leaving staff to guess.
+    const dest = r.action === 'resolve' ? 'resolved' : r.action === 'archive' ? 'archived' : r.action === 'status' ? r.value : null
+    const destLabel = dest && (folderList().find(([v]) => v === dest) || [])[1]
+    const where = !dest || dest === listFilter ? '' : listFilter === 'all' && dest !== 'archived'
+      ? ` — now at the bottom of <em>All</em>; see <a href="/inbox/${dest}" data-link class="underline font-semibold">${esc(destLabel)}</a>`
+      : ` — moved to <a href="/inbox/${dest}" data-link class="underline font-semibold">${esc(destLabel)}</a>`
+    if (!r.skipped.length) return toast(`${r.done.length} case(s) ${verb}${where}`, 'ok', true)
     const modal = document.createElement('div')
     modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50'
     modal.innerHTML = `<div class="bg-white rounded-xl shadow-xl max-w-lg w-full p-5">
