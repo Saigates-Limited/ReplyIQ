@@ -212,6 +212,8 @@ export async function generateDraft(
   // Hard guard: attachments are summarised as counts only. If any file content ever reaches this point, abort.
   assertNoAttachmentContent(userMsg)
   assertNoAttachmentContent(systemMsg)
+  // Hard guard: nothing from the physical-returns desk or refund emails (IMEIs, SPC refs, refund events) may reach the model.
+  if (/\b\d{15}\b/.test(userMsg) || /SPC-[A-Za-z]+-\d{6,}/.test(userMsg) || /refund_initiated/.test(userMsg)) throw new Error('Privacy guard: returns/refund data found in the model payload')
 
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',

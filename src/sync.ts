@@ -6,6 +6,8 @@ import { classifyNotice, parseSellerReplyCopy, parseAtoz, parseReturnAuth, parse
 import { classifyTone } from './tone'
 import { listAttachments } from './gmail'
 import { isAllowedType } from './attachments'
+import { expectedFromNotice } from './returns/service'
+import { ingestRefundEmail, REFUND_MAILBOX } from './returns/refunds'
 import { onCustomerMessage } from './carrier/service'
 
 const AMAZON_DOMAIN = 'marketplace.amazon.co.uk'
@@ -168,11 +170,12 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
     ? await sql`INSERT INTO sync_runs (trigger, mailbox_id) VALUES (${trigger}, ${conn.id}) RETURNING id`
     : await sql`INSERT INTO sync_runs (trigger) VALUES (${trigger}) RETURNING id`
   const result: SyncResult = { threadsSeen: 0, messagesNew: 0, casesNew: 0, skipped: [], query: '', remaining: 0 }
+  currentEnv = env; currentMailboxEmail = conn.email_address
   try {
     const { token } = await accessToken(env, sql, conn.id)
     const lookback = opts.lookbackDays ? `newer_than:${opts.lookbackDays}d` : DEFAULT_LOOKBACK
     // Customer messages + Seller Central reply copies + A-to-Z + returns + chargebacks
-    const q = `(from:${AMAZON_DOMAIN} OR to:${AMAZON_DOMAIN} OR from:atoz-guarantee-no-reply@amazon.co.uk OR from:cb-seller-notification@amazon.co.uk OR (from:donotreply@amazon.com (subject:"Return authorisation notification" OR subject:"Your email to"))) ${lookback}`
+    const q = `(from:${AMAZON_DOMAIN} OR to:${AMAZON_DOMAIN} OR from:atoz-guarantee-no-reply@amazon.co.uk OR from:cb-seller-notification@amazon.co.uk OR (from:donotreply@amazon.com (subject:"Return authorisation notification" OR subject:"Your email to" OR subject:"Refund Initiated for Order"))) ${lookback}`
     result.query = q
     const allIds = await listThreadIds(token, q, opts.lookbackDays ? 500 : 60)
     // Skip threads we already have fully (cheap DB check) so repeated imports make progress
@@ -398,7 +401,15 @@ async function caseForOrder(sql: Sql, orderId: string, opts: { firstName?: strin
 }
 
 /** Ingest one Amazon notice email. Returns 'new' | 'dup' | 'skip'. */
+let currentEnv: Bindings | null = null
+let currentMailboxEmail: string | null = null
 export async function ingestNotice(sql: Sql, m: GmailMessage, kind: NonNullable<ReturnType<typeof classifyNotice>>, result: SyncResult, mailboxId: number | null = null): Promise<'new' | 'dup' | 'skip'> {
+  // Refund emails: only from the designated mailbox (bijalshah.cc@gmail.com). Other mailboxes ignore them so there are no duplicates.
+  if (kind === 'refund_initiated') {
+    if (currentMailboxEmail && currentMailboxEmail.toLowerCase() !== REFUND_MAILBOX) return 'skip'
+    if (!currentEnv) return 'skip'
+    try { return await ingestRefundEmail(sql, currentEnv, m, mailboxId) } catch (e: any) { if (/column|constraint|relation/.test(String(e?.message))) { result.skipped.push({ thread: m.threadId, reason: 'refund email: run migration 0017' }); return 'skip' } throw e }
+  }
   const r = await ingestNoticeInner(sql, m, kind, result)
   // Tag what this notice created with the mailbox it arrived in (columns exist from migration 0013)
   if (r === 'new' && mailboxId != null) {
@@ -461,6 +472,8 @@ async function ingestNoticeInner(sql: Sql, m: GmailMessage, kind: NonNullable<Re
     await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at, kind, event_id, rfc_message_id)
               VALUES (${k.id}, 'inbound', 'Amazon Returns', ${r.excerpt + (r.comment ? `\nCustomer comment: ${r.comment}` : '')}, ${subject}, ${m.id}, ${at}, 'event', ${ev.id}, ${header(m, 'Message-ID') || null})`
     if (r.heat) await sql`UPDATE cases SET battery_flag = TRUE, updated_at = now() WHERE id = ${k.id}`
+    // Physical returns desk: an "Expected" return appears as soon as Amazon authorises it (migration 0017; silently skipped before)
+    await expectedFromNotice(sql, { id: ev.id, case_id: k.id, order_id: r.orderId, sku: r.sku, asin: r.asin, quantity: r.quantity, return_reason: r.reason, customer_comment: r.comment, product: r.product }).catch(() => {})
     return 'new'
   }
 

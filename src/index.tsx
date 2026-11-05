@@ -12,6 +12,9 @@ import { kbApi } from './routes/kb'
 import { promptApi } from './routes/prompt'
 import { templatesApi } from './routes/templates'
 import { carrierApi } from './routes/carrier'
+import { returnsApi } from './routes/returns'
+import { refundsApi } from './routes/refunds'
+import { dailyRefundCheck, isSevenAmLondon, alreadyRanToday } from './returns/refunds'
 import { syncCarrierMail, prepareDueDrafts } from './carrier/service'
 import { runSync } from './sync'
 import { getDb, dbConfigured, type Bindings } from './db'
@@ -93,6 +96,8 @@ app.route('/api', sendApi) // POST /api/drafts/:id/send
 app.route('/api/spapi', spapiApi) // status/test
 app.route('/api', spapiApi) // /cases/:id/fetch-order, /cases/:id/review-request
 app.route('/api/events', eventsApi) // A-to-Z / Returns / Chargebacks trackers
+app.route('/api/returns', returnsApi) // Physical returns desk (Part 1)
+app.route('/api/refunds', refundsApi) // Refunds without return (Part 2)
 app.route('/api/messages', messagesApi) // tone override
 app.route('/api/kb', kbApi) // knowledge base rules for the drafting model
 app.route('/api/prompt', promptApi) // custom system prompt (manager only)
@@ -127,6 +132,7 @@ app.get('/api/settings', (c) =>
 )
 app.get('/atoz', (c) => c.html(page(c.get('user'))))
 app.get('/returns', (c) => c.html(page(c.get('user'))))
+app.get('/returns/:rest', (c) => c.html(page(c.get('user'))))
 app.get('/chargebacks', (c) => c.html(page(c.get('user'))))
 app.get('/carriers', (c) => c.html(page(c.get('user'))))
 app.get('/carriers/:id', (c) => c.html(page(c.get('user'))))
@@ -159,6 +165,16 @@ export default {
             console.log('carrier sync', JSON.stringify({ ...cr, ...pr }))
           } catch (e) {
             if (!/relation "(carrier_|app_settings)/.test(String((e as Error)?.message))) console.error('carrier sync failed', e)
+          }
+          // Daily "refund without return" check at 07:00 Europe/London. Cron fires 06:00 and 07:00 UTC (see wrangler.jsonc);
+          // only the one that is 07:00 in London runs, and only once a day. Read-only towards Gmail; sends nothing.
+          try {
+            if (_event.cron !== '*/15 * * * *' && isSevenAmLondon() && !(await alreadyRanToday(sql, 'refund_check'))) {
+              const rr = await dailyRefundCheck(sql, env, 'cron')
+              console.log('refund check', JSON.stringify(rr))
+            }
+          } catch (e) {
+            if (!/column|relation/.test(String((e as Error)?.message))) console.error('refund check failed', e)
           }
         } catch (e) {
           console.error('scheduled run failed', e)

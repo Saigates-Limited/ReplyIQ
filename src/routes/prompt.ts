@@ -118,7 +118,7 @@ promptApi.post('/test', async (c) => {
     for (const m of messages as any[]) m.attachments = atts.filter((a) => a.message_id === m.id)
     const events = await sql<EventRow[]>`
       SELECT kind, status, amount, currency, received_at, deadline_at, return_reason, customer_comment, authorisation, policy_check, item_description
-      FROM amazon_events WHERE case_id = ${caseId} ORDER BY received_at ASC`
+      FROM amazon_events WHERE case_id = ${caseId} AND kind <> 'refund_initiated' ORDER BY received_at ASC  -- refund emails never reach the model (privacy rule, Phase 15)`
     if (mode === 'customer' && !messages.some((m) => m.direction === 'inbound' && m.kind !== 'event')) return c.json({ error: 'That case has no customer message to reply to' }, 400)
     const kbRules = await loadActiveRules(sql, mode)
     const current = await loadCurrentPrompt(sql)

@@ -9,7 +9,8 @@
   "assets": { "directory": "./public", "binding": "ASSETS" },
 
   // Gmail poller: every 15 minutes, read-only. Email is only ever sent by a staff member pressing Send.
-  "triggers": { "crons": ["*/15 * * * *"] },
+  // 06:00 + 07:00 UTC = 07:00 London in BST and GMT respectively; the handler runs the daily refund check only when it is 07:00 in London.
+  "triggers": { "crons": ["*/15 * * * *", "0 6 * * *", "0 7 * * *"] },
 
   // Cloudflare Hyperdrive → Supabase session pooler (5432). Direct Worker→Supavisor TLS does not complete.
   "hyperdrive": [

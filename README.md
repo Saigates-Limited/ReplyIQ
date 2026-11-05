@@ -408,3 +408,20 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
   ours), then badges + deadline. Tone chips live behind a **Tone** toggle (badge shows how many are active); bulk actions
   are a single compact row that appears only when something is selected. `GET /api/cases` now returns `last_preview` and
   `last_direction`.
+
+## Phase 15 — Physical returns desk + "Refunds without return" (Nov 2026)
+**Migration:** `db/migrations/0017_returns_and_refunds.sql` (run in Supabase before deploying).
+
+**Part 1 — Physical returns** (`/returns`, module `public/static/returns.js`, API `/api/returns`)
+- Flow Expected → Received → Inspected → Outcome agreed → Closed; one row per return, one `return_items` row per phone (IMEI as TEXT, Luhn-checked).
+- Expected rows created automatically from Amazon return-authorisation notices; manual "New return" too. Receive by order ID / IMEI records date + user.
+- Rules: cable field (not returned + change of mind → manager flag; damaged/burnt → battery flag), FRP lock → 2-day activation-lock deadline + case `update_customer`, partial refund > £15 → manager approval, battery keywords → battery flag, received with no outcome after 2 UK working days → red/overdue, repeat return by order ID or IMEI → warning + link.
+- SKU / supplier drop-downs (`return_skus`, `return_supplier_codes` seeded SW001…RT001; managers add). Days since order/delivery computed.
+- Import (`/returns/import`, manager): CSV dry run → review list (bad IMEI, unmatched SKU, wrong-column values) + SKU mapping → commit. Export CSV (`/api/returns/export.csv?from=&to=`), Reports tab (supplier, model, reasons, outcomes, missing cable, repeats).
+- Case screen shows a "Physical returns" panel; dashboard shows a "Returns need attention" banner. Nothing from returns is sent to OpenAI (hard guard in `src/ai.ts`).
+
+**Part 2 — Refunds without return** (`/returns/refunds`, API `/api/refunds`)
+- `refund_initiated` events ingested from bijalshah.cc@gmail.com only (subject "Refund Initiated for Order"); buyer name stripped; deduped by Gmail id; linked to case + return by order ID.
+- Daily check 07:00 UK (crons 06:00 + 07:00 UTC, London-hour gate): Buyer Cancelled + shipped → alert; Customer Return + not Received → alert; other reason → manager review; alerts clear when the phone is marked Received. 90-day resumable back-check in 15-day windows. Runs logged in `sync_runs` (trigger `refund_check`).
+- Alert statuses open/chasing/claim filed/recovered/written off (claim filed / written off manager-only), notes, who updated. Sidebar badge "Refunds, no return" + dashboard banner line.
+- Tests: `tests/returns.test.ts` (IMEI, rules, importer, both sample refund emails, partial case), `tests/refunds.e2e.ts` (local DB ingest + reconcile).

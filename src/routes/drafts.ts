@@ -66,7 +66,7 @@ async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: numb
   for (const m of messages as any[]) m.attachments = atts.filter((a) => a.message_id === m.id)
   const events = await sql<EventRow[]>`
     SELECT kind, status, amount, currency, received_at, deadline_at, return_reason, customer_comment, authorisation, policy_check, item_description
-    FROM amazon_events WHERE case_id = ${caseId} ORDER BY received_at ASC`
+    FROM amazon_events WHERE case_id = ${caseId} AND kind <> 'refund_initiated' ORDER BY received_at ASC  -- refund emails never reach the model (privacy rule, Phase 15)`
   if (!messages.length && !events.length) return { error: 'Case has no messages to reply to', status: 400 as const }
   if (mode === 'customer' && !messages.some((m) => m.direction === 'inbound' && m.kind !== 'event'))
     return { error: 'No customer message on this case to reply to. Use a Seller Central mode instead.', status: 400 as const }

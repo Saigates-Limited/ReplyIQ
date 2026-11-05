@@ -239,3 +239,4 @@ html.dark .bg-rose-100 { background-color:#881337; } html.dark .text-rose-800 { 
 .side-nav .nav-sub-tab.active { background:#1d4ed8; color:#fff; }
 .nav-badge-amber { background:#f59e0b; color:#0f172a; }
 html.sb-collapsed .side-nav .nav-sub { margin-left:0; padding-left:0; border-left:0; }
+.nav-badge-red { background:#dc2626; color:#fff; }

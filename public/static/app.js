@@ -74,9 +74,10 @@
     const m = location.pathname.match(/^\/cases\/(\d+)$/)
     const p = location.pathname
     const cm = p.match(/^\/carriers\/(\d+)$/)
+    const rm = p.match(/^\/returns\/(\d+)$/)
     const fm = p.match(/^\/inbox\/([a-z_]+)$/)
     if (fm && folderList().some(([v]) => v === fm[1])) { listFilter = fm[1]; localStorage.setItem('riq.filter', listFilter) }
-    setActiveNav(m || p === '/inbox' || fm ? 'messages' : p.startsWith('/carriers') ? 'carriers' : p === '/atoz' ? 'atoz' : p === '/returns' ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
+    setActiveNav(m || p === '/inbox' || fm ? 'messages' : p.startsWith('/carriers') ? 'carriers' : p === '/atoz' ? 'atoz' : p.startsWith('/returns') ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
     refreshBadges()
     document.getElementById('sidebar')?.classList.remove('open')
     if (m) renderInbox(Number(m[1]))
@@ -90,7 +91,13 @@
     else if (p === '/knowledge') renderKnowledge()
     else if (p === '/templates') renderTemplates()
     else if (p === '/atoz') renderTracker('atoz')
-    else if (p === '/returns') renderTracker('return')
+    else if (p === '/returns' && returnsUI) returnsUI.renderDesk()
+    else if (rm && returnsUI) returnsUI.renderReturn(Number(rm[1]))
+    else if (p === '/returns/notices' && returnsUI) returnsUI.renderNotices()
+    else if (p === '/returns/refunds' && returnsUI) returnsUI.renderRefunds()
+    else if (p === '/returns/import' && returnsUI) returnsUI.renderImport()
+    else if (p === '/returns/reports' && returnsUI) returnsUI.renderReports()
+    else if (p.startsWith('/returns')) renderTracker('return')
     else if (p === '/chargebacks') renderTracker('chargeback')
     else if (cm && carrierUI) carrierUI.renderParcel(Number(cm[1]))
     else if (p === '/carriers' && carrierUI) carrierUI.renderDesk()
@@ -136,6 +143,7 @@
       set('folder-open', data.messages); set('folder-awaiting_customer', data.awaiting_customer); set('folder-update_customer', data.update_customer)
       if (data.kb_pending !== undefined) set('kb', data.kb_pending)
       if (carrierUI) set('carriers', await carrierUI.badgeCount())
+      if (returnsUI) { const rc = await returnsUI.counts(); set('returns', (data.returns || 0) + (rc.physical || 0)); set('refund-alerts', rc.refunds) }
     } catch {}
     badgeTimer = setTimeout(refreshBadges, 120000)
   }
@@ -157,6 +165,9 @@
 
   // Carrier desk (public/static/carrier.js). Function declarations below are hoisted, so they can be handed over here.
   const carrierUI = window.RiqCarrier ? window.RiqCarrier({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderCase: (id) => renderCase(id), renderError: (e) => renderError(e), refreshBadges: () => refreshBadges(), generate: (id, mode) => generate(id, mode) }) : null
+
+  // Physical returns + refunds-without-return (public/static/returns.js)
+  const returnsUI = window.RiqReturns ? window.RiqReturns({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderError: (e) => renderError(e), refreshBadges: () => refreshBadges(), renderTracker: (k) => renderTracker(k) }) : null
 
   // ---------- header clock ----------
   const clock = document.getElementById('header-clock')
@@ -361,6 +372,7 @@
             </section>
 
             <section id="carrier-panel" class="bg-white rounded-xl shadow-sm p-5 hidden"></section>
+            <section id="returns-panel"></section>
 
             <section id="customer-panel" class="bg-white rounded-xl shadow-sm p-5">
               <h2 class="font-semibold mb-3"><i class="far fa-user mr-2 text-slate-400"></i>Customer</h2>
@@ -430,6 +442,7 @@
     wireTicket(id, k)
     wireAmazonOrder(id, k)
     carrierUI?.mountCasePanel(id, k)
+    returnsUI?.mountCasePanel(id, k)
     renderDraftWorkspace(id, k, data.drafts, data.events)
     const sc = document.getElementById('chat-scroll'); if (sc) sc.scrollTop = sc.scrollHeight
     document.querySelectorAll('#inbox-list .ticket-item').forEach((el) => el.classList.toggle('active', Number(el.dataset.caseId) === id))
@@ -1358,6 +1371,7 @@
           <ul class="text-sm grid sm:grid-cols-2 gap-x-6 gap-y-1">${alerts.map(({ k, t, cls }) => `<li class="flex gap-2 min-w-0"><span class="${cls} font-medium whitespace-nowrap">${t}:</span><a href="/cases/${k.id}" data-link class="truncate hover:underline">${esc(k.subject)} <span class="text-slate-400 font-mono text-xs">${esc(k.order_id || k.case_ref)}</span></a></li>`).join('')}</ul>
           <a href="/inbox" data-link class="inline-block mt-3 px-3 py-1.5 rounded-md bg-red-600 text-white text-sm font-medium">Open inbox →</a>
         </div>` : '<div class="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"><i class="fas fa-circle-check mr-1"></i>Nothing overdue and no hot conversations. Nice.</div>'}
+        <div id="returns-strip"></div>
         <div id="carrier-strip"></div>
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
           <div class="kpi" style="--kpi:#2563eb"><div class="l">Open conversations</div><div class="v">${counts.messages}</div><div class="text-xs text-slate-500">${due4h.length} due within 4h</div></div>
@@ -1380,6 +1394,10 @@
         </div>
       </section>`
     if (carrierUI) carrierUI.dashboardStrip().then((html) => { const el = document.getElementById('carrier-strip'); if (el) el.innerHTML = html })
+    if (returnsUI) returnsUI.dashboardLines().then((lines) => {
+      const el = document.getElementById('returns-strip'); if (!el || !lines.length) return
+      el.innerHTML = `<div class="mb-4 rounded-xl border border-red-200 bg-red-50 p-4"><div class="font-semibold text-red-800 mb-1"><i class="fas fa-box-open mr-1"></i>Returns need attention</div><ul class="text-sm space-y-1">${lines.map((l) => `<li><a href="${l.href}" data-link class="${l.cls} font-medium hover:underline"><i class="fas ${l.icon} mr-1"></i>${esc(l.text)}</a></li>`).join('')}</ul></div>`
+    })
   }
 
 

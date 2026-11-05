@@ -7,7 +7,7 @@
 
 export const ORDER_RE = /\b(\d{3}-\d{7}-\d{7})\b/
 
-export type NoticeKind = 'seller_reply_copy' | 'atoz_claim' | 'atoz_info_request' | 'atoz_decision' | 'return_request' | 'chargeback' | null
+export type NoticeKind = 'seller_reply_copy' | 'atoz_claim' | 'atoz_info_request' | 'atoz_decision' | 'return_request' | 'chargeback' | 'refund_initiated' | null
 
 const norm = (s: string) => s.replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ')
 
@@ -23,6 +23,7 @@ export function classifyNotice(from: string, subject: string): NoticeKind {
   if (f.includes('donotreply@amazon')) {
     if (/^return authori[sz]ation notification/.test(s)) return 'return_request'
     if (/^your e-?mail to /.test(s)) return 'seller_reply_copy'
+    if (/^refund initiated for order/.test(s)) return 'refund_initiated'
   }
   return null
 }
