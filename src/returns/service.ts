@@ -6,6 +6,20 @@ import { evaluateItem, isOverdue, daysSince, canMove, FRP_UNLOCK_DAYS, type Retu
 
 export type Sql = ReturnType<typeof getDb>
 
+let archiveColKnown: boolean | null = null
+/** 0018 adds returns.archived_at; until it is run, lists simply show everything. */
+export async function hasReturnArchive(sql: Sql) {
+  if (archiveColKnown !== null) return archiveColKnown
+  const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'returns' AND column_name = 'archived_at'`.catch(() => [] as any[])
+  archiveColKnown = !!r
+  return archiveColKnown
+}
+/** Archive instead of delete (manager). Keeps phones, photos and history; hidden from lists/counts; the DB refuses DELETE (0018). */
+export async function archiveReturn(sql: Sql, id: number, userId: number, archive: boolean) {
+  if (!(await hasReturnArchive(sql))) throw new Error('Archiving returns needs migration 0018 (db/migrations/0018_returns_archive_guard.sql) to be run in Supabase first.')
+  const [r] = await sql`UPDATE returns SET archived_at = ${archive ? new Date() : null}, archived_by = ${archive ? userId : null}, updated_at = now() WHERE id = ${id} RETURNING id`
+  return !!r
+}
 export const tableMissing = (e: any) => /relation "(returns|return_items|return_skus|return_supplier_codes|return_photos|return_import_batches)"/.test(String(e?.message))
 
 // ───────── lookups ─────────
@@ -162,7 +176,7 @@ export async function updateItem(sql: Sql, itemId: number, userId: number, role:
   await sql`UPDATE return_items SET ${sql(up)} WHERE id = ${itemId}`
   // Mirror to the case
   if (rule.batteryFlag && it.case_id) await sql`UPDATE cases SET battery_flag = TRUE, updated_at = now() WHERE id = ${it.case_id}`.catch(() => {})
-  if (rule.startActivationLock && it.case_id) await sql`UPDATE cases SET status = CASE WHEN status IN ('open','awaiting_customer') THEN 'update_customer' ELSE status END, updated_at = now() WHERE id = ${it.case_id}`.catch(() => {})
+  if (rule.startActivationLock && it.case_id) await sql`UPDATE cases SET status = CASE WHEN status IN ('open','awaiting_customer') THEN 'update_customer' ELSE status END, status_changed_at = CASE WHEN status IN ('open','awaiting_customer') THEN now() ELSE status_changed_at END, updated_at = now() WHERE id = ${it.case_id}`.catch(() => sql`UPDATE cases SET status = CASE WHEN status IN ('open','awaiting_customer') THEN 'update_customer' ELSE status END, updated_at = now() WHERE id = ${it.case_id}`.catch(() => {}))
   // Return status moves forward automatically with the data
   const [agg] = await sql`SELECT COUNT(*) FILTER (WHERE reason_category IS NOT NULL)::int AS inspected, COUNT(*) FILTER (WHERE outcome IS NOT NULL)::int AS decided, COUNT(*)::int AS n FROM return_items WHERE return_id = ${it.return_id}`
   const [ret] = await sql`SELECT status FROM returns WHERE id = ${it.return_id}`
@@ -211,9 +225,9 @@ export async function reports(sql: Sql, from: string | null, to: string | null) 
 }
 
 /** CSV export (date range on received/created). No customer names unless legacy rows. */
-export async function exportCsv(sql: Sql, from: string | null, to: string | null) {
+export async function exportCsv(sql: Sql, from: string | null, to: string | null, includeNames = false) {
   const rows = await sql`
-    SELECT r.id, r.order_id, r.order_date, r.delivery_date, r.marketplace, r.sku, r.asin, r.quantity, r.amazon_reason, r.status, r.return_tracking, r.received_at, r.closed_at, r.notes AS return_notes, c.case_ref,
+    SELECT r.id, r.order_id, r.order_date, r.delivery_date, r.marketplace, r.sku, r.asin, r.quantity, r.amazon_reason, r.status, r.return_tracking, r.received_at, r.closed_at, r.notes AS return_notes, c.case_ref, ${includeNames ? sql`r.legacy_customer_name,` : sql``}
            i.item_no, i.imei, i.imei_matches, i.reason_category, i.cable, i.frp_lock, i.battery_health, i.fault_found, i.supplier_code, i.outcome, i.refund_amount, i.replacement_imei, i.replacement_sent_on, i.repair_completed_on, i.cms_ticket, i.compensation_ref, i.stock_disposition, i.notes AS item_notes
     FROM returns r LEFT JOIN cases c ON c.id = r.case_id LEFT JOIN return_items i ON i.return_id = r.id
     WHERE COALESCE(r.received_at, r.created_at) >= ${from ?? '2000-01-01'}::date AND COALESCE(r.received_at, r.created_at) < (${to ?? '2100-01-01'}::date + 1)

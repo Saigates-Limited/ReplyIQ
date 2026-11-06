@@ -118,6 +118,27 @@ app.get('/knowledge', (c) => c.html(page(c.get('user'))))
 app.get('/settings/prompt', (c) => c.html(page(c.get('user'))))
 app.get('/templates', (c) => c.html(page(c.get('user'))))
 app.get('/api/policy', (c) => c.json({ markdown: instructions, model: MODEL, tone_model: TONE_MODEL }))
+// GET /api/settings/migrations (manager) — which db/migrations files have been applied, by checking each one's marker object.
+app.get('/api/settings/migrations', async (c) => {
+  if (c.get('user').role !== 'manager') return c.json({ error: 'Managers only' }, 403)
+  const sql = getDb(c.env)
+  try {
+    const MARKERS: [string, 'table' | 'column' | 'trigger', string, string?][] = [
+      ['0002_repair_quote_accepted', 'column', 'cases', 'repair_quote_accepted'], ['0003_draft_urgency', 'column', 'drafts', 'urgency'],
+      ['0004_gmail', 'table', 'gmail_connection'], ['0005_thread_not_unique', 'table', 'gmail_threads_seen'], ['0006_events_tickets_tone', 'table', 'amazon_events'],
+      ['0007_draft_mode', 'column', 'drafts', 'mode'], ['0008_hardening', 'trigger', 'trg_cases_no_delete'], ['0008b_archive_columns', 'column', 'cases', 'archived_at'],
+      ['0009_attachments_replyto', 'table', 'attachments'], ['0009b_attachments_checked', 'column', 'messages', 'attachments_checked_at'], ['0010_spapi', 'table', 'amazon_orders'],
+      ['0011_knowledge_base', 'table', 'kb_rules'], ['0012_system_prompt', 'table', 'system_prompt_versions'], ['0013_multi_mailbox', 'column', 'gmail_connection', 'label'],
+      ['0014_templates_and_kb_seed', 'table', 'reply_templates'], ['0015_carrier_desk', 'table', 'carrier_cases'], ['0016_draft_revisions', 'column', 'drafts', 'revision_of'],
+      ['0017_returns_and_refunds', 'table', 'returns'], ['0018_returns_archive_guard', 'trigger', 'trg_returns_no_delete'],
+    ]
+    const tables = new Set((await sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`).map((r: any) => r.table_name))
+    const cols = new Set((await sql`SELECT table_name || '.' || column_name AS k FROM information_schema.columns WHERE table_schema = 'public'`).map((r: any) => r.k))
+    const trgs = new Set((await sql`SELECT tgname FROM pg_trigger WHERE NOT tgisinternal`).map((r: any) => r.tgname))
+    const migrations = MARKERS.map(([file, kind, a, b]) => ({ file, applied: kind === 'table' ? tables.has(a) : kind === 'column' ? cols.has(`${a}.${b}`) : trgs.has(a), marker: kind === 'column' ? `${a}.${b}` : a }))
+    return c.json({ migrations })
+  } finally { await sql.end() }
+})
 app.get('/api/settings', (c) =>
   c.json({
     draft_model: MODEL,

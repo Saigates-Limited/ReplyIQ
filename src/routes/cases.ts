@@ -77,10 +77,21 @@ const CASE_COLUMNS_Q = `
 `
 // Effective deadline: the 24h customer-reply deadline (only when a real customer message exists on the case)
 // or the earliest open Amazon event deadline, whichever is sooner.
-const DEADLINE_EXPR = `LEAST(
+// "Update customer" has its own clock: 24 h after the status was set (status_changed_at, migration 0018).
+let statusChangedKnown: boolean | null = null
+async function hasStatusChangedCol(sql: ReturnType<typeof getDb>) {
+  if (statusChangedKnown !== null) return statusChangedKnown
+  const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'status_changed_at'`
+  statusChangedKnown = !!r
+  return statusChangedKnown
+}
+const deadlineExpr = (hasSc: boolean) => `LEAST(
   CASE WHEN EXISTS (SELECT 1 FROM messages m WHERE m.case_id = cases.id AND m.direction = 'inbound' AND m.kind <> 'event')
        THEN cases.last_customer_message_at + INTERVAL '24 hours' END,
+  ${hasSc ? `CASE WHEN cases.status = 'update_customer' THEN COALESCE(cases.status_changed_at, cases.updated_at) + INTERVAL '24 hours' END,` : ''}
   (SELECT MIN(e.deadline_at) FROM amazon_events e WHERE e.case_id = cases.id AND e.status IN ('open','info_requested')))`
+// Stamp the status clock whenever status changes (single edit, bulk, resolve). No-op before 0018.
+const stampStatus = (hasSc: boolean) => (hasSc ? `, status_changed_at = now()` : '')
 // Open Amazon events per case (for tabs + queue badges)
 const EVENT_FLAGS = `
   (SELECT COUNT(*) FROM amazon_events e WHERE e.case_id = cases.id AND e.kind LIKE 'atoz%' AND e.status NOT IN ('won','lost','closed'))::int AS open_atoz,
@@ -99,6 +110,7 @@ casesApi.get('/', async (c) => {
     // "Deadline" is the earlier of the 24h customer-reply deadline and any open Amazon event deadline.
     const has = await hasArchiveCols(sql)
     const carrierCols = await hasCarrierCols(sql)
+    const DEADLINE_EXPR = deadlineExpr(await hasStatusChangedCol(sql))
     const rows = await sql.unsafe(
       mailboxExpr(await hasMailboxCol(sql), spapiExpr(await hasSpapiCols(sql), archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS},
               (SELECT COUNT(*) FROM messages m WHERE m.case_id = cases.id AND m.kind <> 'event')::int AS message_count,
@@ -188,9 +200,10 @@ casesApi.post('/bulk', async (c) => {
     }
     if (todo.length) {
       const tl = todo.join(',')
+      const hasSc = await hasStatusChangedCol(sql)
       await sql.begin(async (tx) => {
-        if (action === 'resolve') await tx`UPDATE cases SET status = 'resolved' WHERE id = ANY(string_to_array(${tl}, ',')::int[])`
-        else if (action === 'status') await tx`UPDATE cases SET status = ${value as string} WHERE id = ANY(string_to_array(${tl}, ',')::int[])`
+        if (action === 'resolve') await tx.unsafe(`UPDATE cases SET status = 'resolved', updated_at = now()${stampStatus(hasSc)} WHERE id = ANY(string_to_array($1, ',')::int[])`, [tl])
+        else if (action === 'status') await tx.unsafe(`UPDATE cases SET status = $2, updated_at = now()${stampStatus(hasSc)} WHERE id = ANY(string_to_array($1, ',')::int[])`, [tl, value as string])
         else if (action === 'assign') await tx`UPDATE cases SET assigned_to = ${value as number | null} WHERE id = ANY(string_to_array(${tl}, ',')::int[])`
         else if (action === 'tone') {
           await tx`UPDATE cases SET tone = ${value as string} WHERE id = ANY(string_to_array(${tl}, ',')::int[])`
@@ -319,8 +332,9 @@ casesApi.patch('/:id', async (c) => {
     if ('delivery_date' in updates && hasSp) updates.delivery_date_source = updates.delivery_date ? 'staff' : null
     const cols = Object.keys(updates)
     const has = await hasArchiveCols(sql)
+    const stamp = 'status' in updates ? stampStatus(await hasStatusChangedCol(sql)) : ''
     const [row] = await sql.unsafe(
-      `UPDATE cases SET ${cols.map((k, i) => `${k} = $${i + 2}`).join(', ')}, updated_at = now()
+      `UPDATE cases SET ${cols.map((k, i) => `${k} = $${i + 2}`).join(', ')}, updated_at = now()${stamp}
        WHERE id = $1 RETURNING ${mailboxExpr(await hasMailboxCol(sql), spapiExpr(hasSp, has ? CASE_COLUMNS : CASE_COLUMNS.replace('archived_at,', 'NULL::timestamptz AS archived_at,')))}`,
       [id, ...cols.map((k) => updates[k])] as any[]
     )

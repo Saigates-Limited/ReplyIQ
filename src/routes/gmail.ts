@@ -3,6 +3,10 @@ import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
 import { authUrl, exchangeCode, encryptToken, decryptToken, revokeToken, getProfile, getConnection, listConnections, hasMultiMailbox, accessToken, sendReply, requireGoogleConfig, GMAIL_SCOPES } from '../gmail'
 import { runSync, backfillAttachments } from '../sync'
+import { REFUND_MAILBOX } from '../returns/refunds'
+
+/** Amazon only accepts buyer-messaging replies from the address registered on Seller Central. Every reply goes from that mailbox, whichever mailbox the copy arrived in. */
+const AMAZON_REPLY_MAILBOX = REFUND_MAILBOX
 import { serverChecks, redactPii, type CaseRow } from '../ai'
 import { classifyTone } from '../tone'
 import { getAttachment, getMessage } from '../gmail'
@@ -357,8 +361,15 @@ sendApi.post('/drafts/:id/send', async (c) => {
     if (!claimed.length) return c.json({ error: 'Draft is already being sent' }, 409)
 
     try {
-      // Reply from the mailbox the customer wrote to (case.mailbox_id); fall back to the default mailbox.
-      const { token, conn } = await accessToken(c.env, sql, (kase as any).mailbox_id ?? null)
+      // Amazon reply lock: buyer replies are ONLY sent from the Seller Central-registered address, never from a staff mailbox
+      // (Amazon rejects/blocks replies from any other sender). If that mailbox is not connected, sending is refused.
+      const conns = await listConnections(sql)
+      const amazonConn = conns.find((x) => x.email_address.toLowerCase() === AMAZON_REPLY_MAILBOX && x.enabled)
+      if (!amazonConn) {
+        await sql`UPDATE drafts SET status = 'approved', updated_at = now() WHERE id = ${id} AND status = 'sending'`
+        return c.json({ error: `Replies to Amazon customers must go from ${AMAZON_REPLY_MAILBOX} (the address registered on Seller Central). That mailbox is not connected or is paused — connect it under Gmail, or copy the text into Seller Central and Mark as sent.` }, 409)
+      }
+      const { token, conn } = await accessToken(c.env, sql, amazonConn.id)
       const sent = await sendReply(token, {
         from: conn.email_address,
         to: kase.customer_reply_to,

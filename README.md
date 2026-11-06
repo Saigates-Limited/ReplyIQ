@@ -425,3 +425,15 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - Daily check 07:00 UK (crons 06:00 + 07:00 UTC, London-hour gate): Buyer Cancelled + shipped → alert; Customer Return + not Received → alert; other reason → manager review; alerts clear when the phone is marked Received. 90-day resumable back-check in 15-day windows. Runs logged in `sync_runs` (trigger `refund_check`).
 - Alert statuses open/chasing/claim filed/recovered/written off (claim filed / written off manager-only), notes, who updated. Sidebar badge "Refunds, no return" + dashboard banner line.
 - Tests: `tests/returns.test.ts` (IMEI, rules, importer, both sample refund emails, partial case), `tests/refunds.e2e.ts` (local DB ingest + reconcile).
+
+## Phase 15b — follow-ups (Nov 2026)
+**Migration:** `db/migrations/0018_returns_archive_guard.sql` — returns archive columns, BEFORE DELETE triggers on `returns`/`return_items`/`return_photos`, `cases.status_changed_at`.
+- Returns are archived, never deleted (manager-only `POST /api/returns/:id/archive|unarchive`; `DELETE` returns 405; the database refuses DELETE). "Archived" view on the Returns desk.
+- CSV export leaves out `legacy_customer_name` unless a manager uses `?include_names=1` ("Export with legacy names" on Reports).
+- Import: a bad IMEI is stored as empty with a review flag; the row still imports.
+- "Update customer" now has a deadline: 24 h after the status was set (`status_changed_at`, stamped on single edits, bulk actions and resolve).
+- Amazon reply lock: customer replies are sent only from the Seller Central-registered mailbox (bijalshah.cc@gmail.com); sending is refused if it is not connected.
+- Throttled all-mailbox import: the 12-thread round budget is shared across mailboxes (min 4 each).
+- Rewrite guardrails: change requests that ask to ignore policy, offer > £15, promise full refunds, hide warranty/return info, address Amazon, or include IMEI/internal notes are refused before the model runs; the rewrite is re-checked and the agent is told if it now fails or needs a manager.
+- Bulk actions show a persistent result banner above the inbox list (count, destination folder, skipped cases with reasons).
+- Settings → "Database migrations" card (manager) shows which migration files have run against the live database.

@@ -23,7 +23,7 @@ window.RiqReturns = function (h) {
   }
 
   // ───────── Physical returns list ─────────
-  const VIEWS = [['open', 'Open'], ['expected', 'Expected'], ['received', 'Received'], ['inspected', 'Inspected'], ['outcome_agreed', 'Outcome agreed'], ['overdue', 'Overdue'], ['manager', 'Needs manager'], ['closed', 'Closed'], ['all', 'All']]
+  const VIEWS = [['open', 'Open'], ['expected', 'Expected'], ['received', 'Received'], ['inspected', 'Inspected'], ['outcome_agreed', 'Outcome agreed'], ['overdue', 'Overdue'], ['manager', 'Needs manager'], ['closed', 'Closed'], ['all', 'All'], ['archived', 'Archived']]
   let view = (() => { try { return localStorage.getItem('riq.returnsView') || 'open' } catch { return 'open' } })()
   let q = ''
 
@@ -174,7 +174,7 @@ window.RiqReturns = function (h) {
             ${st === 'expected' ? `<button id="ret-receive" class="px-4 py-2 rounded-md bg-sky-600 text-white font-medium"><i class="fas fa-box-open mr-1"></i>Received</button>` : ''}
             ${['received', 'inspected', 'outcome_agreed'].includes(st) ? `<button id="ret-close" class="px-4 py-2 rounded-md bg-emerald-700 text-white font-medium" ${r.items_without_outcome || r.manager_items ? 'disabled title="Every phone needs an outcome and any manager flags cleared first"' : ''}><i class="fas fa-check mr-1"></i>Close return</button>` : ''}
             ${st === 'closed' ? `<button id="ret-reopen" class="px-3 py-2 rounded-md border border-slate-300">Reopen</button>` : ''}
-            ${st === 'expected' && isManager ? `<button id="ret-delete" class="px-3 py-2 rounded-md text-red-700 hover:bg-red-50" title="Only an Expected return can be deleted"><i class="far fa-trash-can"></i></button>` : ''}
+            ${isManager ? (r.archived_at ? `<button id="ret-archive" data-un="1" class="px-3 py-2 rounded-md border border-slate-300 text-sm" title="Bring this return back into the lists"><i class="fas fa-box-open mr-1"></i>Unarchive</button>` : `<button id="ret-archive" class="px-3 py-2 rounded-md text-slate-600 hover:bg-slate-100" title="Archive (keeps phones, photos and history; hides from lists). Returns are never deleted."><i class="fas fa-box-archive"></i></button>`) : ''}
           </div>
         </header>
         <ol class="flex flex-wrap gap-1 mb-5 text-xs">${steps.map((s, i) => `<li class="flex items-center gap-1 px-2.5 py-1 rounded-full ${i < stepIdx ? 'bg-emerald-100 text-emerald-800' : i === stepIdx ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-400'}">${i < stepIdx ? '<i class="fas fa-check"></i>' : `<span class="font-bold">${i + 1}</span>`} ${lbl('status', s)}</li>`).join('<li class="text-slate-300 self-center">›</li>')}</ol>
@@ -225,7 +225,7 @@ window.RiqReturns = function (h) {
     document.getElementById('ret-receive')?.addEventListener('click', () => receiveModal(r, reload))
     document.getElementById('ret-close')?.addEventListener('click', async () => { if (!confirm('Close this return? Refund issued / replacement or repair dispatched.')) return; try { await axios.patch(`/api/returns/${id}`, { status: 'closed' }); toast('Return closed'); h.refreshBadges(); reload() } catch (e) { err(e) } })
     document.getElementById('ret-reopen')?.addEventListener('click', async () => { try { await axios.patch(`/api/returns/${id}`, { status: 'outcome_agreed' }); toast('Reopened'); reload() } catch (e) { err(e) } })
-    document.getElementById('ret-delete')?.addEventListener('click', async () => { if (!confirm('Delete this Expected return? (Only possible before it is received.)')) return; try { await axios.delete(`/api/returns/${id}`); toast('Deleted'); navigate('/returns') } catch (e) { err(e) } })
+    document.getElementById('ret-archive')?.addEventListener('click', async (e) => { const un = e.currentTarget.dataset.un === '1'; if (!un && !confirm('Archive this return? Nothing is deleted — it is hidden from the lists and counts and can be unarchived.')) return; try { await axios.post(`/api/returns/${id}/${un ? 'unarchive' : 'archive'}`); toast(un ? 'Return restored' : 'Return archived'); h.refreshBadges(); un ? reload() : navigate('/returns') } catch (e) { err(e) } })
     document.getElementById('ret-add-item')?.addEventListener('click', async () => { try { await axios.post(`/api/returns/${id}/items`); reload() } catch (e) { err(e) } })
     const patchReturn = async (body) => { try { await axios.patch(`/api/returns/${id}`, body); toast('Saved') } catch (e) { err(e); reload() } }
     document.getElementById('ret-notes')?.addEventListener('change', (e) => patchReturn({ notes: e.target.value }))
@@ -416,7 +416,7 @@ window.RiqReturns = function (h) {
       <section id="returns-reports">
         <div class="flex flex-wrap items-end justify-between gap-4 mb-2">
           <div><h1 class="text-2xl font-bold"><i class="fas fa-chart-column mr-2 text-slate-400"></i>Returns reports</h1><p class="text-sm text-slate-500">Counts by date received (or created, for Expected returns). Return rate per supplier/model needs sales volumes — shown as counts until SP-API order totals are wired in.</p></div>
-          <form id="rep-range" class="flex flex-wrap items-end gap-2 text-sm"><label>From<input type="date" name="from" class="field-input mt-0 py-1" value="${esc(rfrom)}"></label><label>To<input type="date" name="to" class="field-input mt-0 py-1" value="${esc(rto)}"></label><button class="px-3 py-1.5 rounded-md bg-slate-900 text-white">Apply</button><a href="/api/returns/export.csv${qs}" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white"><i class="fas fa-file-csv mr-1"></i>Export CSV</a></form>
+          <form id="rep-range" class="flex flex-wrap items-end gap-2 text-sm"><label>From<input type="date" name="from" class="field-input mt-0 py-1" value="${esc(rfrom)}"></label><label>To<input type="date" name="to" class="field-input mt-0 py-1" value="${esc(rto)}"></label><button class="px-3 py-1.5 rounded-md bg-slate-900 text-white">Apply</button><a href="/api/returns/export.csv${qs}" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white"><i class="fas fa-file-csv mr-1"></i>Export CSV</a>${isManager ? `<a href="/api/returns/export.csv${qs}${qs ? '&' : '?'}include_names=1" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white text-slate-600" title="Same export plus the customer-name column from the old sheet (legacy rows only). Managers only."><i class="fas fa-user-lock mr-1"></i>Export with legacy names</a>` : ''}</form>
         </div>
         ${tabs('reports', c)}
         <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4 text-sm">

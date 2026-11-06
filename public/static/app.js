@@ -818,8 +818,8 @@
         if (guidance.length < 3) { toast('Say what you want changed first', 'err'); reviseText.focus(); return }
         reviseBtn.disabled = true; reviseBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Rewriting…'
         try {
-          await axios.post(`/api/drafts/${d.id}/revise`, { guidance, draft_text: text.value }, { timeout: 90000 })
-          toast('Rewritten — review the new draft')
+          const { data: rv } = await axios.post(`/api/drafts/${d.id}/revise`, { guidance, draft_text: text.value }, { timeout: 90000 })
+          if (rv.guardrail) toast(`Rewritten. ${rv.guardrail}`, 'err', true); else toast('Rewritten — review the new draft')
           refresh()
         } catch (err) {
           toast(err.response?.data?.error || err.message, 'err')
@@ -1229,6 +1229,7 @@
               ${isManager ? '<button data-bulk="archive" class="px-2 py-1 rounded border border-slate-300 text-slate-700" title="Archive (keeps everything, hides from queue)"><i class="fas fa-box-archive"></i></button>' : ''}
               <button id="bulk-clear" class="text-slate-500 underline ml-auto">clear</button>
             </div>
+            <div id="bulk-result" class="hidden"></div>
             <div id="inbox-list" class="pane-scroll"><p class="p-4 text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p></div>
             <div id="inbox-count" class="px-3 py-1.5 text-[10px] text-slate-400 border-t border-slate-100"></div>
           </div>
@@ -1331,6 +1332,13 @@
     const where = !dest || dest === listFilter ? '' : listFilter === 'all' && dest !== 'archived'
       ? ` — now at the bottom of <em>All</em>; see <a href="/inbox/${dest}" data-link class="underline font-semibold">${esc(destLabel)}</a>`
       : ` — moved to <a href="/inbox/${dest}" data-link class="underline font-semibold">${esc(destLabel)}</a>`
+    // Persistent, visible result above the list (toasts vanish in 2.5 s). Stays until dismissed or the next bulk action.
+    const banner = document.getElementById('bulk-result')
+    if (banner) {
+      banner.className = `mx-3 my-2 rounded-md border px-3 py-2 text-xs ${r.skipped.length ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-emerald-300 bg-emerald-50 text-emerald-900'}`
+      banner.innerHTML = `<div class="flex items-start gap-2"><i class="fas ${r.skipped.length ? 'fa-triangle-exclamation' : 'fa-circle-check'} mt-0.5"></i><div class="flex-1"><strong>${r.done.length}</strong> case(s) ${verb}${where}${r.skipped.length ? ` · <strong>${r.skipped.length}</strong> skipped: ${r.skipped.slice(0, 6).map((s) => `<a href="/cases/${s.id}" data-link class="underline font-mono">${esc(s.case_ref || '#' + s.id)}</a> (${esc(s.reason)})`).join(', ')}${r.skipped.length > 6 ? ` and ${r.skipped.length - 6} more` : ''}` : ''}</div><button class="text-slate-500 hover:text-slate-800" title="Dismiss" onclick="this.parentElement.parentElement.classList.add('hidden')"><i class="fas fa-xmark"></i></button></div>`
+      banner.classList.remove('hidden')
+    }
     if (!r.skipped.length) return toast(`${r.done.length} case(s) ${verb}${where}`, 'ok', true)
     const modal = document.createElement('div')
     modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50'
@@ -1423,6 +1431,7 @@
     app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading…</p>`
     let st, gm
     try { ;[{ data: st }, { data: gm }] = await Promise.all([axios.get('/api/settings'), axios.get('/api/gmail/status')]) } catch (err) { return renderError(err) }
+    let mig = null; if (isManager) { try { ;({ data: mig } = await axios.get('/api/settings/migrations')) } catch {} }
     const row = (k, v) => `<div class="flex justify-between gap-4 py-2 border-b border-slate-100 text-sm"><span class="text-slate-500">${k}</span><span class="text-right font-medium">${v}</span></div>`
     const ok = (b, y = 'Configured', n = 'Not configured') => (b ? `<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>${y}</span>` : `<span class="text-red-700"><i class="fas fa-circle-xmark mr-1"></i>${n}</span>`)
     app.innerHTML = `
@@ -1482,7 +1491,13 @@
             ${row('Database', esc(st.database))}
             ${row('Attachments (Amazon rules)', `${st.attachments.types.join(', ')} · ≤${st.attachments.max_files} files · ≤${st.attachments.max_message_mb} MB/message`)}
             ${row('Case deletion', 'Disabled at database level — archive only')}
+            ${row('Return deletion', 'Disabled at database level (0018) — archive only, managers')}
           </div>
+          ${mig ? `<div class="bg-white rounded-xl shadow-sm p-5 lg:col-span-2" id="migrations-card">
+            <h2 class="font-semibold mb-2"><i class="fas fa-database mr-2 text-slate-400"></i>Database migrations <span class="text-xs font-normal text-slate-400">(checked live against this database)</span></h2>
+            <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6">${mig.migrations.map((m) => `<div class="flex justify-between gap-3 py-1 border-b border-slate-100 text-xs"><code class="truncate">${esc(m.file)}</code>${m.applied ? '<span class="text-emerald-700 whitespace-nowrap"><i class="fas fa-circle-check mr-1"></i>applied</span>' : '<span class="text-red-700 whitespace-nowrap font-semibold"><i class="fas fa-circle-xmark mr-1"></i>not run</span>'}</div>`).join('')}</div>
+            ${mig.migrations.some((m) => !m.applied) ? `<p class="text-xs text-red-700 mt-2">Run the missing file(s) from <code>db/migrations/</code> in the Supabase SQL editor, in number order.</p>` : '<p class="text-xs text-emerald-700 mt-2">Everything up to date.</p>'}
+          </div>` : ''}
         </div>
       </section>`
     if (isManager) axios.get('/api/prompt').then(({ data }) => { const el = document.getElementById('prompt-summary'); if (!el) return; el.innerHTML = data.migration_needed ? `<span class="text-amber-700"><i class="fas fa-database mr-1"></i>Run <code>db/migrations/${esc(data.migration_needed)}</code> first</span>` : data.current && data.current.body.trim() ? `<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>v${data.current.version} in force</span> · ${data.current.body.trim().length} chars · saved ${dayjs(data.current.created_at).fromNow()} by ${esc(data.current.created_by_name || '—')}` : '<span class="text-slate-500">No custom prompt yet — the model gets the policy file and knowledge base only.</span>' }).catch(() => {})

@@ -2,7 +2,7 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
-import { LIST_SQL, decorate, loadReturn, createReturn, receive, updateItem, setStatus, clearManager, loadSkus, loadSuppliers, ensureSku, reports, exportCsv, tableMissing } from '../returns/service'
+import { LIST_SQL, decorate, loadReturn, archiveReturn, hasReturnArchive, createReturn, receive, updateItem, setStatus, clearManager, loadSkus, loadSuppliers, ensureSku, reports, exportCsv, tableMissing } from '../returns/service'
 import { parseCsv, cleanRow, type CleanRow } from '../returns/importer'
 import { STATUS_LABEL, REASON_LABEL, CABLE_LABEL, OUTCOME_LABEL, DISPOSITION_LABEL, RETURN_STATUSES } from '../returns/rules'
 import { checkImei } from '../returns/imei'
@@ -17,10 +17,12 @@ returnsApi.get('/', async (c) => {
   const q = (c.req.query('q') ?? '').trim()
   const sql = getDb(c.env)
   try {
-    const rows = (await sql.unsafe(`${LIST_SQL} ORDER BY COALESCE(r.received_at, r.created_at) DESC LIMIT 2000`)).map((r: any) => decorate(r))
+    const hasArch = await hasReturnArchive(sql)
+    const archWhere = !hasArch ? '' : view === 'archived' ? 'WHERE r.archived_at IS NOT NULL' : 'WHERE r.archived_at IS NULL'
+    const rows = (await sql.unsafe(`${LIST_SQL} ${archWhere} ORDER BY COALESCE(r.received_at, r.created_at) DESC LIMIT 2000`)).map((r: any) => decorate(r))
     const qd = q.replace(/\D/g, '')
     const filtered = rows.filter((r: any) =>
-      (view === 'all' ? true
+      (view === 'all' || view === 'archived' ? true
         : view === 'open' ? r.status !== 'closed'
         : view === 'overdue' ? r.overdue
         : view === 'manager' ? r.manager_items > 0 || r.lock_overdue
@@ -36,7 +38,7 @@ returnsApi.get('/', async (c) => {
 returnsApi.get('/summary', async (c) => {
   const sql = getDb(c.env)
   try {
-    const rows = (await sql.unsafe(`SELECT r.id, r.status, r.received_at, (SELECT COUNT(*)::int FROM return_items i WHERE i.return_id = r.id AND i.needs_manager AND i.manager_cleared_at IS NULL) AS manager_items FROM returns r WHERE r.status <> 'closed'`)).map((r: any) => decorate(r))
+    const rows = (await sql.unsafe(`SELECT r.id, r.status, r.received_at, (SELECT COUNT(*)::int FROM return_items i WHERE i.return_id = r.id AND i.needs_manager AND i.manager_cleared_at IS NULL) AS manager_items FROM returns r WHERE r.status <> 'closed'${(await hasReturnArchive(sql)) ? ' AND r.archived_at IS NULL' : ''}`)).map((r: any) => decorate(r))
     const [refunds] = await sql`SELECT COUNT(*) FILTER (WHERE status IN ('alert','chasing','claim_filed'))::int AS alerts, COUNT(*) FILTER (WHERE status = 'open')::int AS unreconciled FROM amazon_events WHERE kind = 'refund_initiated'`.catch(() => [{ alerts: 0, unreconciled: 0 }])
     return c.json({
       open: rows.length, expected: rows.filter((r: any) => r.status === 'expected').length, received: rows.filter((r: any) => r.status === 'received').length,
@@ -79,7 +81,9 @@ returnsApi.get('/reports', async (c) => {
 returnsApi.get('/export.csv', async (c) => {
   const sql = getDb(c.env)
   try {
-    const csv = await exportCsv(sql, c.req.query('from') || null, c.req.query('to') || null)
+    // legacy_customer_name (from the old sheet) is left out unless a manager explicitly asks with ?include_names=1
+    const includeNames = c.req.query('include_names') === '1' && c.get('user').role === 'manager'
+    const csv = await exportCsv(sql, c.req.query('from') || null, c.req.query('to') || null, includeNames)
     return new Response(csv, { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="returns-${new Date().toISOString().slice(0, 10)}.csv"` } })
   } catch (e) { if (tableMissing(e)) return needMigration(c); throw e } finally { await sql.end() }
 })
@@ -177,16 +181,18 @@ returnsApi.post('/items/:itemId{[0-9]+}/photos', async (c) => {
   } finally { await sql.end() }
 })
 // DELETE /api/returns/:id (manager) — only an "expected" return created by mistake
-returnsApi.delete('/:id{[0-9]+}', requireManager, async (c) => {
-  const id = Number(c.req.param('id'))
+// Returns are archived, never deleted (same rule as cases). DELETE is refused here and, after 0018, by the database too.
+returnsApi.delete('/:id{[0-9]+}', (c) => c.json({ error: 'Returns are archived, not deleted. Use Archive (manager).' }, 405))
+// POST /api/returns/:id/archive | /unarchive (manager) — hides the return from lists and counts; phones, photos and history stay.
+returnsApi.post('/:id{[0-9]+}/archive', requireManager, async (c) => {
   const sql = getDb(c.env)
-  try {
-    const [r] = await sql`SELECT status FROM returns WHERE id = ${id}`
-    if (!r) return c.json({ error: 'Return not found' }, 404)
-    if (r.status !== 'expected') return c.json({ error: 'Only an Expected return can be deleted; close it instead' }, 409)
-    await sql`DELETE FROM returns WHERE id = ${id}`
-    return c.json({ ok: true })
-  } finally { await sql.end() }
+  try { return (await archiveReturn(sql, Number(c.req.param('id')), c.get('user').id, true)) ? c.json({ ok: true }) : c.json({ error: 'Return not found' }, 404) }
+  catch (e: any) { return c.json({ error: e.message }, 503) } finally { await sql.end() }
+})
+returnsApi.post('/:id{[0-9]+}/unarchive', requireManager, async (c) => {
+  const sql = getDb(c.env)
+  try { return (await archiveReturn(sql, Number(c.req.param('id')), c.get('user').id, false)) ? c.json({ ok: true }) : c.json({ error: 'Return not found' }, 404) }
+  catch (e: any) { return c.json({ error: e.message }, 503) } finally { await sql.end() }
 })
 
 // ───────── Google Sheet import (manager) ─────────
@@ -239,8 +245,8 @@ returnsApi.post('/import', requireManager, async (c) => {
       await sql`UPDATE return_items SET imei = COALESCE(${r.imei}, imei), reason_category = COALESCE(${r.reason}, reason_category), cable = COALESCE(${r.cable}, cable), frp_lock = COALESCE(${r.frp}, frp_lock),
                   supplier_code = COALESCE(${r.supplier_code}, supplier_code), outcome = COALESCE(${r.outcome}, outcome), cms_ticket = COALESCE(${r.cms_ticket}, cms_ticket), compensation_ref = COALESCE(${r.compensation_ref}, compensation_ref),
                   replacement_sent_on = COALESCE(${r.replacement_sent_on}, replacement_sent_on),
-                  inspected_at = CASE WHEN ${r.reason} IS NOT NULL THEN COALESCE(inspected_at, ${r.return_date ? new Date(r.return_date + 'T12:00:00Z') : new Date()}) ELSE inspected_at END,
-                  outcome_at = CASE WHEN ${r.outcome} IS NOT NULL THEN COALESCE(outcome_at, now()) ELSE outcome_at END
+                  inspected_at = CASE WHEN ${r.reason}::text IS NOT NULL THEN COALESCE(inspected_at, ${r.return_date ? new Date(r.return_date + 'T12:00:00Z') : new Date()}) ELSE inspected_at END,
+                  outcome_at = CASE WHEN ${r.outcome}::text IS NOT NULL THEN COALESCE(outcome_at, now()) ELSE outcome_at END
                 WHERE id = ${item.id}`
       if (status === 'closed') await sql`UPDATE returns SET status = 'closed', closed_at = COALESCE(closed_at, now()) WHERE id = ${id}`
       else if (status === 'received' && r.reason) await sql`UPDATE returns SET status = 'inspected' WHERE id = ${id} AND status = 'received'`

@@ -125,6 +125,19 @@ draftsApi.post('/drafts/:id/revise', async (c) => {
   const guidance = String(body.guidance ?? '').trim()
   if (guidance.length < 3) return c.json({ error: 'Say what you want changed (a sentence or two is enough).' }, 400)
   if (guidance.length > 2000) return c.json({ error: 'Keep the change request under 2,000 characters.' }, 400)
+  // Guardrails on the instruction itself: the agent can ask for tone, length, wording or facts to be fixed, but not for
+  // the model to skip policy. Anything matching these is refused before OpenAI is called (the policy still overrides the rest).
+  const g = guidance.toLowerCase()
+  const blocked: [RegExp, string][] = [
+    [/\b(ignore|skip|bypass|override|forget|disregard)\b[^.]{0,40}\b(polic(y|ies)|rules?|checks?|guidelines?|instructions?)\b/, 'asks the model to ignore the policy'],
+    [/\b(refund|credit|compensat\w*|goodwill|discount)\b[^.]{0,30}£\s?(1[6-9]|[2-9]\d|\d{3,})/, 'offers more than £15 — a manager must approve refunds above £15'],
+    [/\b(full refund|refund (them|the customer) in full|refund everything)\b/, 'promises a full refund — only a manager can authorise that'],
+    [/\b(don'?t|do not|never) (mention|say|tell)[^.]{0,30}\b(warranty|amazon|return|policy)\b/, 'hides policy information from the customer'],
+    [/\b(send|email|forward)\b[^.]{0,30}\b(amazon|seller central|a-?to-?z)\b/, 'asks for an Amazon-side statement — use a Seller Central mode instead'],
+    [/\b(include|add|put|write)\b[^.]{0,30}\b(imei|serial|tracking number of the return|internal note|staff note)\b/, 'would put internal data in a customer email'],
+  ]
+  const hit = blocked.find(([re]) => re.test(g))
+  if (hit) return c.json({ error: `Change request refused: it ${hit[1]}. Reword it, or ask a manager.` }, 422)
   const sql = getDb(c.env)
   try {
     const prev = await loadDraft(sql, id)
@@ -135,7 +148,11 @@ draftsApi.post('/drafts/:id/revise', async (c) => {
     const r = await createDraft(c.env, sql, prev.case_id, user.id, prev.mode ?? 'customer', { previousDraft, guidance, previousDraftId: id })
     if ('error' in r) return c.json({ error: r.error }, r.status)
     await sql`UPDATE drafts SET status = 'discarded', updated_at = now() WHERE id = ${id} AND status IN ('draft','approved')`
-    return c.json({ draft: r.draft, superseded: id }, 201)
+    // Guardrail result: the rewrite went through the same server checks + manager rules as a fresh draft. Tell the agent what changed.
+    const nd: any = r.draft
+    const warn = nd.check_result === 'FAIL' ? 'The rewrite FAILS the server checks — fix the highlighted lines before approving.'
+      : nd.needs_manager && !prev.needs_manager ? `The rewrite now needs a manager (${nd.needs_manager_reason || 'policy rule'}).` : null
+    return c.json({ draft: r.draft, superseded: id, guardrail: warn }, 201)
   } finally {
     await sql.end()
   }
