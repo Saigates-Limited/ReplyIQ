@@ -468,3 +468,10 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - **Grace period**: Customer Return / Different item refunds under 7 days old → `transit_return_pending` ("Return in transit"), own view, not counted as an alert.
 - `delivery_refund` is 0 (not null) when the item has an item refund.
 - Counts: the Refunds tab buttons now carry live counts from the same query as the sidebar badge (`alerts` = status alert/chasing/claim filed). The list limit was 1000 → 5000.
+
+## Phase 16 — explicit approval flow (Nov 2026)
+**Migration:** `db/migrations/0019_draft_approval_requests.sql` (audit columns; the flow works without it).
+- The one-step "Send to customer" (save + self-approve + send) is gone. Flow: **draft → Request approval → pending_approval → (manager) Approve / Reject → approved → Send**. Managers (including the owner) must also press Approve explicitly; Send only appears on an approved draft.
+- Server gates on `/api/drafts/:id/send`: refuses draft/pending; requires `approved_by` to be a **manager**; the text sent must equal the approved text exactly (edits drop the draft back to `draft` and clear the approval).
+- `POST /api/drafts/:id/request-approval {note}` (anyone), `/withdraw-request`, `/approve` (manager), `/reject {reason}` (manager; reason shown on the draft), `GET /api/drafts/pending` (managers: all; agents: own).
+- Dashboard: "N replies waiting for your approval" panel with inline Approve / Reject and the full text; agents see their own requests and the outcome. Sidebar badge on Dashboard; "Awaiting approval" KPI. Bulk resolve skips cases with a pending request.

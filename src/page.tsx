@@ -42,7 +42,7 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
         <div class="rounded-md bg-slate-800 px-3 py-2 text-xs text-slate-200 flex items-center gap-2"><span class="text-[10px] font-bold px-1 rounded bg-slate-700">GB</span> Saigates Ltd <span class="text-slate-500">· Amazon UK</span></div>
       </div>
       <nav id="side-nav" class="side-nav hidden lg:block px-2 pb-4 text-sm">
-        <a href="/" data-link data-nav="dashboard" class="nav-tab" title="Dashboard"><i class="fas fa-gauge w-5"></i><span class="nav-label">Dashboard</span></a>
+        <a href="/" data-link data-nav="dashboard" class="nav-tab" title="Dashboard"><i class="fas fa-gauge w-5"></i><span class="nav-label">Dashboard</span> <span class="nav-badge nav-badge-violet" data-badge="approvals" title="Replies awaiting approval"></span></a>
         <a href="/inbox" data-link data-nav="messages" class="nav-tab" title="Inbox"><i class="fas fa-inbox w-5"></i><span class="nav-label">Inbox</span> <span class="nav-badge" data-badge="messages"></span></a>
         <div class="nav-sub" id="inbox-folders">
           <a href="/inbox/open" data-link data-folder="open" class="nav-tab nav-sub-tab" title="Open"><i class="fas fa-envelope-open w-5"></i><span class="nav-label">Open</span> <span class="nav-badge" data-badge="folder-open"></span></a>

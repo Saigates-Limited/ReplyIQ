@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
-import type { Vars } from '../auth'
+import { requireManager, type Vars } from '../auth'
 import { generateDraft, serverChecks, MODEL, DRAFT_MODES, type CaseRow, type MessageRow, type EventRow, type DraftMode } from '../ai'
 import { loadActiveRules } from '../kb'
 import { loadCurrentPrompt } from '../systemPrompt'
@@ -39,7 +39,10 @@ export function decideManager(result: { needs_manager: boolean; urgency: string 
 }
 
 async function loadDraft(sql: ReturnType<typeof getDb>, id: number) {
-  const [d] = await sql.unsafe(`SELECT ${DRAFT_SELECT} FROM drafts d ${DRAFT_JOINS} WHERE d.id = $1`, [id])
+  const hasReq = (await draftCols(sql)).has('approval_requested_by')
+  const extra = hasReq ? ', ru.name AS approval_requested_by_name, rj.name AS rejected_by_name' : ''
+  const joins = hasReq ? `${DRAFT_JOINS} LEFT JOIN users ru ON ru.id = d.approval_requested_by LEFT JOIN users rj ON rj.id = d.rejected_by` : DRAFT_JOINS
+  const [d] = await sql.unsafe(`SELECT ${DRAFT_SELECT}${extra} FROM drafts d ${joins} WHERE d.id = $1`, [id])
   return d
 }
 
@@ -49,7 +52,7 @@ type Sql = ReturnType<typeof getDb>
 let draftColsCache: Set<string> | null = null
 async function draftCols(sql: Sql) {
   if (!draftColsCache) {
-    const rows = await sql<{ column_name: string }[]>`SELECT column_name FROM information_schema.columns WHERE table_name = 'drafts' AND column_name IN ('kb_rule_ids','system_prompt_version','revision_of','agent_guidance')`
+    const rows = await sql<{ column_name: string }[]>`SELECT column_name FROM information_schema.columns WHERE table_name = 'drafts' AND column_name IN ('kb_rule_ids','system_prompt_version','revision_of','approval_requested_by','rejection_reason','agent_guidance')`
     draftColsCache = new Set(rows.map((r) => r.column_name))
   }
   return draftColsCache
@@ -147,12 +150,12 @@ draftsApi.post('/drafts/:id/revise', async (c) => {
   try {
     const prev = await loadDraft(sql, id)
     if (!prev) return c.json({ error: 'Draft not found' }, 404)
-    if (!['draft', 'approved'].includes(prev.status)) return c.json({ error: `Draft is ${prev.status}; generate a new one instead.` }, 409)
+    if (!['draft', 'approved', 'pending_approval'].includes(prev.status)) return c.json({ error: `Draft is ${prev.status}; generate a new one instead.` }, 409)
     // If the agent typed edits in the box before asking, revise from what is on screen.
     const previousDraft = typeof body.draft_text === 'string' && body.draft_text.trim() ? body.draft_text.slice(0, 20000) : prev.draft_text
     const r = await createDraft(c.env, sql, prev.case_id, user.id, prev.mode ?? 'customer', { previousDraft, guidance, previousDraftId: id })
     if ('error' in r) return c.json({ error: r.error }, r.status)
-    await sql`UPDATE drafts SET status = 'discarded', updated_at = now() WHERE id = ${id} AND status IN ('draft','approved')`
+    await sql`UPDATE drafts SET status = 'discarded', updated_at = now() WHERE id = ${id} AND status IN ('draft','approved','pending_approval')`
     // Guardrail result: the rewrite went through the same server checks + manager rules as a fresh draft. Tell the agent what changed.
     const nd: any = r.draft
     const warn = nd.check_result === 'FAIL' ? 'The rewrite FAILS the server checks — fix the highlighted lines before approving.'
@@ -195,17 +198,55 @@ draftsApi.patch('/drafts/:id', async (c) => {
   }
 })
 
-// POST /api/drafts/:id/approve
-draftsApi.post('/drafts/:id/approve', async (c) => {
+// ───────── Approval flow ─────────
+// draft ──(anyone: Request approval)──▶ pending_approval ──(manager: Approve)──▶ approved ──▶ sent
+//                                       └──(manager: Reject, with reason)──▶ draft
+// A manager may also approve a plain draft directly. Approval is ALWAYS an explicit manager action — even for the owner —
+// and nothing is ever sent without one. Editing after approval drops the draft back to 'draft'.
+
+// POST /api/drafts/:id/request-approval {note?} — agent (or anyone) asks a manager to approve this text
+draftsApi.post('/drafts/:id/request-approval', async (c) => {
+  const id = Number(c.req.param('id'))
+  const user = c.get('user')
+  const body = (await c.req.json().catch(() => ({}))) as { note?: string }
+  const sql = getDb(c.env)
+  try {
+    const d = await loadDraft(sql, id)
+    if (!d) return c.json({ error: 'Draft not found' }, 404)
+    if (d.status === 'pending_approval') return c.json({ error: 'Approval has already been requested for this draft' }, 409)
+    if (d.status !== 'draft') return c.json({ error: `Draft is ${d.status}` }, 409)
+    if ((d.server_findings ?? []).some((f: any) => f.severity === 'fail')) return c.json({ error: 'Fix the failing checks before requesting approval' }, 422)
+    const hasReq = (await draftCols(sql)).has('approval_requested_by')
+    if (hasReq) await sql`UPDATE drafts SET status = 'pending_approval', approval_requested_by = ${user.id}, approval_requested_at = now(), approval_note = ${String(body.note ?? '').slice(0, 1000) || null}, rejected_by = NULL, rejected_at = NULL, rejection_reason = NULL, updated_at = now() WHERE id = ${id}`
+    else await sql`UPDATE drafts SET status = 'pending_approval', updated_at = now() WHERE id = ${id}`
+    return c.json({ draft: await loadDraft(sql, id) })
+  } finally { await sql.end() }
+})
+
+// POST /api/drafts/:id/withdraw-request — the requester (or a manager) takes the request back
+draftsApi.post('/drafts/:id/withdraw-request', async (c) => {
   const id = Number(c.req.param('id'))
   const user = c.get('user')
   const sql = getDb(c.env)
   try {
     const d = await loadDraft(sql, id)
     if (!d) return c.json({ error: 'Draft not found' }, 404)
-    if (d.status !== 'draft') return c.json({ error: `Draft is already ${d.status}` }, 409)
-    if (d.needs_manager && user.role !== 'manager')
-      return c.json({ error: 'This draft needs a manager. Only a manager can approve it.' }, 403)
+    if (d.status !== 'pending_approval') return c.json({ error: 'No approval request is open on this draft' }, 409)
+    if (user.role !== 'manager' && d.approval_requested_by != null && d.approval_requested_by !== user.id) return c.json({ error: 'Only the person who asked, or a manager, can withdraw the request' }, 403)
+    await sql`UPDATE drafts SET status = 'draft', updated_at = now() WHERE id = ${id}`
+    return c.json({ draft: await loadDraft(sql, id) })
+  } finally { await sql.end() }
+})
+
+// POST /api/drafts/:id/approve — MANAGER ONLY, from draft or pending_approval. Approves the exact text on record.
+draftsApi.post('/drafts/:id/approve', requireManager, async (c) => {
+  const id = Number(c.req.param('id'))
+  const user = c.get('user')
+  const sql = getDb(c.env)
+  try {
+    const d = await loadDraft(sql, id)
+    if (!d) return c.json({ error: 'Draft not found' }, 404)
+    if (!['draft', 'pending_approval'].includes(d.status)) return c.json({ error: `Draft is already ${d.status}` }, 409)
     const serverFail = (d.server_findings ?? []).some((f: any) => f.severity === 'fail')
     if (serverFail) return c.json({ error: 'Fix the failing checks before approving' }, 422)
     await sql`UPDATE drafts SET status = 'approved', approved_by = ${user.id}, approved_at = now(), updated_at = now() WHERE id = ${id}`
@@ -213,6 +254,44 @@ draftsApi.post('/drafts/:id/approve', async (c) => {
   } finally {
     await sql.end()
   }
+})
+
+// POST /api/drafts/:id/reject {reason} — MANAGER ONLY: send it back to the agent with a reason
+draftsApi.post('/drafts/:id/reject', requireManager, async (c) => {
+  const id = Number(c.req.param('id'))
+  const user = c.get('user')
+  const body = (await c.req.json().catch(() => ({}))) as { reason?: string }
+  const reason = String(body.reason ?? '').trim()
+  if (reason.length < 3) return c.json({ error: 'Give the agent a reason (a few words is enough)' }, 400)
+  const sql = getDb(c.env)
+  try {
+    const d = await loadDraft(sql, id)
+    if (!d) return c.json({ error: 'Draft not found' }, 404)
+    if (!['pending_approval', 'approved'].includes(d.status)) return c.json({ error: `Draft is ${d.status}; nothing to reject` }, 409)
+    const hasReq = (await draftCols(sql)).has('rejection_reason')
+    if (hasReq) await sql`UPDATE drafts SET status = 'draft', approved_by = NULL, approved_at = NULL, rejected_by = ${user.id}, rejected_at = now(), rejection_reason = ${reason.slice(0, 1000)}, updated_at = now() WHERE id = ${id}`
+    else await sql`UPDATE drafts SET status = 'draft', approved_by = NULL, approved_at = NULL, staff_notes = ${`[Rejected by ${user.name}: ${reason.slice(0, 500)}] `} || COALESCE(staff_notes, ''), updated_at = now() WHERE id = ${id}`
+    return c.json({ draft: await loadDraft(sql, id) })
+  } finally { await sql.end() }
+})
+
+// GET /api/drafts/pending — approval requests. Managers: everything waiting. Agents: their own requests (so they can see progress).
+draftsApi.get('/drafts/pending', async (c) => {
+  const user = c.get('user')
+  const sql = getDb(c.env)
+  try {
+    const hasReq = (await draftCols(sql)).has('approval_requested_by')
+    const mine = user.role !== 'manager'
+    const rows = await sql.unsafe(`
+      SELECT d.id, d.case_id, d.status, d.draft_text, d.tree, d.mode, d.needs_manager, d.needs_manager_reason, d.urgency, d.check_result, d.created_at, d.updated_at,
+             ${hasReq ? 'd.approval_requested_at, d.approval_note, ru.name AS approval_requested_by_name, d.approval_requested_by,' : 'd.updated_at AS approval_requested_at, NULL::text AS approval_note, cu.name AS approval_requested_by_name, d.created_by AS approval_requested_by,'}
+             k.case_ref, k.subject, k.order_id, k.customer_first_name, k.tone, k.battery_flag, cu.name AS created_by_name
+      FROM drafts d JOIN cases k ON k.id = d.case_id
+      LEFT JOIN users cu ON cu.id = d.created_by ${hasReq ? 'LEFT JOIN users ru ON ru.id = d.approval_requested_by' : ''}
+      WHERE d.status = 'pending_approval' AND k.archived_at IS NULL ${mine ? `AND (${hasReq ? 'd.approval_requested_by' : 'd.created_by'} = $1 OR d.created_by = $1)` : ''}
+      ORDER BY (d.urgency = 'high') DESC, ${hasReq ? 'd.approval_requested_at' : 'd.updated_at'} ASC LIMIT 100`, mine ? [user.id] : [])
+    return c.json({ pending: rows, manager: !mine })
+  } finally { await sql.end() }
 })
 
 // POST /api/drafts/:id/unapprove  (manager, or the approver)

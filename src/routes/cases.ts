@@ -178,7 +178,7 @@ casesApi.post('/bulk', async (c) => {
       SELECT c.id, c.case_ref, c.battery_flag, c.archived_at,
         EXISTS (SELECT 1 FROM amazon_events e WHERE e.case_id = c.id AND e.kind LIKE 'atoz%' AND e.status NOT IN ('won','lost','closed')) AS open_atoz,
         EXISTS (SELECT 1 FROM amazon_events e WHERE e.case_id = c.id AND e.kind = 'chargeback' AND e.status NOT IN ('won','lost','closed')) AS open_chargeback,
-        EXISTS (SELECT 1 FROM drafts d WHERE d.case_id = c.id AND d.status = 'draft' AND d.needs_manager = TRUE) AS manager_draft
+        EXISTS (SELECT 1 FROM drafts d WHERE d.case_id = c.id AND ((d.status = 'draft' AND d.needs_manager = TRUE) OR d.status = 'pending_approval')) AS manager_draft
       FROM cases c WHERE c.id = ANY(string_to_array(${list}, ',')::int[])`
     const found = new Map(rows.map((r) => [r.id, r]))
     const done: number[] = []

@@ -88,7 +88,11 @@ eventsApi.get('/counts', async (c) => {
         ${af === 'TRUE' ? '0' : '(SELECT COUNT(*) FROM cases c WHERE c.archived_at IS NOT NULL)'}::int AS archived`)
     // Knowledge-base rules awaiting a manager's decision (table arrives with migration 0011)
     const [kb] = await sql`SELECT COUNT(*)::int AS n FROM kb_rules WHERE status = 'draft'`.catch(() => [{ n: 0 }])
-    return c.json({ ...r, kb_pending: c.get('user')?.role === 'manager' ? kb.n : 0 })
+    const user = c.get('user')
+    const [ap] = user?.role === 'manager'
+      ? await sql`SELECT COUNT(*)::int AS n FROM drafts d JOIN cases k ON k.id = d.case_id WHERE d.status = 'pending_approval' AND k.archived_at IS NULL`.catch(() => [{ n: 0 }])
+      : await sql`SELECT COUNT(*)::int AS n FROM drafts d JOIN cases k ON k.id = d.case_id WHERE d.status = 'pending_approval' AND k.archived_at IS NULL AND d.created_by = ${user?.id ?? -1}`.catch(() => [{ n: 0 }])
+    return c.json({ ...r, kb_pending: user?.role === 'manager' ? kb.n : 0, approvals_pending: ap.n })
   } finally {
     await sql.end()
   }

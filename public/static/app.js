@@ -142,6 +142,7 @@
       set('atoz', data.atoz); set('returns', data.returns); set('chargebacks', data.chargebacks); set('messages', data.messages)
       set('folder-open', data.messages); set('folder-awaiting_customer', data.awaiting_customer); set('folder-update_customer', data.update_customer)
       if (data.kb_pending !== undefined) set('kb', data.kb_pending)
+      set('approvals', data.approvals_pending)
       if (carrierUI) set('carriers', await carrierUI.badgeCount())
       if (returnsUI) { const rc = await returnsUI.counts(); set('returns', (data.returns || 0) + (rc.physical || 0)); set('refund-alerts', rc.refunds) }
     } catch {}
@@ -280,8 +281,8 @@
 
   function draftBadge(status, needsManager) {
     if (!status) return '<span class="text-slate-400">none</span>'
-    const cls = { draft: 'bg-amber-100 text-amber-800', approved: 'bg-emerald-100 text-emerald-800', sending: 'bg-sky-100 text-sky-800', sent: 'bg-slate-200 text-slate-700' }[status] || 'bg-slate-100 text-slate-600'
-    return `<span class="px-2 py-0.5 rounded-full ${cls}">${esc(status)}</span>${needsManager && status === 'draft' ? ' <span class="px-2 py-0.5 rounded-full bg-violet-100 text-violet-800" title="Needs manager approval"><i class="fas fa-user-shield"></i></span>' : ''}`
+    const cls = { draft: 'bg-amber-100 text-amber-800', pending_approval: 'bg-violet-600 text-white', approved: 'bg-emerald-100 text-emerald-800', sending: 'bg-sky-100 text-sky-800', sent: 'bg-slate-200 text-slate-700' }[status] || 'bg-slate-100 text-slate-600'
+    return `<span class="px-2 py-0.5 rounded-full ${cls}">${esc(status === 'pending_approval' ? 'awaiting approval' : status)}</span>${needsManager && status === 'draft' ? ' <span class="px-2 py-0.5 rounded-full bg-violet-100 text-violet-800" title="Needs manager approval"><i class="fas fa-user-shield"></i></span>' : ''}`
   }
 
   // ---------- CASE SCREEN ----------
@@ -710,11 +711,13 @@
     const fails = server.filter((f) => f.severity === 'fail')
     const warns = server.filter((f) => f.severity === 'warn')
     const locked = d.status === 'sent'
-    const canApprove = d.status === 'draft' && !fails.length && (!d.needs_manager || isManager)
-    // One-step send: customer reply on a Gmail case → "Send to customer" saves edits, approves and sends in one go
-    const oneStep = !locked && (!d.mode || d.mode === 'customer') && kase.gmail_thread_id && kase.customer_reply_to && ['draft', 'approved'].includes(d.status)
-    const canSend = oneStep && !fails.length && (!d.needs_manager || isManager)
-
+    // Approval flow (no one-step send): draft → Request approval → (manager) Approve / Reject → Send.
+    // The owner/manager also has to press Approve explicitly before Send becomes available — nothing goes out unapproved.
+    const isGmailReply = (!d.mode || d.mode === 'customer') && kase.gmail_thread_id && kase.customer_reply_to
+    const pending = d.status === 'pending_approval'
+    const canRequest = d.status === 'draft' && !fails.length
+    const canApprove = isManager && ['draft', 'pending_approval'].includes(d.status) && !fails.length
+    const canSend = d.status === 'approved' && isGmailReply
     return `
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2">
@@ -728,33 +731,28 @@
           <label class="field-label" for="draft-text">${d.mode && d.mode !== 'customer' ? 'Text to paste into Seller Central' : 'Customer-facing reply'} ${locked ? '(sent — read only)' : '(edit freely)'}</label>
           <textarea id="draft-text" class="field-input font-sans leading-relaxed" rows="14" ${locked ? 'readonly' : ''}>${esc(d.draft_text)}</textarea>
           <div class="mt-2 flex flex-wrap items-center gap-2">
-            ${locked ? '' : `<button id="save-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm" title="${oneStep ? 'Optional — Send saves your edits automatically. Use this to re-run the checks without sending.' : ''}"><i class="far fa-floppy-disk mr-1"></i>${oneStep ? 'Save & re-check' : 'Save edits'}</button>`}
+            ${locked ? '' : `<button id="save-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm" title="Save the text and re-run the checks. Editing an approved reply withdraws its approval."><i class="far fa-floppy-disk mr-1"></i>Save &amp; re-check</button>`}
             ${locked || (d.mode && d.mode !== 'customer') ? '' : `<select id="template-pick" class="field-input py-1.5 text-sm mt-0" style="width:auto;max-width:16rem" title="Replace the text with a ready-made reply, then fill in the [placeholders]"><option value="">Insert template…</option></select>`}
             <button id="copy-draft-btn" class="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-sm"><i class="far fa-copy mr-1"></i>Copy reply</button>
             <span id="draft-save-indicator" class="text-xs text-slate-400"></span>
-            <span class="ml-auto flex items-center gap-2">
-              ${oneStep ? `
-                <button id="discard-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-red-700">Discard</button>
-                <button id="send-btn" ${canSend ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canSend ? 'bg-emerald-700 text-white hover:bg-emerald-800' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}"
-                  title="${!canSend ? (fails.length ? 'Fix failing checks first' : 'Only a manager can send this reply') : 'Saves your edits, approves and sends in one step'}">
-                  <i class="fas fa-paper-plane mr-1"></i>Send to customer
-                </button>
-                ${!canSend ? `<span class="block w-full text-right text-[11px] ${fails.length ? 'text-red-700' : 'text-violet-700'}" style="flex-basis:100%">${fails.length ? `<i class="fas fa-lock mr-1"></i>Sending is blocked while a check is <strong>FAIL</strong>. Edit the reply (or use <em>Tell the AI what to change</em>) and it re-checks on send.` : `<i class="fas fa-user-shield mr-1"></i>Needs a manager to send${isManager ? '' : ' — ask a manager'}.`}</span>` : ''}` : d.status === 'draft' ? `
-                <button id="discard-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-red-700">Discard</button>
-                <button id="approve-btn" ${canApprove ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canApprove ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}"
-                  title="${!canApprove ? (fails.length ? 'Fix failing checks first' : d.needs_manager ? 'Only a manager can approve this draft' : '') : ''}">
-                  <i class="fas fa-check mr-1"></i>Approve
-                </button>` : ''}
-              ${d.status === 'draft' && !canApprove ? `<span class="block w-full text-right text-[11px] ${fails.length ? 'text-red-700' : 'text-violet-700'}" style="flex-basis:100%">${fails.length ? `<i class="fas fa-lock mr-1"></i>Approval is blocked while a check is <strong>FAIL</strong>. Edit the reply to fix it (or press <strong>Save edits</strong> to re-run the checks), then Approve.` : `<i class="fas fa-user-shield mr-1"></i>Needs a manager's approval${isManager ? '' : ' — ask a manager'}.`}</span>` : ''}
-              ${!oneStep && d.status === 'approved' ? `
-                <button id="unapprove-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-slate-800">Withdraw approval</button>
-                ${(!d.mode || d.mode === 'customer') && kase.gmail_thread_id && kase.customer_reply_to ? `
-                <button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800">
-                  <i class="fas fa-paper-plane mr-1"></i>Send to customer
-                </button>` : `
-                <button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="${(!d.mode || d.mode === 'customer') ? 'This case has no Gmail thread to reply on (it came from an Amazon notice, not a customer email). Copy the reply, paste it into Seller Central / Buyer-Seller Messages, then confirm here.' : 'Confirm you have pasted this into Amazon Seller Central'}">
-                  <i class="fas fa-paste mr-1"></i>Mark as sent in Seller Central
-                </button>`}` : ''}
+            <span class="ml-auto flex flex-wrap items-center justify-end gap-2">
+              ${!locked && d.status !== 'sending' ? `<button id="discard-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-red-700">Discard</button>` : ''}
+              ${d.status === 'draft' ? `
+                ${d.rejection_reason ? `<span class="block w-full text-right text-[11px] text-red-700" style="flex-basis:100%"><i class="fas fa-rotate-left mr-1"></i>Sent back by ${esc(d.rejected_by_name || 'a manager')}${d.rejected_at ? ' · ' + fmtDateTime(d.rejected_at) : ''}: <em>${esc(d.rejection_reason)}</em></span>` : ''}
+                <button id="request-btn" ${canRequest ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canRequest ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}" title="${canRequest ? 'Ask a manager to approve this exact text' : 'Fix failing checks first'}"><i class="fas fa-user-check mr-1"></i>Request approval</button>
+                ${isManager ? `<button id="approve-btn" ${canApprove ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canApprove ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}" title="${canApprove ? 'Approve this exact text (manager)' : 'Fix failing checks first'}"><i class="fas fa-check mr-1"></i>Approve</button>` : ''}
+                ${fails.length ? `<span class="block w-full text-right text-[11px] text-red-700" style="flex-basis:100%"><i class="fas fa-lock mr-1"></i>Blocked while a check is <strong>FAIL</strong>. Edit the reply (or use <em>Tell the AI what to change</em>), then <strong>Save &amp; re-check</strong>.</span>` : `<span class="block w-full text-right text-[11px] text-slate-500" style="flex-basis:100%"><i class="fas fa-shield-halved mr-1"></i>Nothing is sent without a manager's approval — ${isManager ? 'approve, then Send appears' : 'request approval and a manager will review it on their dashboard'}.</span>`}` : ''}
+              ${pending ? `
+                <span class="block w-full text-right text-[11px] text-violet-700" style="flex-basis:100%"><i class="fas fa-hourglass-half mr-1"></i>Approval requested${d.approval_requested_by_name ? ' by ' + esc(d.approval_requested_by_name) : ''}${d.approval_requested_at ? ' · ' + fmtDateTime(d.approval_requested_at) : ''}${d.approval_note ? ` — <em>${esc(d.approval_note)}</em>` : ''}</span>
+                ${isManager ? `
+                <button id="reject-btn" class="px-3 py-1.5 rounded-md text-sm font-medium border border-red-300 text-red-700 hover:bg-red-50"><i class="fas fa-xmark mr-1"></i>Reject</button>
+                <button id="approve-btn" ${canApprove ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canApprove ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}"><i class="fas fa-check mr-1"></i>Approve</button>`
+                : `<button id="withdraw-request-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-slate-800">Withdraw request</button><span class="text-sm text-violet-700"><i class="fas fa-user-shield mr-1"></i>Waiting for a manager</span>`}` : ''}
+              ${d.status === 'approved' ? `
+                <span class="block w-full text-right text-[11px] text-emerald-700" style="flex-basis:100%"><i class="fas fa-circle-check mr-1"></i>Approved by ${esc(d.approved_by_name || 'manager')}${d.approved_at ? ' · ' + fmtDateTime(d.approved_at) : ''}. Editing the text withdraws the approval.</span>
+                ${isManager ? `<button id="reject-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-red-700" title="Withdraw approval and send it back with a reason">Withdraw &amp; send back</button>` : ''}
+                ${canSend ? `<button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800"><i class="fas fa-paper-plane mr-1"></i>Send to customer</button>`
+                : `<button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="${isGmailReply ? '' : (!d.mode || d.mode === 'customer') ? 'This case has no Gmail thread to reply on — paste the text into Amazon, then record it here' : 'Seller Central text — paste it there, then record it here'}"><i class="fas fa-paste mr-1"></i>Mark as sent in Seller Central</button>`}` : ''}
               ${d.status === 'sending' ? '<span class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Sending…</span>' : ''}
             </span>
           </div>
@@ -849,13 +847,22 @@
         text.focus()
       }
     }
+    const unsaved = () => text.value.trim() !== d.draft_text.trim() || (notes.value || '') !== (d.staff_notes || '')
     document.getElementById('approve-btn')?.addEventListener('click', () => {
-      if (text.value.trim() !== d.draft_text.trim() || (notes.value || '') !== (d.staff_notes || '')) {
-        return toast('Save your edits before approving', 'err')
-      }
-      act(() => axios.post(`/api/drafts/${d.id}/approve`), 'Draft approved')
+      if (unsaved()) return toast('Save & re-check your edits first — approval applies to the exact saved text', 'err')
+      act(() => axios.post(`/api/drafts/${d.id}/approve`), 'Approved — Send to customer is now available')
     })
-    document.getElementById('unapprove-btn')?.addEventListener('click', () => act(() => axios.post(`/api/drafts/${d.id}/unapprove`), 'Approval withdrawn'))
+    document.getElementById('request-btn')?.addEventListener('click', () => {
+      if (unsaved()) return toast('Save & re-check your edits first — the manager approves the exact saved text', 'err')
+      const note = prompt('Anything the manager should know? (optional)', '') ; if (note === null) return
+      act(() => axios.post(`/api/drafts/${d.id}/request-approval`, { note }), 'Approval requested — the manager will see it on their dashboard')
+    })
+    document.getElementById('withdraw-request-btn')?.addEventListener('click', () => act(() => axios.post(`/api/drafts/${d.id}/withdraw-request`), 'Request withdrawn'))
+    document.getElementById('reject-btn')?.addEventListener('click', () => {
+      const reason = prompt('Why is this being sent back? The agent will see this on the draft.', ''); if (reason === null) return
+      if (reason.trim().length < 3) return toast('Give a short reason', 'err')
+      act(() => axios.post(`/api/drafts/${d.id}/reject`, { reason }), 'Sent back to the agent')
+    })
     document.getElementById('send-btn')?.addEventListener('click', () => {
       const modal = document.createElement('div')
       modal.id = 'send-confirm'
@@ -868,10 +875,10 @@
             <dt class="text-slate-500">From</dt><dd class="col-span-3 font-mono text-xs" id="send-from">connected mailbox</dd>
             <dt class="text-slate-500">To</dt><dd class="col-span-3 font-mono text-xs break-all">${esc(kase.customer_reply_to)}</dd>
             <dt class="text-slate-500">Case</dt><dd class="col-span-3">${esc(kase.case_ref)} · ${esc(kase.subject)}</dd>
-            <dt class="text-slate-500">Approved by</dt><dd class="col-span-3">${esc(d.approved_by_name || ME.name + ' (on send)')} ${d.needs_manager ? '<span class="text-violet-700">(manager)</span>' : ''}</dd>
+            <dt class="text-slate-500">Approved by</dt><dd class="col-span-3">${esc(d.approved_by_name || '—')} <span class="text-violet-700">(manager)</span>${d.approved_at ? ' · ' + fmtDateTime(d.approved_at) : ''}</dd>
           </dl>
           <pre class="message-body text-sm bg-slate-50 border border-slate-200 rounded-md p-3 max-h-64 overflow-auto font-sans">${esc(text.value.trim())}</pre>
-          ${text.value.trim() !== d.draft_text.trim() ? '<p class="text-xs text-amber-700 mt-2"><i class="fas fa-pen mr-1"></i>Includes your unsaved edits — they are saved, re-checked and approved as part of sending.</p>' : ''}
+
           <div class="mt-4 flex justify-end gap-2">
             <button id="send-cancel" class="px-4 py-2 rounded-md border border-slate-300 text-sm">Cancel</button>
             <button id="send-now" class="px-4 py-2 rounded-md bg-emerald-700 text-white text-sm font-medium"><i class="fas fa-paper-plane mr-1"></i>Send now</button>
@@ -884,7 +891,8 @@
       modal.querySelector('#send-now').onclick = async () => {
         const b = modal.querySelector('#send-now'); b.disabled = true; b.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Sending…'
         try {
-          await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: text.value.trim(), final_text: text.value.trim(), staff_notes: notes.value }, { timeout: 60000 })
+          if (unsaved()) throw new Error('The text on screen differs from the approved reply. Save your edits (this withdraws the approval) and get it approved again.')
+          await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: d.draft_text.trim() }, { timeout: 60000 })
           modal.remove(); toast('Reply sent to the customer'); refresh()
         } catch (err) {
           b.disabled = false; b.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send now'
@@ -1354,6 +1362,28 @@
   }
 
   // ---------- DASHBOARD ----------
+  // Approval requests on the dashboard. Managers see every pending draft with Approve / Reject inline; agents see their own.
+  async function renderApprovalsStrip() {
+    const el = document.getElementById('approvals-strip'); if (!el) return
+    let data
+    try { ;({ data } = await axios.get('/api/drafts/pending')) } catch { return }
+    const rows = data.pending || []
+    if (!rows.length) { el.innerHTML = isManager ? '' : ''; return }
+    el.innerHTML = `<section id="approval-requests" class="mb-4 rounded-xl border border-violet-200 bg-violet-50 p-4">
+      <div class="flex items-center justify-between gap-2 mb-2"><div class="font-semibold text-violet-900"><i class="fas fa-user-check mr-1"></i>${rows.length} repl${rows.length === 1 ? 'y' : 'ies'} waiting for ${data.manager ? 'your approval' : 'a manager'}</div><span class="text-[11px] text-violet-800">${data.manager ? 'Approve sends it back to the agent ready to send; Reject sends it back with your reason.' : 'You will see the result here and on the case.'}</span></div>
+      <div class="space-y-2">${rows.map((r) => `<article class="bg-white rounded-lg border border-violet-100 p-3" data-pending="${r.id}">
+          <div class="flex flex-wrap items-center gap-2 text-xs mb-1">
+            <a href="/cases/${r.case_id}" data-link class="font-mono text-sky-700 hover:underline">${esc(r.case_ref)}</a><span class="text-slate-500">·</span><a href="/cases/${r.case_id}" data-link class="font-medium hover:underline truncate max-w-[28rem]">${esc(r.subject || '')}</a>
+            ${r.urgency === 'high' ? '<span class="pill bg-red-600 text-white"><i class="fas fa-bolt"></i> HIGH</span>' : ''}${r.needs_manager ? `<span class="pill bg-violet-100 text-violet-800" title="${esc(r.needs_manager_reason || '')}"><i class="fas fa-user-shield"></i> policy flag</span>` : ''}${r.battery_flag ? '<span class="pill" style="background:#dc2626;color:#fff"><i class="fas fa-fire"></i></span>' : ''}
+            <span class="ml-auto text-slate-500">asked by <strong>${esc(r.approval_requested_by_name || r.created_by_name || '—')}</strong> · ${fmtDateTime(r.approval_requested_at)}</span></div>
+          ${r.approval_note ? `<div class="text-xs text-violet-900 mb-1"><i class="fas fa-comment-dots mr-1"></i>${esc(r.approval_note)}</div>` : ''}
+          <details class="text-xs"><summary class="cursor-pointer text-slate-600">${esc(String(r.draft_text || '').replace(/\s+/g, ' ').slice(0, 160))}${(r.draft_text || '').length > 160 ? '…' : ''}</summary><pre class="message-body mt-2 bg-slate-50 border border-slate-200 rounded p-2 max-h-64 overflow-auto font-sans whitespace-pre-wrap">${esc(r.draft_text || '')}</pre></details>
+          ${data.manager ? `<div class="mt-2 flex flex-wrap gap-2 justify-end"><a href="/cases/${r.case_id}" data-link class="px-3 py-1 rounded-md border border-slate-300 bg-white text-xs">Open case</a><button data-reject="${r.id}" class="px-3 py-1 rounded-md border border-red-300 text-red-700 text-xs hover:bg-red-50"><i class="fas fa-xmark mr-1"></i>Reject</button><button data-approve="${r.id}" class="px-3 py-1 rounded-md bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700"><i class="fas fa-check mr-1"></i>Approve</button></div>` : ''}
+        </article>`).join('')}</div></section>`
+    el.querySelectorAll('[data-approve]').forEach((b) => (b.onclick = async () => { b.disabled = true; try { await axios.post(`/api/drafts/${b.dataset.approve}/approve`); toast('Approved — the agent can now send it'); refreshBadges(); renderApprovalsStrip() } catch (e) { toast(e.response?.data?.error || e.message, 'err'); b.disabled = false } }))
+    el.querySelectorAll('[data-reject]').forEach((b) => (b.onclick = async () => { const reason = prompt('Reason for sending this back (the agent sees it):', ''); if (reason === null) return; if (reason.trim().length < 3) return toast('Give a short reason', 'err'); try { await axios.post(`/api/drafts/${b.dataset.reject}/reject`, { reason }); toast('Sent back to the agent'); refreshBadges(); renderApprovalsStrip() } catch (e) { toast(e.response?.data?.error || e.message, 'err') } }))
+  }
+
   async function renderDashboard() {
     app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading dashboard…</p>`
     let cases, counts, events = []
@@ -1366,7 +1396,7 @@
     const due4h = cases.filter((k) => deadlineInfo(k, now).urgency === 1)
     const hot = cases.filter((k) => k.tone === 'angry' || k.tone === 'dispute')
     const battery = cases.filter((k) => k.battery_flag)
-    const needsMgr = cases.filter((k) => k.latest_draft_needs_manager && k.latest_draft_status === 'draft')
+    const needsMgr = cases.filter((k) => k.latest_draft_status === 'pending_approval' || (k.latest_draft_needs_manager && k.latest_draft_status === 'draft'))
     const alerts = [...overdue.map((k) => ({ k, t: 'Reply overdue', cls: 'text-red-700' })), ...battery.map((k) => ({ k, t: 'Battery / heat safety', cls: 'text-red-700' })), ...hot.filter((k) => !overdue.includes(k)).map((k) => ({ k, t: `${TONE_META[k.tone].word} tone`, cls: 'text-violet-700' }))].slice(0, 8)
     const toneCounts = Object.keys(TONE_META).map((t) => [t, cases.filter((k) => k.tone === t).length])
     const total = cases.length || 1
@@ -1380,13 +1410,14 @@
           <ul class="text-sm grid sm:grid-cols-2 gap-x-6 gap-y-1">${alerts.map(({ k, t, cls }) => `<li class="flex gap-2 min-w-0"><span class="${cls} font-medium whitespace-nowrap">${t}:</span><a href="/cases/${k.id}" data-link class="truncate hover:underline">${esc(k.subject)} <span class="text-slate-400 font-mono text-xs">${esc(k.order_id || k.case_ref)}</span></a></li>`).join('')}</ul>
           <a href="/inbox" data-link class="inline-block mt-3 px-3 py-1.5 rounded-md bg-red-600 text-white text-sm font-medium">Open inbox →</a>
         </div>` : '<div class="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"><i class="fas fa-circle-check mr-1"></i>Nothing overdue and no hot conversations. Nice.</div>'}
+        <div id="approvals-strip"></div>
         <div id="returns-strip"></div>
         <div id="carrier-strip"></div>
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
           <div class="kpi" style="--kpi:#2563eb"><div class="l">Open conversations</div><div class="v">${counts.messages}</div><div class="text-xs text-slate-500">${due4h.length} due within 4h</div></div>
           <div class="kpi" style="--kpi:#dc2626"><div class="l">Overdue replies</div><div class="v ${overdue.length ? 'text-red-700' : ''}">${overdue.length}</div><div class="text-xs text-slate-500">24h Amazon target</div></div>
           <div class="kpi" style="--kpi:#7c3aed"><div class="l">A-to-Z · Chargebacks</div><div class="v">${counts.atoz} · ${counts.chargebacks}</div><div class="text-xs text-slate-500">${counts.returns} open return${counts.returns === 1 ? '' : 's'}</div></div>
-          <div class="kpi" style="--kpi:#f59e0b"><div class="l">Awaiting manager</div><div class="v">${needsMgr.length}</div><div class="text-xs text-slate-500">drafts needing approval</div></div>
+          <div class="kpi" style="--kpi:#7c3aed"><div class="l">Awaiting approval</div><div class="v ${counts.approvals_pending ? 'text-violet-700' : ''}">${counts.approvals_pending ?? needsMgr.length}</div><div class="text-xs text-slate-500">${isManager ? 'replies for you to approve / reject' : 'your replies waiting for a manager'}</div></div>
         </div>
         <div class="grid lg:grid-cols-3 gap-4">
           <div class="lg:col-span-2 bg-white rounded-xl shadow-sm p-4">
@@ -1403,6 +1434,7 @@
         </div>
       </section>`
     if (carrierUI) carrierUI.dashboardStrip().then((html) => { const el = document.getElementById('carrier-strip'); if (el) el.innerHTML = html })
+    renderApprovalsStrip()
     if (returnsUI) returnsUI.dashboardLines().then((lines) => {
       const el = document.getElementById('returns-strip'); if (!el || !lines.length) return
       el.innerHTML = `<div class="mb-4 rounded-xl border border-red-200 bg-red-50 p-4"><div class="font-semibold text-red-800 mb-1"><i class="fas fa-box-open mr-1"></i>Returns need attention</div><ul class="text-sm space-y-1">${lines.map((l) => `<li><a href="${l.href}" data-link class="${l.cls} font-medium hover:underline"><i class="fas ${l.icon} mr-1"></i>${esc(l.text)}</a></li>`).join('')}</ul></div>`

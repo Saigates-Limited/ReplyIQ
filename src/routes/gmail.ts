@@ -308,29 +308,15 @@ sendApi.post('/drafts/:id/send', async (c) => {
     if (d.status === 'sent') return c.json({ error: 'This draft has already been sent' }, 409)
     if (d.status === 'sending') return c.json({ error: 'Draft is already being sent' }, 409)
     if (d.status === 'discarded') return c.json({ error: 'This draft was discarded' }, 409)
-    if (typeof body.final_text === 'string' && (!d.mode || d.mode === 'customer')) {
-      // Save edits (if any) + approve in one go
-      const text = body.final_text.trim()
-      if (!text) return c.json({ error: 'Reply is empty' }, 400)
-      const [kase0] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${d.case_id}`
-      const findings = serverChecks(text, kase0, 'customer')
-      const fail = findings.filter((f) => f.severity === 'fail')
-      if (fail.length) {
-        await sql`UPDATE drafts SET draft_text = ${text}, server_findings = ${sql.json(findings)}, check_result = 'FAIL', status = 'draft', approved_by = NULL, approved_at = NULL, edited_by = ${user.id}, edited_at = now(), updated_at = now() WHERE id = ${id} AND status IN ('draft','approved')`
-        return c.json({ error: 'Cannot send: ' + fail.map((f) => f.detail).join('; '), findings }, 422)
-      }
-      if (d.needs_manager && user.role !== 'manager') return c.json({ error: 'This reply needs a manager to approve and send it.' }, 403)
-      const changed = text !== String(d.draft_text).trim()
-      await sql`UPDATE drafts SET draft_text = ${text}, server_findings = ${sql.json(findings)}, check_result = 'PASS',
-                  staff_notes = COALESCE(${typeof body.staff_notes === 'string' ? body.staff_notes : null}, staff_notes),
-                  edited_by = CASE WHEN ${changed} THEN ${user.id} ELSE edited_by END, edited_at = CASE WHEN ${changed} THEN now() ELSE edited_at END,
-                  status = 'approved', approved_by = COALESCE(CASE WHEN ${changed} THEN NULL ELSE approved_by END, ${user.id}), approved_at = COALESCE(CASE WHEN ${changed} THEN NULL ELSE approved_at END, now()), updated_at = now()
-                WHERE id = ${id} AND status IN ('draft','approved')`
-      ;[d] = await sql`SELECT * FROM drafts WHERE id = ${id}`
-      body.confirm_text = text
-    }
+    // No one-step send. The reply must already be APPROVED BY A MANAGER, and the text on screen must be exactly the approved text.
+    if (d.status === 'pending_approval') return c.json({ error: 'This reply is waiting for a manager to approve it. It cannot be sent until then.' }, 403)
+    if (d.status === 'draft') return c.json({ error: user.role === 'manager' ? 'Approve the reply first, then send it.' : 'This reply has not been approved. Press "Request approval" and a manager will review it.' }, 403)
     if (d.status !== 'approved') return c.json({ error: 'Only approved drafts can be sent' }, 403)
-    if (d.needs_manager && !d.approved_by) return c.json({ error: 'Manager approval missing' }, 403)
+    if (!d.approved_by) return c.json({ error: 'Manager approval missing' }, 403)
+    const [approver] = await sql`SELECT role FROM users WHERE id = ${d.approved_by}`
+    if (approver?.role !== 'manager') return c.json({ error: 'This reply was approved by a non-manager account. A manager must approve it before it can be sent.' }, 403)
+    const onScreen = String(body.confirm_text ?? body.final_text ?? '').trim()
+    if (onScreen && onScreen !== String(d.draft_text).trim()) return c.json({ error: 'The text on screen differs from the approved reply. Save your edits (which withdraws the approval) and get it approved again.' }, 409)
     // Seller Central / chargeback statements are never emailed to the customer.
     // Chargeback evidence MAY be emailed to Amazon's chargeback mailbox, but only when:
     //   (a) CHARGEBACK_EMAIL_ENABLED=true is set as a Worker secret (manual switch after verifying a real notice), and
