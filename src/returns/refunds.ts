@@ -13,10 +13,10 @@ export const BACKCHECK_DAYS = 90
 
 export type IngestResult = { messagesNew: number; dup: number; skipped: { id: string; reason: string }[]; rateLimited?: boolean }
 
-/** Which connected mailbox receives refund emails. Falls back to the default mailbox if the configured one is not connected. */
+/** The ONE mailbox refund emails are read from. No fallback: if bijalshah.cc is not connected the check reports it and reads nothing. */
 export async function refundMailbox(sql: Sql) {
   const all = await listConnections(sql)
-  return all.find((c) => c.enabled && c.email_address.toLowerCase() === REFUND_MAILBOX) ?? all.find((c) => c.enabled && c.is_default) ?? all.find((c) => c.enabled) ?? null
+  return all.find((c) => c.enabled && c.email_address.toLowerCase() === REFUND_MAILBOX) ?? null
 }
 
 /** Store one refund email. Returns 'new' | 'dup' | 'skip'. Idempotent on gmail_message_id. */
@@ -65,7 +65,7 @@ async function orderUnitPrice(_sql: Sql, env: Bindings, orderId: string, sku: st
 export async function pollRefundEmails(sql: Sql, env: Bindings, opts: { days: number; max?: number; before?: string | null }): Promise<IngestResult> {
   const out: IngestResult = { messagesNew: 0, dup: 0, skipped: [] }
   const mb = await refundMailbox(sql)
-  if (!mb) { out.skipped.push({ id: '-', reason: 'no mailbox connected' }); return out }
+  if (!mb) { out.skipped.push({ id: '-', reason: `${REFUND_MAILBOX} is not connected or is paused — refund emails are read from that mailbox only` }); return out }
   const { token } = await accessToken(env, sql, mb.id)
   const q = `from:donotreply@amazon.com subject:"${REFUND_SUBJECT}" newer_than:${Math.max(1, opts.days)}d${opts.before ? ` before:${opts.before}` : ''}`
   const ids = await listThreadIds(token, q, opts.max ?? 40)
@@ -142,7 +142,7 @@ export async function dailyRefundCheck(sql: Sql, env: Bindings, trigger: 'cron' 
   const [run] = await sql`INSERT INTO sync_runs (trigger) VALUES ('refund_check') RETURNING id`
   const summary: any = { trigger }
   try {
-    summary.poll = await pollRefundEmails(sql, env, { days: 3, max: 40 })
+    summary.poll = await pollRefundEmails(sql, env, { days: 3, max: 80 })
     summary.reconcile = await reconcileRefunds(sql, env)
     summary.backcheck = await backcheckStep(sql, env)
     await sql`UPDATE sync_runs SET finished_at = now(), status = ${summary.poll.rateLimited || summary.backcheck?.rateLimited ? 'partial' : 'ok'}, messages_new = ${summary.poll.messagesNew + (summary.backcheck?.messagesNew ?? 0)}, summary = ${sql.json(summary)} WHERE id = ${run.id}`

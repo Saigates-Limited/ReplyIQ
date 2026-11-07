@@ -3,6 +3,8 @@ import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
 import { dailyRefundCheck, reconcileRefunds, pollRefundEmails, backcheckStep, REFUND_MAILBOX } from '../returns/refunds'
+import { parseRefundInitiated } from '../returns/refundParser'
+import { accessToken, getMessage, header, messageBody, listConnections } from '../gmail'
 
 export const refundsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 const colMissing = (e: any) => /column "?(refund_reason|reconcile_result|spc_ref)"? does not exist|invalid input value for enum|violates check constraint "amazon_events_kind_check"/.test(String(e?.message))
@@ -38,6 +40,36 @@ refundsApi.get('/', async (c) => {
     const [bc] = await sql`SELECT value FROM app_settings WHERE key = 'refund_backcheck'`.catch(() => [] as any[])
     return c.json({ refunds: rows, now: new Date().toISOString(), result_labels: RESULT_LABEL, status_labels: STATUS_LABEL, last_run: last ?? null, backcheck: bc?.value ?? null, mailbox: REFUND_MAILBOX })
   } catch (e) { if (colMissing(e)) return needMigration(c); throw e } finally { await sql.end() }
+})
+
+// GET /api/refunds/:id/source — which Gmail message this event was created from, and what the parser read from it.
+// Fetches the message live from the mailbox that stored it (falls back to the refund mailbox) so a wrong read can be seen.
+refundsApi.get('/:id{[0-9]+}/source', async (c) => {
+  const id = Number(c.req.param('id'))
+  const sql = getDb(c.env)
+  try {
+    const [e] = await sql`SELECT e.*, g.email_address AS mailbox_email, g.label AS mailbox_label FROM amazon_events e LEFT JOIN gmail_connection g ON g.id = e.mailbox_id WHERE e.id = ${id} AND e.kind = 'refund_initiated'`
+    if (!e) return c.json({ error: 'Refund event not found' }, 404)
+    const stored = { gmail_message_id: e.gmail_message_id, gmail_thread_id: e.gmail_thread_id, mailbox: e.mailbox_email ?? null, mailbox_label: e.mailbox_label ?? null, created_at: e.created_at, received_at: e.received_at,
+      parsed: { order_id: e.order_id, amount: e.amount, currency: e.currency, reason: e.refund_reason, spc_ref: e.spc_ref, items: e.refund_items }, raw_excerpt: e.raw_excerpt }
+    // Try the mailbox the event was stored from first; if unknown (pre-0013 rows), try every connected mailbox until one has the message.
+    const conns = await listConnections(sql)
+    const order = [...conns].sort((a, b) => Number(b.id === e.mailbox_id) - Number(a.id === e.mailbox_id) || Number(b.email_address.toLowerCase() === REFUND_MAILBOX) - Number(a.email_address.toLowerCase() === REFUND_MAILBOX))
+    const tried: { mailbox: string; result: string }[] = []
+    for (const mb of order) {
+      try {
+        const { token } = await accessToken(c.env, sql, mb.id)
+        const m = await getMessage(token, e.gmail_message_id)
+        const body = messageBody(m)
+        const reparsed = parseRefundInitiated(body, header(m, 'Subject'))
+        return c.json({ stored, found_in: mb.email_address, tried,
+          message: { subject: header(m, 'Subject'), from: header(m, 'From'), to: header(m, 'To'), date: header(m, 'Date'), internal_date: new Date(Number(m.internalDate)).toISOString(), labels: m.labelIds ?? [], snippet: m.snippet ?? '', body_excerpt: body.slice(0, 2500), web_link: `https://mail.google.com/mail/u/${encodeURIComponent(mb.email_address)}/#all/${e.gmail_thread_id ?? e.gmail_message_id}` },
+          reparsed: { order_id: reparsed.orderId, amount: reparsed.amount, currency: reparsed.currency, reason: reparsed.reason, spc_ref: reparsed.spcRef, items: reparsed.items },
+          mismatch: reparsed.orderId !== e.order_id || Number(reparsed.amount ?? 0) !== Number(e.amount ?? 0) || (reparsed.reason ?? null) !== (e.refund_reason ?? null) })
+      } catch (err: any) { tried.push({ mailbox: mb.email_address, result: /404|not found/i.test(String(err?.message)) ? 'message not in this mailbox (deleted or never there)' : String(err?.message).slice(0, 120) }) }
+    }
+    return c.json({ stored, found_in: null, tried, message: null, note: 'The Gmail message id on this event could not be fetched from any connected mailbox — it was deleted from Gmail, or the mailbox it came from is no longer connected. The stored excerpt below is what the parser saw at the time.' })
+  } finally { await sql.end() }
 })
 
 // PATCH /api/refunds/:id {status?, notes?} — chasing/recovered by anyone; claim_filed/written_off manager only

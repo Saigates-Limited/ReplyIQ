@@ -437,3 +437,9 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - Rewrite guardrails: change requests that ask to ignore policy, offer > £15, promise full refunds, hide warranty/return info, address Amazon, or include IMEI/internal notes are refused before the model runs; the rewrite is re-checked and the agent is told if it now fails or needs a manager.
 - Bulk actions show a persistent result banner above the inbox list (count, destination folder, skipped cases with reasons).
 - Settings → "Database migrations" card (manager) shows which migration files have run against the live database.
+
+## Phase 15c — Workers Paid + refund diagnostics (Nov 2026)
+- `wrangler.jsonc` → `"limits": { "cpu_ms": 30000 }` (Workers Paid). Gmail sync rounds 12 → 30 threads; refund poll 40 → 80 threads.
+- Refund emails are read **only** from bijalshah.cc@gmail.com — the old fallback to the default mailbox is removed; if it is not connected the run says so.
+- Marking a return **Received** clears any refund-without-return alert on that order immediately (`ok_return_received`), not at the next 07:00 check.
+- Refunds tab → **source** on each row (`GET /api/refunds/:id/source`): fetches the Gmail message the event came from (subject, from/to, date, labels, link to open in Gmail), shows stored vs re-parsed fields and flags a mismatch; if the message is gone from Gmail it says so and shows the excerpt stored at ingest.

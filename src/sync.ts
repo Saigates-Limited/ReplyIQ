@@ -149,7 +149,8 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
   let firstError: Error | null = null
   // Throttle: share the per-round thread budget across the mailboxes being synced (min 4 each) so an all-mailbox import
   // never exceeds the Worker's subrequest cap or Gmail's per-minute quota; the front end loops rounds until remaining = 0.
-  const perBox = Math.max(4, Math.floor(12 / Math.max(1, targets.length)))
+  // Workers Paid: 1000 subrequests + 30 s CPU per invocation, so 30 threads a round (was 12 on the Free plan).
+  const perBox = Math.max(6, Math.floor(30 / Math.max(1, targets.length)))
   for (const conn of targets) {
     try {
       const r = await syncMailbox(env, sql, conn, ourEmails, trigger, { ...opts, batch: perBox })
@@ -194,7 +195,7 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
     const todo = opts.lookbackDays ? allIds.filter((id) => !seen.has(id)) : allIds
     // Cloudflare caps subrequests per invocation (~50 on free, 1000 paid); each thread costs 1 Gmail call + a few DB round-trips via Hyperdrive.
     // Per-mailbox budget; when importing every mailbox at once runSync shares the 12-thread budget between them so one round stays under the subrequest cap.
-    const BATCH = opts.batch ?? 12
+    const BATCH = opts.batch ?? 30
     const threadIds = todo.slice(0, BATCH)
     result.threadsSeen = allIds.length
     result.remaining = Math.max(0, todo.length - threadIds.length)

@@ -12,6 +12,10 @@
   // 06:00 + 07:00 UTC = 07:00 London in BST and GMT respectively; the handler runs the daily refund check only when it is 07:00 in London.
   "triggers": { "crons": ["*/15 * * * *", "0 6 * * *", "0 7 * * *"] },
 
+  // Workers Paid (since Nov 2026): raise the CPU budget from the Free plan's 10 ms to 30 s per invocation so the Gmail
+  // sync, the daily refund check and sheet imports can never be cut off mid-request. Wall-clock is unaffected.
+  "limits": { "cpu_ms": 30000 },
+
   // Cloudflare Hyperdrive → Supabase session pooler (5432). Direct Worker→Supavisor TLS does not complete.
   "hyperdrive": [
     {

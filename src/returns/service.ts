@@ -126,7 +126,12 @@ export async function receive(sql: Sql, id: number, userId: number, b: { return_
   await sql`UPDATE returns SET status = 'received', received_at = now(), received_by = ${userId}, return_tracking = COALESCE(${b.return_tracking ?? null}, return_tracking) WHERE id = ${id}`
   // Keep the Amazon return event + refund check in step
   await sql`UPDATE amazon_events SET status = 'received', updated_at = now() WHERE kind = 'return_request' AND order_id = ${r.order_id} AND status = 'requested'`.catch(() => {})
-  await sql`UPDATE amazon_events SET return_id = ${id}, updated_at = now() WHERE kind = 'refund_initiated' AND order_id = ${r.order_id} AND return_id IS NULL`.catch(() => {})
+  // Phone is back → any "refund without return" alert on this order clears NOW (not at the next 07:00 check).
+  const cleared = await sql`UPDATE amazon_events SET return_id = COALESCE(return_id, ${id}), status = CASE WHEN status IN ('open','alert','chasing') THEN 'ok' ELSE status END,
+                               reconcile_result = CASE WHEN status IN ('open','alert','chasing') THEN 'ok_return_received' ELSE reconcile_result END,
+                               reconciled_at = CASE WHEN status IN ('open','alert','chasing') THEN now() ELSE reconciled_at END, updated_at = now()
+                             WHERE kind = 'refund_initiated' AND order_id = ${r.order_id} RETURNING (status = 'ok') AS now_ok`.catch(() => [] as any[])
+  if (cleared.some((x: any) => x.now_ok)) flags.push('Refund-without-return alert cleared — phone received')
   return { ok: true, flags }
 }
 
