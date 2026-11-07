@@ -4,7 +4,7 @@
 import type { Bindings } from '../db'
 import { gmailBackoffUntil, setGmailBackoff, accessToken, listThreadIds, getThread, header, messageBody, GmailQuotaError, listConnections, type GmailMessage } from '../gmail'
 import { fetchOrder, spapiConfigured, type SpapiEnv } from '../spapi'
-import { parseRefundInitiated, classifyRefundNotice, judgePartial, canonicalReason } from './refundParser'
+import { parseRefundInitiated, classifyRefundNotice, judgePartial, canonicalReason, PARTIAL_ABS_MAX } from './refundParser'
 import type { Sql } from './service'
 
 export const REFUND_MAILBOX = 'bijalshah.cc@gmail.com'
@@ -46,6 +46,23 @@ export async function ingestRefundEmail(sql: Sql, env: Bindings, m: GmailMessage
     await sql`UPDATE return_items SET outcome = COALESCE(outcome, ${isPartial ? 'partial_refund' : 'refund'}), refund_amount = COALESCE(refund_amount, ${r.amount}), outcome_at = COALESCE(outcome_at, now()) WHERE return_id = ${ret.id} AND item_no = 1`.catch(() => {})
   }
   return 'new'
+}
+
+/** "Order not received" refund → make sure the outbound parcel is on the Carrier desk (lost) and link the case. Returns the
+ *  carrier_case id, or null when no outbound tracking is known (nothing to claim against). Idempotent on (carrier, tracking). */
+async function linkCarrierCase(sql: Sql, orderId: string, value: number | null, product: string | null): Promise<number | null> {
+  const [k] = await sql`SELECT id, tracking_number, carrier FROM cases WHERE order_id = ${orderId} AND tracking_number IS NOT NULL ORDER BY id LIMIT 1`.catch(() => [] as any[])
+  if (!k?.tracking_number) return null
+  const tracking = String(k.tracking_number).replace(/\s+/g, '').toUpperCase()
+  const raw = k.carrier ? String(k.carrier).toLowerCase().replace(/[\s-]+/g, '_') : ''
+  const carrier = ['royal_mail', 'dpd', 'fedex', 'evri'].includes(raw) ? raw : /^[A-Z]{2}\d{9}GB$/.test(tracking) ? 'royal_mail' : raw ? 'other' : null
+  if (!carrier) return null
+  const [ex] = await sql`SELECT id FROM carrier_cases WHERE carrier = ${carrier} AND tracking = ${tracking}`.catch(() => [] as any[])
+  if (ex) return ex.id
+  const [row] = await sql`INSERT INTO carrier_cases (case_id, carrier, tracking, order_id, issue, product, value, source, next_action, notes)
+    VALUES (${k.id}, ${carrier}, ${tracking}, ${orderId}, 'lost', ${product}, ${value}, 'manual', 'Open a claim — Amazon refunded the buyer for non-receipt', ${`Created automatically from the Amazon refund email (Order not received, £${(value ?? 0).toFixed(2)}).`})
+    ON CONFLICT (carrier, tracking) WHERE tracking IS NOT NULL DO NOTHING RETURNING id`
+  return row?.id ?? null
 }
 
 /** Partial-refund decision with whatever price evidence exists (see judgePartial). */
@@ -95,7 +112,9 @@ export async function pollRefundEmails(sql: Sql, env: Bindings, opts: { days: nu
 }
 
 // ───────── reconciliation ─────────
-export type ReconcileResult = { checked: number; ok: number; alerts: number; cleared: number; review: number; errors: string[] }
+export type ReconcileResult = { checked: number; ok: number; alerts: number; cleared: number; review: number; transit?: number; errors: string[] }
+/** A Customer-Return refund younger than this is treated as a phone still in the post, not an alert. */
+export const RETURN_TRANSIT_DAYS = 7
 
 /** "Shipped" = tracking on the case, or SP-API says Shipped/Delivered. Unknown → null (we do not alert on a guess). */
 async function orderShipped(sql: Sql, env: Bindings, orderId: string): Promise<boolean | null> {
@@ -111,7 +130,7 @@ async function orderShipped(sql: Sql, env: Bindings, orderId: string): Promise<b
 /** Reconcile every refund event that is open, or alerting (re-check daily; clears when the phone is received). */
 export async function reconcileRefunds(sql: Sql, env: Bindings): Promise<ReconcileResult> {
   const res: ReconcileResult = { checked: 0, ok: 0, alerts: 0, cleared: 0, review: 0, errors: [] }
-  const events = await sql`SELECT id, order_id, refund_reason, status, return_id, sku, asin, amount, quantity, is_partial FROM amazon_events WHERE kind = 'refund_initiated' AND status IN ('open','alert','chasing') ORDER BY received_at ASC LIMIT 300`
+  const events = await sql`SELECT id, order_id, refund_reason, status, return_id, sku, asin, amount, quantity, is_partial, needs_manager, received_at, product FROM amazon_events WHERE kind = 'refund_initiated' AND status IN ('open','alert','chasing') ORDER BY received_at ASC LIMIT 300`
   for (const ev of events) {
     res.checked++
     try {
@@ -122,22 +141,42 @@ export async function reconcileRefunds(sql: Sql, env: Bindings): Promise<Reconci
       // Partial / goodwill: fill in if still unknown (price evidence may have arrived since ingest)
       let partial: boolean | null = ev.is_partial
       if (partial == null) { const j = await decidePartial(sql, env, ev.order_id, ev.amount == null ? null : Number(ev.amount), ev.sku, ev.asin, ev.quantity); partial = j.partial; if (partial != null) await sql`UPDATE amazon_events SET is_partial = ${partial} WHERE id = ${ev.id}` }
-      let result: string, status: string
+      const keep = ev.status === 'open' ? 'alert' : ev.status           // alert unless a human already moved it
+      const ageDays = (Date.now() - new Date(ev.received_at).getTime()) / 86400000
+      const expectsPhone = reason === 'customer return' || reason === 'different item'   // Amazon refunded against a return — a phone should come back
+      // Multiple refund emails on one order (e.g. Customer Return + Goodwill, two SKUs) → flag with the total
+      const [multi] = await sql`SELECT COUNT(*)::int AS n, COALESCE(SUM(amount), 0)::float8 AS total FROM amazon_events WHERE kind = 'refund_initiated' AND order_id = ${ev.order_id}`
+      const multiple = multi.n > 1
+      let result: string, status: string, needsManager = ev.needs_manager === true
       if (received) { result = 'ok_return_received'; status = 'ok' }
-      // Partial refund: a Buyer-Cancelled partial is a price adjustment (no phone expected). A Customer-Return partial still
+      else if (multiple) { result = 'alert_multiple_refunds'; status = keep; needsManager = true }
+      // Partial refund: a Buyer-Cancelled partial is a price adjustment (no phone expected). A partial against a return still
       // implies a phone should come back — keep it visible as "Partial — check return" rather than clearing it.
-      else if (partial === true && reason === 'customer return') { result = 'partial_check_return'; status = ev.status === 'open' ? 'alert' : ev.status }
-      else if (partial === true) { result = 'ok_partial_refund'; status = 'ok' }
+      else if (partial === true && expectsPhone) { result = 'partial_check_return'; status = keep }
+      else if (partial === true && reason === 'buyer cancelled') { result = 'ok_partial_refund'; status = 'ok' }
       else if (reason === 'buyer cancelled') {
         const shipped = await orderShipped(sql, env, ev.order_id)
         if (shipped === false) { result = 'ok_cancelled_before_dispatch'; status = 'ok' }
-        else if (shipped === true) { result = 'alert_shipped_not_back'; status = ev.status === 'open' ? 'alert' : ev.status }
-        else { result = 'alert_shipped_unknown'; status = ev.status === 'open' ? 'alert' : ev.status } // cannot prove it never shipped → treat as needing eyes
-      } else if (reason === 'customer return') { result = 'alert_not_received'; status = ev.status === 'open' ? 'alert' : ev.status }
-      else { result = 'alert_review_reason'; status = ev.status === 'open' ? 'alert' : ev.status }
+        else if (shipped === true) { result = 'alert_shipped_not_back'; status = keep }
+        else { result = 'alert_shipped_unknown'; status = keep } // cannot prove it never shipped → treat as needing eyes
+      } else if (expectsPhone) {
+        // Grace period: Amazon often refunds on the carrier's first scan, so a return under 7 days old is probably still in the post
+        if (ageDays < RETURN_TRANSIT_DAYS) { result = 'transit_return_pending'; status = 'open' }
+        else { result = 'alert_not_received'; status = keep }
+      } else if (reason === 'order not received') {
+        // Lost parcel, not a return: belongs on the Carrier desk as a possible claim against the outbound tracking
+        const cc = await linkCarrierCase(sql, ev.order_id, ev.amount == null ? null : Number(ev.amount), ev.product ?? null)
+        result = cc ? 'alert_lost_parcel_claim' : 'alert_lost_parcel_no_tracking'; status = keep
+      } else if (/^goodwill/.test(reason)) {
+        // "Goodwill/Return Delivery Costs Refund": a postage-sized amount is fine; one close to the phone price is not postage
+        const fullValue = partial === false || (partial == null && Number(ev.amount ?? 0) >= PARTIAL_ABS_MAX)
+        result = fullValue ? 'alert_goodwill_full_value' : 'ok_goodwill_small'; status = fullValue ? keep : 'ok'; needsManager = needsManager || fullValue
+      } else { result = 'alert_review_reason'; status = keep; needsManager = true }
       const wasAlert = ['alert', 'chasing'].includes(ev.status)
-      await sql`UPDATE amazon_events SET status = ${status}, reconcile_result = ${result}, reconciled_at = now(), return_id = COALESCE(return_id, ${ret?.id ?? null}), needs_manager = ${result === 'alert_review_reason' || ev.needs_manager === true}, updated_at = now() WHERE id = ${ev.id}`
-      if (status === 'ok') { res.ok++; if (wasAlert) res.cleared++ } else { res.alerts++; if (result === 'alert_review_reason') res.review++ }
+      await sql`UPDATE amazon_events SET status = ${status}, reconcile_result = ${result}, reconciled_at = now(), return_id = COALESCE(return_id, ${ret?.id ?? null}), needs_manager = ${needsManager},
+                  alert_notes = CASE WHEN ${multiple} AND (alert_notes IS NULL OR alert_notes NOT LIKE 'Multiple refunds%') THEN ${`Multiple refunds on this order: ${multi.n} emails, £${Number(multi.total).toFixed(2)} in total. `} || COALESCE(alert_notes, '') ELSE alert_notes END,
+                  updated_at = now() WHERE id = ${ev.id}`
+      if (status === 'ok') { res.ok++; if (wasAlert) res.cleared++ } else if (result === 'transit_return_pending') { res.transit = (res.transit ?? 0) + 1 } else { res.alerts++; if (needsManager) res.review++ }
     } catch (e: any) { res.errors.push(`${ev.order_id}: ${String(e?.message ?? e).slice(0, 120)}`) }
   }
   return res

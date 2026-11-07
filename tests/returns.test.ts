@@ -195,6 +195,15 @@ test('Refund: every fixture passes the sanity validator; a shifted result fails 
   assert.equal(typeOk('asin', 'Apple iPhone'), false); assert.equal(typeOk('quantity', 'I13P-128'), false); assert.equal(typeOk('item_refund', '1'), false); assert.equal(typeOk('reason', '0'), false)
 })
 
+test('Refund: delivery refund is 0 (not null) when the email says 0; new reasons canonicalised', () => {
+  const r = parseRefundInitiated(fx('refund_204_order_item_label.txt'))
+  assert.strictEqual(r.items[0].delivery_refund, 0)
+  const noShip = parseRefundInitiated(fx('refund_204_order_item_label.txt').replace('Shipping Refund\n', '').replace('GBP 0.00\n', ''))
+  assert.strictEqual(noShip.items[0].delivery_refund, 0, 'defaults to 0 when the line is absent but an item refund exists')
+  assert.equal(canonicalReason('Different Item'), 'Different item'); assert.equal(canonicalReason('order not received'), 'Order not received')
+  assert.equal(canonicalReason('Goodwill / Return Delivery Cost Refund'), 'Goodwill/Return Delivery Costs Refund')
+})
+
 test('Refund: alternating label/value lines also parse', () => {
   const alt = 'We initiated a refund of GBP 100.00 to [buyer] for order 111-1111111-1111111.\nItem name\nPhone A\nASIN\nB0AAAAAAA1\nSKU\nSKU-A\nReturn quantity\n1\nItem price refund\nGBP 100.00\nOutbound delivery cost refund\nGBP 0.00\nRefund reason\nBuyer Cancelled'
   const r = parseRefundInitiated(alt)

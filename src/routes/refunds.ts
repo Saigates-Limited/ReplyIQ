@@ -20,6 +20,12 @@ export const RESULT_LABEL: Record<string, string> = {
   alert_shipped_unknown: 'Refunded (Buyer Cancelled) — cannot confirm it never shipped',
   alert_not_received: 'Refunded, phone not received',
   alert_review_reason: 'Unusual refund reason — manager review',
+  alert_multiple_refunds: 'Multiple refunds on this order — manager review',
+  transit_return_pending: 'Return in transit — refunded under 7 days ago, phone probably still in the post',
+  alert_lost_parcel_claim: 'Lost parcel — refunded for non-receipt; claim on the Carrier desk',
+  alert_lost_parcel_no_tracking: 'Lost parcel — refunded for non-receipt; no outbound tracking on file to claim against',
+  alert_goodwill_full_value: 'Full-value goodwill — amount close to the phone price, not postage; manager review',
+  ok_goodwill_small: 'OK — small goodwill / postage refund',
 }
 export const STATUS_LABEL: Record<string, string> = { open: 'Not checked yet', ok: 'OK', alert: 'Open alert', chasing: 'Chasing', claim_filed: 'Claim filed', recovered: 'Recovered', written_off: 'Written off' }
 
@@ -29,6 +35,10 @@ const LIST = `
          c.case_ref, c.tracking_number AS outbound_tracking, r.status AS return_status, r.return_tracking, r.received_at AS return_received_at,
          (SELECT r2.id FROM returns r2 WHERE r2.order_id = e.order_id ORDER BY (r2.status IN ('received','inspected','outcome_agreed','closed')) DESC, r2.created_at DESC LIMIT 1) AS order_return_id,
          (SELECT r2.status FROM returns r2 WHERE r2.order_id = e.order_id ORDER BY (r2.status IN ('received','inspected','outcome_agreed','closed')) DESC, r2.created_at DESC LIMIT 1) AS order_return_status,
+         (SELECT cc.id FROM carrier_cases cc WHERE cc.order_id = e.order_id ORDER BY cc.id DESC LIMIT 1) AS carrier_case_id,
+         (SELECT cc.status FROM carrier_cases cc WHERE cc.order_id = e.order_id ORDER BY cc.id DESC LIMIT 1) AS carrier_case_status,
+         (SELECT COUNT(*)::int FROM amazon_events e2 WHERE e2.kind = 'refund_initiated' AND e2.order_id = e.order_id) AS refunds_on_order,
+         (SELECT COALESCE(SUM(e2.amount), 0)::float8 FROM amazon_events e2 WHERE e2.kind = 'refund_initiated' AND e2.order_id = e.order_id) AS refunds_on_order_total,
          GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - e.received_at)) / 86400))::int AS days_outstanding
   FROM amazon_events e LEFT JOIN cases c ON c.id = e.case_id LEFT JOIN returns r ON r.id = e.return_id LEFT JOIN users u ON u.id = e.alert_updated_by
   WHERE e.kind = 'refund_initiated'`
@@ -38,11 +48,12 @@ refundsApi.get('/', async (c) => {
   const view = c.req.query('view') ?? 'alerts'
   const sql = getDb(c.env)
   try {
-    const where = view === 'alerts' ? `AND e.status IN ('alert','chasing','claim_filed')` : view === 'ok' ? `AND e.status = 'ok'` : view === 'unchecked' ? `AND e.status = 'open'` : view === 'closed' ? `AND e.status IN ('recovered','written_off')` : ''
-    const rows = await sql.unsafe(`${LIST} ${where} ORDER BY (e.status IN ('alert','chasing','claim_filed')) DESC, e.received_at DESC LIMIT 1000`)
+    const where = view === 'alerts' ? `AND e.status IN ('alert','chasing','claim_filed')` : view === 'ok' ? `AND e.status = 'ok'` : view === 'unchecked' ? `AND e.status = 'open' AND e.reconcile_result IS DISTINCT FROM 'transit_return_pending'` : view === 'transit' ? `AND e.reconcile_result = 'transit_return_pending' AND e.status = 'open'` : view === 'closed' ? `AND e.status IN ('recovered','written_off')` : ''
+    const rows = await sql.unsafe(`${LIST} ${where} ORDER BY (e.status IN ('alert','chasing','claim_filed')) DESC, e.received_at DESC LIMIT 5000`)
     const [last] = await sql`SELECT started_at, finished_at, status, summary FROM sync_runs WHERE trigger = 'refund_check' ORDER BY started_at DESC LIMIT 1`.catch(() => [] as any[])
     const [bc] = await sql`SELECT value FROM app_settings WHERE key = 'refund_backcheck'`.catch(() => [] as any[])
-    return c.json({ refunds: rows, now: new Date().toISOString(), result_labels: RESULT_LABEL, status_labels: STATUS_LABEL, last_run: last ?? null, backcheck: bc?.value ?? null, mailbox: REFUND_MAILBOX })
+    const [cnt] = await sql`SELECT COUNT(*) FILTER (WHERE status IN ('alert','chasing','claim_filed'))::int AS alerts, COUNT(*) FILTER (WHERE status = 'open' AND reconcile_result = 'transit_return_pending')::int AS transit, COUNT(*) FILTER (WHERE status = 'open' AND reconcile_result IS DISTINCT FROM 'transit_return_pending')::int AS unchecked, COUNT(*) FILTER (WHERE status = 'ok')::int AS ok, COUNT(*) FILTER (WHERE status IN ('recovered','written_off'))::int AS closed, COUNT(*)::int AS all FROM amazon_events WHERE kind = 'refund_initiated'`
+    return c.json({ refunds: rows, counts: cnt, now: new Date().toISOString(), result_labels: RESULT_LABEL, status_labels: STATUS_LABEL, last_run: last ?? null, backcheck: bc?.value ?? null, mailbox: REFUND_MAILBOX })
   } catch (e) { if (colMissing(e)) return needMigration(c); throw e } finally { await sql.end() }
 })
 

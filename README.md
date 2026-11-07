@@ -459,3 +459,12 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - `validateParsed()` sanity checks (ASIN shape, quantity 1–10, reason is text, item+delivery = total, …). The **source** tool shows them as an amber warning instead of the green banner; **Re-parse all** refuses to overwrite a row whose new parse fails them and lists those orders.
 - Reconcile: a **Customer Return** partial refund with no phone back → `partial_check_return` ("Partial — check return", amber, stays in the alerts view). Only a Buyer-Cancelled partial clears as a price adjustment.
 - Fixture `tests/fixtures/refund_204_order_item_label.txt`; tests fail on any field shift.
+
+## Phase 15f — refund reconcile rules v2 (Nov 2026)
+- **Different item** is treated like Customer Return (a phone is expected back).
+- **Order not received** → a lost-parcel case is created/linked on the Carrier desk against the outbound tracking (`alert_lost_parcel_claim`; `…_no_tracking` when none on file). Idempotent on (carrier, tracking).
+- **Goodwill/Return Delivery Costs Refund** → `ok_goodwill_small` when postage-sized; `alert_goodwill_full_value` ("Full-value goodwill", manager) when the amount is close to the phone price.
+- **Multiple refunds on one order** → `alert_multiple_refunds` on every email for that order, note "Multiple refunds on this order: N emails, £X total", manager review; pill on the row.
+- **Grace period**: Customer Return / Different item refunds under 7 days old → `transit_return_pending` ("Return in transit"), own view, not counted as an alert.
+- `delivery_refund` is 0 (not null) when the item has an item refund.
+- Counts: the Refunds tab buttons now carry live counts from the same query as the sidebar badge (`alerts` = status alert/chasing/claim filed). The list limit was 1000 → 5000.

@@ -33,7 +33,7 @@ export type ParsedRefund = {
   excerpt: string                  // redacted, for the timeline. Never contains the buyer's name.
 }
 
-export const KNOWN_REASONS = ['buyer cancelled', 'customer return']
+export const KNOWN_REASONS = ['buyer cancelled', 'customer return', 'different item', 'order not received', 'goodwill/return delivery costs refund']
 /** Spelling/format variants Amazon uses → canonical */
 export function canonicalReason(r: string | null | undefined): string | null {
   if (!r) return null
@@ -41,6 +41,9 @@ export function canonicalReason(r: string | null | undefined): string | null {
   const k = s.toLowerCase().replace(/\s+/g, ' ')
   if (/^buyer cancel+ed$/.test(k)) return 'Buyer Cancelled'
   if (/^customer return$/.test(k)) return 'Customer Return'
+  if (/^different item$/.test(k)) return 'Different item'
+  if (/^order not received$/.test(k)) return 'Order not received'
+  if (/^goodwill\s*\/\s*return delivery costs? refund$/.test(k)) return 'Goodwill/Return Delivery Costs Refund'
   return s
 }
 
@@ -202,7 +205,7 @@ export function parseRefundInitiated(body: string, subject = ''): ParsedRefund {
   // Reason: from items, else a bare "Buyer Cancelled" / "Customer Return" anywhere in the text
   let reason = canonicalReason(real.find((i) => i.reason)?.reason ?? null)
   if (!reason) { const m = t.match(/\b(buyer cancel+ed|customer return)\b/i); reason = canonicalReason(m?.[1] ?? null) }
-  for (const i of real) i.reason = canonicalReason(i.reason)
+  for (const i of real) { i.reason = canonicalReason(i.reason); if (i.item_refund != null && i.delivery_refund == null) i.delivery_refund = 0 }
   const knownReason = !!reason && KNOWN_REASONS.includes(reason.toLowerCase())
   if (total) { const mm = total.match(MONEY_RE); if (mm) { amount = money(mm[2]); if (!currency) currency = symToCode(mm[1] ?? mm[3] ?? '') } }
   if (amount == null && real.length) amount = real.reduce((s, i) => s + (i.item_refund ?? 0) + (i.delivery_refund ?? 0), 0) || null
