@@ -1,0 +1,24 @@
+Hello,
+
+We initiated a refund of GBP 300.14 to [buyer] for order 204-3717148-0301107.
+
+Refund details
+Order ID
+Order Item
+ASIN
+SKU
+Quantity
+Item Refund
+Shipping Refund
+Refund Reason
+204-3717148-0301107
+Apple iPhone 13 Pro, 128GB, Graphite (Renewed)
+B09ML6X61Z
+I13P-128-GRP-A-AMZ
+1
+GBP 300.14
+GBP 0.00
+Customer Return
+
+Sincerely,
+Amazon Services Europe

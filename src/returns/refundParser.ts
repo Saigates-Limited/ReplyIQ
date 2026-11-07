@@ -65,12 +65,12 @@ export function classifyRefundNotice(from: string, subject: string): boolean {
 // ───────── label dictionary ─────────
 type Field = 'name' | 'asin' | 'sku' | 'quantity' | 'item_refund' | 'delivery_refund' | 'reason' | 'total' | 'order' | 'ignore'
 const LABELS: [RegExp, Field][] = [
-  [/^(item name|product name|item title|title|item|product)$/i, 'name'],
+  [/^(order item|item name|product name|item title|item description|product title|title|item|product)$/i, 'name'],
   [/^asin$/i, 'asin'],
   [/^(seller sku|merchant sku|sku)$/i, 'sku'],
-  [/^(return quantity|quantity refunded|quantity|qty)$/i, 'quantity'],
-  [/^(item price refund|item refund|item price|principal( refund)?|refund amount per item)$/i, 'item_refund'],
-  [/^(outbound delivery( cost)? refund|delivery( cost)? refund|shipping( cost)? refund|postage refund)$/i, 'delivery_refund'],
+  [/^(return quantity|quantity refunded|refund quantity|quantity|qty)$/i, 'quantity'],
+  [/^(item price refund|item refund|item price|principal( refund)?|refund amount per item|item amount)$/i, 'item_refund'],
+  [/^(outbound delivery( cost)? refund|delivery( cost)? refund|shipping( cost)? refund|postage refund|shipping refund amount)$/i, 'delivery_refund'],
   [/^(refund reason|reason for refund|reason)$/i, 'reason'],
   [/^(total refund( amount)?|refund total|total refunded|total)$/i, 'total'],
   [/^(order id|order number|order)$/i, 'order'],
@@ -84,6 +84,46 @@ function inlinePair(line: string): { field: Field; value: string } | null {
   if (!m) return null
   const f = labelOf(m[1]); if (!f) return null
   return { field: f, value: m[2].trim() }
+}
+
+const ASIN_RE = /^B0[A-Z0-9]{8}$/i
+/** Does this value plausibly belong under this label? Used to stop one unknown label shifting everything after it. */
+export function typeOk(f: Field, v: string): boolean {
+  const t = v.trim()
+  switch (f) {
+    case 'asin': return ASIN_RE.test(t) || /\bASIN:?\s*B0[A-Z0-9]{8}\b/i.test(t)
+    case 'quantity': return /^\d{1,3}$/.test(t) && Number(t) >= 1 && Number(t) <= 100
+    case 'item_refund': case 'delivery_refund': case 'total': return MONEY_RE.test(t) && (/[£€$]|GBP|EUR|USD/i.test(t) || /\.\d{1,2}$/.test(t))
+    case 'order': return /^\d{3}-\d{7}-\d{7}$/.test(t)
+    case 'sku': return /^[A-Z0-9][A-Z0-9._\-]{2,40}$/i.test(t) && !ASIN_RE.test(t) && !MONEY_RE.test(t) && !/^\d{1,3}$/.test(t)
+    case 'reason': return /^[A-Za-z][A-Za-z ,'’()\/\-]{2,60}\.?$/.test(t) && !/\d/.test(t)
+    case 'name': return t.length >= 3 && /[A-Za-z]{3}/.test(t) && !ASIN_RE.test(t) && !MONEY_RE.test(t) && !/^\d{3}-\d{7}-\d{7}$/.test(t)
+    default: return false
+  }
+}
+
+/** Sanity check on a parse result. Empty array = looks right. The source tool shows these as an amber warning and
+ *  the re-parse job refuses to overwrite a row with a result that fails them. */
+export function validateParsed(r: ParsedRefund): string[] {
+  const w: string[] = []
+  if (!r.orderId) w.push('no order ID')
+  if (r.amount == null) w.push('no refund amount'); else if (r.amount < 0 || r.amount > 5000) w.push(`amount £${r.amount} is outside 0–5000`)
+  if (!r.items.length) w.push('no item parsed')
+  for (const [i, it] of r.items.entries()) {
+    const n = r.items.length > 1 ? ` (item ${i + 1})` : ''
+    if (it.asin && !ASIN_RE.test(it.asin)) w.push(`ASIN "${it.asin.slice(0, 40)}" is not B0XXXXXXXX${n}`)
+    if (it.sku && ASIN_RE.test(it.sku)) w.push(`SKU "${it.sku}" is an ASIN${n}`)
+    if (it.sku && /^\d{1,3}$/.test(it.sku)) w.push(`SKU "${it.sku}" looks like a quantity${n}`)
+    if (it.quantity != null && (it.quantity < 1 || it.quantity > 10)) w.push(`quantity ${it.quantity} is outside 1–10${n}`)
+    if (it.item_refund != null && it.item_refund > 0 && it.item_refund < 1 && (r.amount ?? 0) >= 1) w.push(`item refund £${it.item_refund} does not match total £${r.amount}${n}`)
+    if (it.reason != null && !/[A-Za-z]{3}/.test(it.reason)) w.push(`reason "${it.reason}" is not text${n}`)
+    if (it.name != null && (ASIN_RE.test(it.name) || MONEY_RE.test(it.name))) w.push(`item name "${it.name}" is not a product name${n}`)
+  }
+  if (r.reason != null && !/[A-Za-z]{3}/.test(r.reason) && !w.some((x) => x.startsWith('reason '))) w.push(`reason "${r.reason}" is not text`)
+  if (!r.reason) w.push('no refund reason')
+  const sum = r.items.reduce((a, i) => a + (i.item_refund ?? 0) + (i.delivery_refund ?? 0), 0)
+  if (r.amount != null && r.items.some((i) => i.item_refund != null) && Math.abs(sum - r.amount) > 0.011) w.push(`item + delivery refunds (£${sum.toFixed(2)}) do not add up to the total (£${r.amount.toFixed(2)})`)
+  return w
 }
 
 export function parseRefundInitiated(body: string, subject = ''): ParsedRefund {
@@ -102,10 +142,12 @@ export function parseRefundInitiated(body: string, subject = ''): ParsedRefund {
   const pending: { field: Field; item: number }[] = []   // bare labels waiting for a value, FIFO
   let cur = -1                                            // index of the item the NEXT bare label belongs to
   let total: string | null = null
+  let valuesStarted = false                               // flips once the first value line is seen
   const has = (i: number, f: Field) => i >= 0 && i < items.length && (items[i] as any)[f] != null
   const set = (i: number, f: Field, v: string) => {
     if (f === 'total') { total = v; return }
     if (f === 'order' || f === 'ignore') return
+    if (i < 0) i = 0
     while (items.length <= i) items.push(blank())
     const it = items[i] as any
     if (f === 'quantity') it.quantity = Number(v.replace(/\D/g, '')) || null
@@ -130,12 +172,28 @@ export function parseRefundInitiated(body: string, subject = ''): ParsedRefund {
     const line = raw.trim()
     if (!line) continue
     const pair = inlinePair(line)
-    if (pair) { set(targetFor(pair.field), pair.field, pair.value); continue }
+    if (pair) { valuesStarted = true; set(targetFor(pair.field), pair.field, pair.value); continue }
     const f = labelOf(line)
     if (f === 'ignore') continue                      // section heading — no value follows it
     if (f) { pending.push({ field: f, item: targetFor(f) }); continue }
-    // A value line: goes to the oldest waiting label
-    if (pending.length) { const p = pending.shift()!; set(p.item, p.field, line); continue }
+    // Unknown label in a label block (short Title-Case words, no digits, labels still being collected and no value seen yet):
+    // remember it as a placeholder so its value is consumed later without being misfiled as the product name.
+    // (only when no pending typed label would accept the line as its value — "SKU-A" after a bare "SKU" label is a value, not a label)
+    if (pending.length && !valuesStarted && /^[A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,3}$/.test(line) && line.length <= 32 && !pending.some((p) => typeOk(p.field, line))) { pending.push({ field: 'ignore', item: cur }); continue }
+    // A value line. Type-aware: it goes to the oldest waiting label WHOSE TYPE ACCEPTS IT. A label Amazon added that we do
+    // not know (e.g. "Order Item") therefore cannot shift every later value by one — its value either lands on an
+    // implicit "name" slot (text, no name yet) or is dropped, and the ASIN / money / quantity slots still get the right values.
+    if (pending.length) {
+      valuesStarted = true
+      const idx = pending.findIndex((p) => typeOk(p.field, line))
+      if (idx >= 0) { const [p] = pending.splice(idx, 1); set(p.item, p.field, line); continue }
+      const ig = pending.findIndex((p) => p.field === 'ignore')
+      const target = Math.max(0, pending[0].item)
+      if (ig >= 0 && (has(target, 'name') || pending.some((p) => p.field === 'name') || !typeOk('name', line))) { pending.splice(ig, 1); continue }
+      if (!has(target, 'name') && typeOk('name', line) && !pending.some((p) => p.field === 'name')) { if (ig >= 0) pending.splice(ig, 1); set(target, 'name', line); continue }
+      // Nothing accepts it — skip rather than misfile (sign-off lines, legal text, etc.)
+      continue
+    }
     // Free text (intro, sign-off): a bare known reason anywhere is still worth keeping if nothing else gives one
   }
 

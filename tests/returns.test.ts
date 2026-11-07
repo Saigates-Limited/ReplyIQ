@@ -131,7 +131,7 @@ Outbound delivery cost refund: £0.00
 Reason: Customer Return`
 
 import { readFileSync } from 'node:fs'
-import { judgePartial, canonicalReason } from '../src/returns/refundParser'
+import { judgePartial, canonicalReason, validateParsed, typeOk } from '../src/returns/refundParser'
 const fx = (n: string) => readFileSync(new URL(`./fixtures/${n}`, import.meta.url), 'utf8')
 
 test('Refund (real layout): labels block then values block — 205 Buyer Cancelled', () => {
@@ -166,6 +166,35 @@ test('Refund: partial judgement — £0.01, £5.00, £55.59 are partial without 
   assert.equal(judgePartial(340, { peerMax: 359 }).partial, false)
   assert.equal(canonicalReason('buyer canceled.'), 'Buyer Cancelled'); assert.equal(canonicalReason('Goodwill'), 'Goodwill')
 })
+test('Refund (real layout #114): "Order Item" label — values must NOT shift left', () => {
+  // Reconstructed from event #114 (204-3717148-0301107): with "Order Item" unknown the old parser gave
+  // sku=ASIN, asin=product name, quantity=13128, item_refund=1, delivery_refund=300.14, reason="0".
+  const r = parseRefundInitiated(fx('refund_204_order_item_label.txt'), 'Refund Initiated for Order 204-3717148-0301107')
+  const it = r.items[0]
+  assert.equal(it.name, 'Apple iPhone 13 Pro, 128GB, Graphite (Renewed)')
+  assert.equal(it.asin, 'B09ML6X61Z'); assert.equal(it.sku, 'I13P-128-GRP-A-AMZ'); assert.equal(it.quantity, 1)
+  assert.equal(it.item_refund, 300.14); assert.equal(it.delivery_refund, 0); assert.equal(it.reason, 'Customer Return')
+  assert.equal(r.amount, 300.14); assert.equal(r.reason, 'Customer Return'); assert.equal(r.knownReason, true)
+  assert.deepEqual(validateParsed(r), [])
+})
+test('Refund: an UNKNOWN label still cannot shift the values (type-aware assignment)', () => {
+  const txt = fx('refund_204_order_item_label.txt').replace('Order Item', 'Some Future Label')
+  const r = parseRefundInitiated(txt, 'Refund Initiated for Order 204-3717148-0301107')
+  const it = r.items[0]
+  assert.equal(it.asin, 'B09ML6X61Z'); assert.equal(it.sku, 'I13P-128-GRP-A-AMZ'); assert.equal(it.quantity, 1)
+  assert.equal(it.item_refund, 300.14); assert.equal(it.reason, 'Customer Return'); assert.equal(it.name, 'Apple iPhone 13 Pro, 128GB, Graphite (Renewed)')
+  assert.deepEqual(validateParsed(r), [])
+})
+test('Refund: every fixture passes the sanity validator; a shifted result fails it', () => {
+  for (const f of ['refund_205_buyer_cancelled.txt', 'refund_026_customer_return.txt', 'refund_203_partial_penny.txt', 'refund_204_order_item_label.txt'])
+    assert.deepEqual(validateParsed(parseRefundInitiated(fx(f))), [], f)
+  const shifted = { orderId: '204-3717148-0301107', amount: 300.14, currency: 'GBP', spcRef: null, reason: '0', knownReason: false, excerpt: '',
+    items: [{ name: null, asin: 'Apple iPhone 13 Pro, 128GB', sku: 'B09ML6X61Z', quantity: 13128, item_refund: 1, delivery_refund: 300.14, reason: '0' }] }
+  const w = validateParsed(shifted as any)
+  assert.ok(w.length >= 4, w.join('; ')); assert.ok(w.some((x) => /ASIN/.test(x))); assert.ok(w.some((x) => /quantity/.test(x))); assert.ok(w.some((x) => /reason/.test(x)))
+  assert.equal(typeOk('asin', 'Apple iPhone'), false); assert.equal(typeOk('quantity', 'I13P-128'), false); assert.equal(typeOk('item_refund', '1'), false); assert.equal(typeOk('reason', '0'), false)
+})
+
 test('Refund: alternating label/value lines also parse', () => {
   const alt = 'We initiated a refund of GBP 100.00 to [buyer] for order 111-1111111-1111111.\nItem name\nPhone A\nASIN\nB0AAAAAAA1\nSKU\nSKU-A\nReturn quantity\n1\nItem price refund\nGBP 100.00\nOutbound delivery cost refund\nGBP 0.00\nRefund reason\nBuyer Cancelled'
   const r = parseRefundInitiated(alt)

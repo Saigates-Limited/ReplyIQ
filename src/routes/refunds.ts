@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
 import { dailyRefundCheck, reconcileRefunds, pollRefundEmails, backcheckStep, decidePartial, REFUND_MAILBOX } from '../returns/refunds'
-import { parseRefundInitiated } from '../returns/refundParser'
+import { parseRefundInitiated, validateParsed } from '../returns/refundParser'
 import { accessToken, getMessage, header, messageBody, listConnections } from '../gmail'
 
 export const refundsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -14,7 +14,8 @@ export const ALERT_STATUSES = ['alert', 'chasing', 'claim_filed', 'recovered', '
 export const RESULT_LABEL: Record<string, string> = {
   ok_cancelled_before_dispatch: 'OK — cancelled before dispatch',
   ok_return_received: 'OK — return received',
-  ok_partial_refund: 'OK — partial / goodwill refund, no phone expected back',
+  ok_partial_refund: 'OK — partial / goodwill refund (Buyer Cancelled), no phone expected back',
+  partial_check_return: 'Partial — check return (Customer Return, part refund, phone not received)',
   alert_shipped_not_back: 'Refunded after dispatch — phone not back',
   alert_shipped_unknown: 'Refunded (Buyer Cancelled) — cannot confirm it never shipped',
   alert_not_received: 'Refunded, phone not received',
@@ -65,7 +66,9 @@ refundsApi.get('/:id{[0-9]+}/source', async (c) => {
         const m = await getMessage(token, e.gmail_message_id)
         const body = messageBody(m)
         const reparsed = parseRefundInitiated(body, header(m, 'Subject'))
-        return c.json({ stored, found_in: mb.email_address, tried,
+        const warnings = validateParsed(reparsed)
+        const storedWarnings = validateParsed({ orderId: e.order_id, amount: e.amount == null ? null : Number(e.amount), currency: e.currency, spcRef: e.spc_ref, reason: e.refund_reason, knownReason: true, excerpt: '', items: Array.isArray(e.refund_items) ? e.refund_items : [] })
+        return c.json({ stored, found_in: mb.email_address, tried, warnings, stored_warnings: storedWarnings,
           message: { subject: header(m, 'Subject'), from: header(m, 'From'), to: header(m, 'To'), date: header(m, 'Date'), internal_date: new Date(Number(m.internalDate)).toISOString(), labels: m.labelIds ?? [], snippet: m.snippet ?? '', body_excerpt: body.slice(0, 2500), web_link: `https://mail.google.com/mail/u/${encodeURIComponent(mb.email_address)}/#all/${e.gmail_thread_id ?? e.gmail_message_id}` },
           reparsed: { order_id: reparsed.orderId, amount: reparsed.amount, currency: reparsed.currency, reason: reparsed.reason, spc_ref: reparsed.spcRef, items: reparsed.items },
           mismatch: reparsed.orderId !== e.order_id || Number(reparsed.amount ?? 0) !== Number(e.amount ?? 0) || (reparsed.reason ?? null) !== (e.refund_reason ?? null) })
@@ -86,7 +89,7 @@ refundsApi.post('/reparse', requireManager, async (c) => {
     const events = await sql`SELECT id, gmail_message_id, mailbox_id, order_id, amount, refund_reason, status, sku, asin, quantity FROM amazon_events WHERE kind = 'refund_initiated' AND gmail_message_id IS NOT NULL ORDER BY id`
     const tokens = new Map<number, string>()
     const tokenFor = async (mbId: number) => { if (!tokens.has(mbId)) tokens.set(mbId, (await accessToken(c.env, sql, mbId)).token); return tokens.get(mbId)! }
-    const out = { total: events.length, updated: 0, unchanged: 0, not_found: 0, errors: [] as string[], changes: [] as any[] }
+    const out = { total: events.length, updated: 0, unchanged: 0, not_found: 0, errors: [] as string[], rejected: [] as { id: number; order_id: string; warnings: string[] }[], changes: [] as any[] }
     for (const e of events) {
       const order = [e.mailbox_id, refundConn?.id, ...conns.map((x) => x.id)].filter((v, i, a): v is number => v != null && a.indexOf(v) === i)
       let m: any = null
@@ -94,6 +97,9 @@ refundsApi.post('/reparse', requireManager, async (c) => {
       if (!m) { out.not_found++; continue }
       const r = parseRefundInitiated(messageBody(m), header(m, 'Subject'))
       if (!r.orderId) { out.errors.push(`${e.order_id}: no order id parsed`); continue }
+      // Never overwrite a row with a result that fails the sanity checks — report it for a human instead.
+      const bad = validateParsed(r)
+      if (bad.length) { out.rejected.push({ id: e.id, order_id: r.orderId, warnings: bad }); continue }
       const partial = (await decidePartial(sql, c.env, r.orderId, r.amount, r.items[0]?.sku ?? null, r.items[0]?.asin ?? null, r.items[0]?.quantity ?? 1)).partial
       const before = { order_id: e.order_id, amount: e.amount == null ? null : Number(e.amount), reason: e.refund_reason, sku: e.sku, asin: e.asin }
       const after = { order_id: r.orderId, amount: r.amount, reason: r.reason, sku: r.items[0]?.sku ?? null, asin: r.items[0]?.asin ?? null }

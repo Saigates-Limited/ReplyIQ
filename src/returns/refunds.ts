@@ -124,7 +124,10 @@ export async function reconcileRefunds(sql: Sql, env: Bindings): Promise<Reconci
       if (partial == null) { const j = await decidePartial(sql, env, ev.order_id, ev.amount == null ? null : Number(ev.amount), ev.sku, ev.asin, ev.quantity); partial = j.partial; if (partial != null) await sql`UPDATE amazon_events SET is_partial = ${partial} WHERE id = ${ev.id}` }
       let result: string, status: string
       if (received) { result = 'ok_return_received'; status = 'ok' }
-      else if (partial === true) { result = 'ok_partial_refund'; status = 'ok' } // goodwill / price adjustment — no phone expected back
+      // Partial refund: a Buyer-Cancelled partial is a price adjustment (no phone expected). A Customer-Return partial still
+      // implies a phone should come back — keep it visible as "Partial — check return" rather than clearing it.
+      else if (partial === true && reason === 'customer return') { result = 'partial_check_return'; status = ev.status === 'open' ? 'alert' : ev.status }
+      else if (partial === true) { result = 'ok_partial_refund'; status = 'ok' }
       else if (reason === 'buyer cancelled') {
         const shipped = await orderShipped(sql, env, ev.order_id)
         if (shipped === false) { result = 'ok_cancelled_before_dispatch'; status = 'ok' }

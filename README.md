@@ -453,3 +453,9 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - Sheet import matches **any** existing return by order ID (notice/manual/import), enriching it instead of creating a second row.
 - Gmail quota back-off: a 403/429 "quota" sets a 5-minute pause honoured by the cron, manual syncs and the refund poll; shown on the Gmail page.
 - Rewrite guardrail: "full refund" only refused when the instruction is to offer/promise one; refund-email timeline rows are excluded from the model payload (drafts + prompt preview).
+
+## Phase 15e — parser hardening against label shift (Nov 2026)
+- Real email #114 (204-3717148-0301107) used an **"Order Item"** label the dictionary did not know, so every value after it shifted one slot left. Fixed two ways: the label is now known, and value assignment is **type-aware** (`typeOk`): an ASIN slot only accepts `B0XXXXXXXX`, money needs a currency/pence, quantity is 1–100, reason is text — so an unknown label can no longer shift anything (test: fixture with the label renamed to a nonsense word still parses perfectly).
+- `validateParsed()` sanity checks (ASIN shape, quantity 1–10, reason is text, item+delivery = total, …). The **source** tool shows them as an amber warning instead of the green banner; **Re-parse all** refuses to overwrite a row whose new parse fails them and lists those orders.
+- Reconcile: a **Customer Return** partial refund with no phone back → `partial_check_return` ("Partial — check return", amber, stays in the alerts view). Only a Buyer-Cancelled partial clears as a price adjustment.
+- Fixture `tests/fixtures/refund_204_order_item_label.txt`; tests fail on any field shift.
