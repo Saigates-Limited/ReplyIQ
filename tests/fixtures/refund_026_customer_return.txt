@@ -1,0 +1,25 @@
+Hello,
+
+We initiated a refund of GBP 223.00 to [buyer] for order 026-9630916-1793908.
+Reference: SPC-EUAmazon-2128656218003830
+
+Refund details
+Order ID
+Item name
+ASIN
+SKU
+Return quantity
+Item price refund
+Outbound delivery cost refund
+Refund reason
+026-9630916-1793908
+Apple iPhone 13 128GB Midnight (Renewed)
+B09MGFJK73
+I13-128-MDT-A-AMZ
+1
+£223.00
+£0.00
+Customer Return
+
+Sincerely,
+Amazon Services Europe

@@ -130,6 +130,48 @@ Item price refund: £223.00
 Outbound delivery cost refund: £0.00
 Reason: Customer Return`
 
+import { readFileSync } from 'node:fs'
+import { judgePartial, canonicalReason } from '../src/returns/refundParser'
+const fx = (n: string) => readFileSync(new URL(`./fixtures/${n}`, import.meta.url), 'utf8')
+
+test('Refund (real layout): labels block then values block — 205 Buyer Cancelled', () => {
+  const r = parseRefundInitiated(fx('refund_205_buyer_cancelled.txt'), 'Refund Initiated for Order 205-1900538-4667561')
+  assert.equal(r.orderId, '205-1900538-4667561'); assert.equal(r.amount, 359); assert.equal(r.currency, 'GBP')
+  assert.equal(r.items.length, 1, JSON.stringify(r.items))
+  const it = r.items[0]
+  assert.equal(it.name, 'Apple iPhone 15 128GB Pink (Renewed)'); assert.equal(it.asin, 'B0CW114X7P'); assert.equal(it.sku, 'I15-128-PNK-A-AMZ1')
+  assert.equal(it.quantity, 1); assert.equal(it.item_refund, 359); assert.equal(it.delivery_refund, 0)
+  assert.equal(it.reason, 'Buyer Cancelled'); assert.equal(r.reason, 'Buyer Cancelled'); assert.equal(r.knownReason, true)
+})
+test('Refund (real layout): 026 Customer Return with SPC ref and £', () => {
+  const r = parseRefundInitiated(fx('refund_026_customer_return.txt'), 'Refund Initiated for Order 026-9630916-1793908')
+  assert.equal(r.orderId, '026-9630916-1793908'); assert.equal(r.amount, 223); assert.equal(r.spcRef, 'SPC-EUAmazon-2128656218003830')
+  assert.equal(r.items[0].sku, 'I13-128-MDT-A-AMZ'); assert.equal(r.items[0].asin, 'B09MGFJK73'); assert.equal(r.items[0].item_refund, 223)
+  assert.equal(r.reason, 'Customer Return'); assert.equal(r.knownReason, true)
+  // the bug: reason must never be the product name, sku must never be "Return"
+  assert.doesNotMatch(r.reason!, /iPhone/); assert.notEqual(r.items[0].sku, 'RETURN')
+})
+test('Refund (real layout): £0.01 partial — reason still read, amount tiny', () => {
+  const r = parseRefundInitiated(fx('refund_203_partial_penny.txt'), 'Refund Initiated for Order 203-6734713-7728355')
+  assert.equal(r.amount, 0.01); assert.equal(r.reason, 'Customer Return'); assert.equal(r.items[0].item_refund, 0.01)
+})
+test('Refund: partial judgement — £0.01, £5.00, £55.59 are partial without an order price; full refund is not', () => {
+  assert.equal(judgePartial(0.01, {}).partial, true)
+  assert.equal(judgePartial(5, {}).partial, true)
+  assert.equal(judgePartial(55.59, {}).partial, true)
+  assert.equal(judgePartial(223, {}).partial, null)                                  // unknown price, plausible full amount → undecided
+  assert.equal(judgePartial(223, { unitPrice: 223 }).partial, false)
+  assert.equal(judgePartial(150, { unitPrice: 223 }).partial, true)
+  assert.equal(judgePartial(120, { peerMax: 359 }).partial, true)                     // well below the highest refund for the same item
+  assert.equal(judgePartial(340, { peerMax: 359 }).partial, false)
+  assert.equal(canonicalReason('buyer canceled.'), 'Buyer Cancelled'); assert.equal(canonicalReason('Goodwill'), 'Goodwill')
+})
+test('Refund: alternating label/value lines also parse', () => {
+  const alt = 'We initiated a refund of GBP 100.00 to [buyer] for order 111-1111111-1111111.\nItem name\nPhone A\nASIN\nB0AAAAAAA1\nSKU\nSKU-A\nReturn quantity\n1\nItem price refund\nGBP 100.00\nOutbound delivery cost refund\nGBP 0.00\nRefund reason\nBuyer Cancelled'
+  const r = parseRefundInitiated(alt)
+  assert.equal(r.items[0].sku, 'SKU-A'); assert.equal(r.items[0].asin, 'B0AAAAAAA1'); assert.equal(r.reason, 'Buyer Cancelled'); assert.equal(r.amount, 100)
+})
+
 test('Refund: classify subject + sender', () => {
   assert.equal(classifyRefundNotice('Amazon <donotreply@amazon.com>', 'Refund Initiated for Order 205-1900538-4667561'), true)
   assert.equal(classifyRefundNotice('donotreply@amazon.com', 'Return authorisation notification'), false)

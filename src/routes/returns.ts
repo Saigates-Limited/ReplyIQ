@@ -2,7 +2,7 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
-import { LIST_SQL, decorate, loadReturn, archiveReturn, hasReturnArchive, createReturn, receive, updateItem, setStatus, clearManager, loadSkus, loadSuppliers, ensureSku, reports, exportCsv, tableMissing } from '../returns/service'
+import { LIST_SQL, decorate, loadReturn, archiveReturn, hasReturnArchive, expectedFromNotice, createReturn, receive, updateItem, setStatus, clearManager, loadSkus, loadSuppliers, ensureSku, reports, exportCsv, tableMissing } from '../returns/service'
 import { parseCsv, cleanRow, type CleanRow } from '../returns/importer'
 import { STATUS_LABEL, REASON_LABEL, CABLE_LABEL, OUTCOME_LABEL, DISPOSITION_LABEL, RETURN_STATUSES } from '../returns/rules'
 import { checkImei } from '../returns/imei'
@@ -229,7 +229,9 @@ returnsApi.post('/import', requireManager, async (c) => {
     for (const r of importable) {
       const status = r.outcome ? 'closed' : r.return_date ? 'received' : 'expected'
       const [k] = await sql`SELECT id FROM cases WHERE order_id = ${r.order_id} ORDER BY id LIMIT 1`
-      const [existing] = await sql`SELECT id FROM returns WHERE order_id = ${r.order_id} AND import_batch_id IS NOT NULL ORDER BY id LIMIT 1`
+      // Match by order ID against ANY existing return (Expected from a notice, manual, or a previous import) so the sheet
+      // enriches that row instead of creating a second return for the same order.
+      const [existing] = await sql`SELECT id FROM returns WHERE order_id = ${r.order_id} ORDER BY (import_batch_id IS NOT NULL) DESC, (status <> 'closed') DESC, id DESC LIMIT 1`
       let id: number
       const flags = r.review.map((x) => `${x.field}: ${x.reason}`)
       if (existing) {
@@ -255,6 +257,33 @@ returnsApi.post('/import', requireManager, async (c) => {
     return c.json({ committed: true, batch_id: batch.id, created, updated, ...preview })
   } catch (e) { if (tableMissing(e)) return needMigration(c); throw e } finally { await sql.end() }
 })
+// POST /api/returns/backfill {commit:false} (manager) — create an Expected return for every Amazon return-authorisation
+// notice that has no return on its order yet. Dry run lists the candidates; commit creates them (idempotent: re-running
+// finds nothing new). Closed/refunded notices are skipped unless include_closed is set.
+returnsApi.post('/backfill', requireManager, async (c) => {
+  const b = (await c.req.json().catch(() => ({}))) as { commit?: boolean; include_closed?: boolean; days?: number }
+  const sql = getDb(c.env)
+  try {
+    const days = Math.min(Math.max(Number(b.days) || 120, 1), 730)
+    const cands = await sql`
+      SELECT e.id, e.case_id, e.order_id, e.sku, e.asin, e.quantity, e.return_reason, e.customer_comment, e.received_at, e.status, c.case_ref
+      FROM amazon_events e LEFT JOIN cases c ON c.id = e.case_id
+      WHERE e.kind = 'return_request' AND e.received_at >= now() - (${days}::int || ' days')::interval
+        AND (${!!b.include_closed} OR e.status NOT IN ('refunded','closed'))
+        AND NOT EXISTS (SELECT 1 FROM returns r WHERE r.order_id = e.order_id)
+      ORDER BY e.received_at DESC`
+    const rows = cands.map((e: any) => ({ event_id: e.id, order_id: e.order_id, case_ref: e.case_ref, sku: e.sku, quantity: e.quantity ?? 1, reason: e.return_reason, notice_date: e.received_at, notice_status: e.status }))
+    if (!b.commit) return c.json({ dry_run: true, days, candidates: rows.length, rows })
+    const user = c.get('user')
+    let created = 0; const ids: number[] = []
+    for (const e of cands as any[]) {
+      const id = await expectedFromNotice(sql, e, user.id)
+      if (id) { created++; ids.push(id) }
+    }
+    return c.json({ committed: true, days, created, return_ids: ids })
+  } catch (e) { if (tableMissing(e)) return needMigration(c); throw e } finally { await sql.end() }
+})
+
 returnsApi.get('/import/batches', requireManager, async (c) => {
   const sql = getDb(c.env)
   try { return c.json({ batches: await sql`SELECT b.*, u.name AS created_by_name FROM return_import_batches b LEFT JOIN users u ON u.id = b.created_by ORDER BY b.id DESC LIMIT 20` }) }

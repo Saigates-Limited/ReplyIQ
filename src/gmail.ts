@@ -156,6 +156,19 @@ export async function accessToken(env: Bindings, sql: Sql, mailboxId?: number | 
 export class GmailQuotaError extends Error {
   constructor(msg: string) { super(msg); this.name = 'GmailQuotaError' }
 }
+/** Back-off window: once Gmail answers 403/429 "quota", every Gmail read in the Worker pauses until this time (app_settings.gmail_backoff).
+ *  5 minutes covers the per-minute user quota comfortably; the 15-min cron and manual syncs both honour it. */
+export const GMAIL_BACKOFF_MS = 5 * 60 * 1000
+export async function gmailBackoffUntil(sql: { unsafe: Function } & any): Promise<Date | null> {
+  const [r] = await sql`SELECT value FROM app_settings WHERE key = 'gmail_backoff'`.catch(() => [] as any[])
+  const until = r?.value?.until ? new Date(r.value.until) : null
+  return until && until > new Date() ? until : null
+}
+export async function setGmailBackoff(sql: any, reason: string) {
+  const until = new Date(Date.now() + GMAIL_BACKOFF_MS)
+  await sql`INSERT INTO app_settings (key, value) VALUES ('gmail_backoff', ${sql.json({ until: until.toISOString(), reason: reason.slice(0, 200), set_at: new Date().toISOString() })}) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`.catch(() => {})
+  return until
+}
 const isQuota = (status: number, txt: string) => status === 429 || (status === 403 && /quota|rateLimitExceeded|userRateLimitExceeded/i.test(txt))
 
 /** Gmail REST call. Per-user quota bursts (403 "Units per minute per user" / 429) are retried with backoff

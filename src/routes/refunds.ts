@@ -2,7 +2,7 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
-import { dailyRefundCheck, reconcileRefunds, pollRefundEmails, backcheckStep, REFUND_MAILBOX } from '../returns/refunds'
+import { dailyRefundCheck, reconcileRefunds, pollRefundEmails, backcheckStep, decidePartial, REFUND_MAILBOX } from '../returns/refunds'
 import { parseRefundInitiated } from '../returns/refundParser'
 import { accessToken, getMessage, header, messageBody, listConnections } from '../gmail'
 
@@ -14,6 +14,7 @@ export const ALERT_STATUSES = ['alert', 'chasing', 'claim_filed', 'recovered', '
 export const RESULT_LABEL: Record<string, string> = {
   ok_cancelled_before_dispatch: 'OK — cancelled before dispatch',
   ok_return_received: 'OK — return received',
+  ok_partial_refund: 'OK — partial / goodwill refund, no phone expected back',
   alert_shipped_not_back: 'Refunded after dispatch — phone not back',
   alert_shipped_unknown: 'Refunded (Buyer Cancelled) — cannot confirm it never shipped',
   alert_not_received: 'Refunded, phone not received',
@@ -25,6 +26,8 @@ const LIST = `
   SELECT e.id, e.order_id, e.case_id, e.status, e.amount, e.currency, e.refund_reason, e.spc_ref, e.refund_items, e.is_partial, e.needs_manager, e.received_at, e.sku, e.asin, e.product,
          e.reconcile_result, e.reconciled_at, e.alert_notes, e.alert_updated_at, u.name AS alert_updated_by_name, e.return_id,
          c.case_ref, c.tracking_number AS outbound_tracking, r.status AS return_status, r.return_tracking, r.received_at AS return_received_at,
+         (SELECT r2.id FROM returns r2 WHERE r2.order_id = e.order_id ORDER BY (r2.status IN ('received','inspected','outcome_agreed','closed')) DESC, r2.created_at DESC LIMIT 1) AS order_return_id,
+         (SELECT r2.status FROM returns r2 WHERE r2.order_id = e.order_id ORDER BY (r2.status IN ('received','inspected','outcome_agreed','closed')) DESC, r2.created_at DESC LIMIT 1) AS order_return_status,
          GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - e.received_at)) / 86400))::int AS days_outstanding
   FROM amazon_events e LEFT JOIN cases c ON c.id = e.case_id LEFT JOIN returns r ON r.id = e.return_id LEFT JOIN users u ON u.id = e.alert_updated_by
   WHERE e.kind = 'refund_initiated'`
@@ -70,6 +73,42 @@ refundsApi.get('/:id{[0-9]+}/source', async (c) => {
     }
     return c.json({ stored, found_in: null, tried, message: null, note: 'The Gmail message id on this event could not be fetched from any connected mailbox — it was deleted from Gmail, or the mailbox it came from is no longer connected. The stored excerpt below is what the parser saw at the time.' })
   } finally { await sql.end() }
+})
+
+// POST /api/refunds/reparse (manager) — re-fetch every refund email from Gmail and re-run the parser on the SAME event rows
+// (matched by gmail_message_id, so nothing is duplicated). Fixes order/amount/reason/items/SKU/ASIN, recomputes partial,
+// resets status→open so the next reconcile re-judges it. Alerts a human has moved (chasing/claim/recovered/written off) keep their status.
+refundsApi.post('/reparse', requireManager, async (c) => {
+  const sql = getDb(c.env)
+  try {
+    const conns = await listConnections(sql)
+    const refundConn = conns.find((x) => x.email_address.toLowerCase() === REFUND_MAILBOX && x.enabled) ?? null
+    const events = await sql`SELECT id, gmail_message_id, mailbox_id, order_id, amount, refund_reason, status, sku, asin, quantity FROM amazon_events WHERE kind = 'refund_initiated' AND gmail_message_id IS NOT NULL ORDER BY id`
+    const tokens = new Map<number, string>()
+    const tokenFor = async (mbId: number) => { if (!tokens.has(mbId)) tokens.set(mbId, (await accessToken(c.env, sql, mbId)).token); return tokens.get(mbId)! }
+    const out = { total: events.length, updated: 0, unchanged: 0, not_found: 0, errors: [] as string[], changes: [] as any[] }
+    for (const e of events) {
+      const order = [e.mailbox_id, refundConn?.id, ...conns.map((x) => x.id)].filter((v, i, a): v is number => v != null && a.indexOf(v) === i)
+      let m: any = null
+      for (const mbId of order) { try { m = await getMessage(await tokenFor(mbId), e.gmail_message_id); break } catch (err: any) { if (!/404|not found/i.test(String(err?.message))) { out.errors.push(`${e.order_id}: ${String(err?.message).slice(0, 100)}`); break } } }
+      if (!m) { out.not_found++; continue }
+      const r = parseRefundInitiated(messageBody(m), header(m, 'Subject'))
+      if (!r.orderId) { out.errors.push(`${e.order_id}: no order id parsed`); continue }
+      const partial = (await decidePartial(sql, c.env, r.orderId, r.amount, r.items[0]?.sku ?? null, r.items[0]?.asin ?? null, r.items[0]?.quantity ?? 1)).partial
+      const before = { order_id: e.order_id, amount: e.amount == null ? null : Number(e.amount), reason: e.refund_reason, sku: e.sku, asin: e.asin }
+      const after = { order_id: r.orderId, amount: r.amount, reason: r.reason, sku: r.items[0]?.sku ?? null, asin: r.items[0]?.asin ?? null }
+      const changed = JSON.stringify(before) !== JSON.stringify(after)
+      const [k] = await sql`SELECT id FROM cases WHERE order_id = ${r.orderId} ORDER BY id LIMIT 1`
+      const humanMoved = ['chasing', 'claim_filed', 'recovered', 'written_off'].includes(e.status)
+      await sql`UPDATE amazon_events SET order_id = ${r.orderId}, case_id = COALESCE(case_id, ${k?.id ?? null}), amount = ${r.amount}, currency = ${r.currency ?? 'GBP'}, asin = ${after.asin}, sku = ${after.sku},
+                  quantity = ${r.items[0]?.quantity ?? null}, product = ${r.items[0]?.name ?? null}, refund_reason = ${r.reason}, spc_ref = ${r.spcRef}, refund_items = ${sql.json(r.items)}, raw_excerpt = ${r.excerpt},
+                  is_partial = ${partial}, needs_manager = ${!r.knownReason}, status = ${humanMoved ? e.status : 'open'}, reconcile_result = ${humanMoved ? sql`reconcile_result` : null}, updated_at = now() WHERE id = ${e.id}`
+      if (changed) { out.updated++; if (out.changes.length < 60) out.changes.push({ id: e.id, before, after }) } else out.unchanged++
+    }
+    // Re-judge everything that was reset to open
+    const rec = await reconcileRefunds(sql, c.env)
+    return c.json({ ...out, reconcile: rec })
+  } catch (e: any) { if (colMissing(e)) return needMigration(c); return c.json({ error: e.message }, 502) } finally { await sql.end() }
 })
 
 // PATCH /api/refunds/:id {status?, notes?} — chasing/recovered by anyone; claim_filed/written_off manager only

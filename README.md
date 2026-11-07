@@ -443,3 +443,13 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - Refund emails are read **only** from bijalshah.cc@gmail.com — the old fallback to the default mailbox is removed; if it is not connected the run says so.
 - Marking a return **Received** clears any refund-without-return alert on that order immediately (`ok_return_received`), not at the next 07:00 check.
 - Refunds tab → **source** on each row (`GET /api/refunds/:id/source`): fetches the Gmail message the event came from (subject, from/to, date, labels, link to open in Gmail), shows stored vs re-parsed fields and flags a mismatch; if the message is gone from Gmail it says so and shows the excerpt stored at ingest.
+
+## Phase 15d — refund parser for the real Amazon layout (Nov 2026)
+- `refundParser.ts` rewritten as a line walker: handles `Label: value`, alternating label/value lines and the real **labels-block then values-block** layout. Reason is never the product name; SKU is never "Return". Fixtures in `tests/fixtures/refund_*.txt` (redacted real emails: 205 Buyer Cancelled, 026 Customer Return, 203 £0.01 partial).
+- Partial refunds: `judgePartial()` — order price (SP-API) → highest refund seen for the same ASIN/SKU (< 60 % ⇒ partial) → absolute floor (< £100 ⇒ partial). Partial refunds reconcile to **OK — partial / goodwill refund** and never raise "phone not received".
+- `POST /api/refunds/reparse` (manager, "Re-parse all" button): re-fetches every refund email by its stored Gmail id and rewrites the same rows — no duplicates; human-moved alerts keep their status; then re-reconciles.
+- Reconcile clears an alert when **any** return on the order is received (archived or not); the Refunds tab links to that return even if it was not linked at ingest.
+- `POST /api/returns/backfill` (manager, "Backfill from notices", dry run → commit): Expected returns for return-authorisation notices with no return yet.
+- Sheet import matches **any** existing return by order ID (notice/manual/import), enriching it instead of creating a second row.
+- Gmail quota back-off: a 403/429 "quota" sets a 5-minute pause honoured by the cron, manual syncs and the refund poll; shown on the Gmail page.
+- Rewrite guardrail: "full refund" only refused when the instruction is to offer/promise one; refund-email timeline rows are excluded from the model payload (drafts + prompt preview).

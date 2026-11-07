@@ -1,7 +1,7 @@
 // Gmail → cases sync. Read-only against Gmail. Runs from the cron trigger and from a manual button.
 import type { Bindings, Sql } from './db'
 import { redactPii } from './ai'
-import { accessToken, listConnections, hasMultiMailbox, listThreadIds, getThread, header, messageBody, GmailQuotaError, type GmailMessage, type GmailConnection } from './gmail'
+import { gmailBackoffUntil, setGmailBackoff, accessToken, listConnections, hasMultiMailbox, listThreadIds, getThread, header, messageBody, GmailQuotaError, type GmailMessage, type GmailConnection } from './gmail'
 import { classifyNotice, parseSellerReplyCopy, parseAtoz, parseReturnAuth, parseChargeback, redactChargebackPii } from './amazon'
 import { classifyTone } from './tone'
 import { listAttachments } from './gmail'
@@ -144,6 +144,9 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
   const all = await listConnections(sql)
   const targets = all.filter((c) => c.enabled && (opts.mailboxId == null || c.id === opts.mailboxId))
   if (!targets.length) throw new Error(all.length ? 'No enabled mailbox to sync' : 'Gmail is not connected')
+  // Gmail quota back-off in force? Say so and do nothing (the next cron tick retries once the window has passed).
+  const bo = await gmailBackoffUntil(sql)
+  if (bo) throw new GmailQuotaError(`Gmail asked us to slow down — all mailbox reads are paused until ${bo.toISOString().slice(11, 16)} UTC, then resume automatically.`)
   const ourEmails = all.map((c) => c.email_address)
   const total: SyncResult = { threadsSeen: 0, messagesNew: 0, casesNew: 0, skipped: [], query: '', remaining: 0, mailboxes: [] }
   let firstError: Error | null = null
@@ -326,6 +329,7 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
     const note = quotaHit ? `rate limited after ${processed}/${threadIds.length} threads (resumes next sync)` + (result.skipped.length ? `; skipped ${result.skipped.length}` : '')
       : result.skipped.length ? `skipped ${result.skipped.length}: ` + result.skipped.slice(0, 5).map((x) => x.reason).join(' | ') : null
     await sql`UPDATE sync_runs SET finished_at = now(), status = ${quotaHit ? 'partial' : 'ok'}, threads_seen = ${result.threadsSeen}, messages_new = ${result.messagesNew}, cases_new = ${result.casesNew}, error = ${note} WHERE id = ${run.id}`
+    if (quotaHit) await setGmailBackoff(sql, 'sync: per-minute quota')
     await sql`UPDATE gmail_connection SET last_sync_at = now(), last_sync_status = ${quotaHit ? 'partial' : 'ok'}, last_sync_error = ${quotaHit ? 'Gmail per-minute limit reached — paused briefly, resumes automatically' : null}, last_sync_new_msgs = ${result.messagesNew} WHERE id = ${conn.id}`
     return result
   } catch (e: any) {

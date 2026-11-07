@@ -60,7 +60,10 @@ async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: numb
   revision?: { previousDraft: string; guidance: string; previousDraftId: number } | null) {
   const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${caseId}`
   if (!kase) return { error: 'Case not found', status: 404 as const }
-  const messages = await sql<MessageRow[]>`SELECT direction, body, sent_at, sender, kind, id FROM messages WHERE case_id = ${caseId} ORDER BY sent_at ASC`
+  // Refund-email timeline entries (sender 'Amazon Refund', linked to a refund_initiated event) never reach the model (privacy rule, Phase 15).
+  const messages = await sql<MessageRow[]>`SELECT m.direction, m.body, m.sent_at, m.sender, m.kind, m.id FROM messages m
+    WHERE m.case_id = ${caseId} AND NOT EXISTS (SELECT 1 FROM amazon_events e WHERE e.id = m.event_id AND e.kind = 'refund_initiated') AND m.sender IS DISTINCT FROM 'Amazon Refund'
+    ORDER BY m.sent_at ASC`
   // Attachment METADATA only (filename/type/size) so the model knows photos exist; bytes never leave Gmail/R2.
   const atts = await sql<{ message_id: number; filename: string; mime_type: string; size_bytes: number }[]>`SELECT message_id, filename, mime_type, size_bytes FROM attachments WHERE case_id = ${caseId}`.catch(() => [] as any[])
   for (const m of messages as any[]) m.attachments = atts.filter((a) => a.message_id === m.id)
@@ -131,7 +134,9 @@ draftsApi.post('/drafts/:id/revise', async (c) => {
   const blocked: [RegExp, string][] = [
     [/\b(ignore|skip|bypass|override|forget|disregard)\b[^.]{0,40}\b(polic(y|ies)|rules?|checks?|guidelines?|instructions?)\b/, 'asks the model to ignore the policy'],
     [/\b(refund|credit|compensat\w*|goodwill|discount)\b[^.]{0,30}£\s?(1[6-9]|[2-9]\d|\d{3,})/, 'offers more than £15 — a manager must approve refunds above £15'],
-    [/\b(full refund|refund (them|the customer) in full|refund everything)\b/, 'promises a full refund — only a manager can authorise that'],
+    // Only when the agent asks the model to OFFER/PROMISE one. Describing a refund already issued ("the full refund has been processed") is fine.
+    [/\b(offer|give|promise|provide|issue|send|grant|agree to|tell them (they('ll| will) get|we('ll| will) give))\b[^.]{0,25}\b(a |the )?full refund\b(?![^.]{0,30}\b(already|has been|was|were|had been|is on its way|processed|issued|sent)\b)/, 'promises a full refund — only a manager can authorise that'],
+    [/\brefund (them|the customer|him|her) in full\b|\brefund everything\b/, 'promises a full refund — only a manager can authorise that'],
     [/\b(don'?t|do not|never) (mention|say|tell)[^.]{0,30}\b(warranty|amazon|return|policy)\b/, 'hides policy information from the customer'],
     [/\b(send|email|forward)\b[^.]{0,30}\b(amazon|seller central|a-?to-?z)\b/, 'asks for an Amazon-side statement — use a Seller Central mode instead'],
     [/\b(include|add|put|write)\b[^.]{0,30}\b(imei|serial|tracking number of the return|internal note|staff note)\b/, 'would put internal data in a customer email'],

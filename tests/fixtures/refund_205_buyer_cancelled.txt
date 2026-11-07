@@ -1,0 +1,24 @@
+Hello,
+
+We initiated a refund of GBP 359.00 to [buyer] for order 205-1900538-4667561 on 4 November 2026.
+
+Refund details
+Order ID
+Item name
+ASIN
+SKU
+Return quantity
+Item price refund
+Outbound delivery cost refund
+Refund reason
+205-1900538-4667561
+Apple iPhone 15 128GB Pink (Renewed)
+B0CW114X7P
+I15-128-PNK-A-AMZ1
+1
+GBP 359.00
+GBP 0.00
+Buyer Cancelled
+
+Sincerely,
+Amazon Services Europe

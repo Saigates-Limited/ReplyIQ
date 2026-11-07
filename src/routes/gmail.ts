@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
-import { authUrl, exchangeCode, encryptToken, decryptToken, revokeToken, getProfile, getConnection, listConnections, hasMultiMailbox, accessToken, sendReply, requireGoogleConfig, GMAIL_SCOPES } from '../gmail'
+import { gmailBackoffUntil, authUrl, exchangeCode, encryptToken, decryptToken, revokeToken, getProfile, getConnection, listConnections, hasMultiMailbox, accessToken, sendReply, requireGoogleConfig, GMAIL_SCOPES } from '../gmail'
 import { runSync, backfillAttachments } from '../sync'
 import { REFUND_MAILBOX } from '../returns/refunds'
 
@@ -22,6 +22,7 @@ gmailApi.get('/status', async (c) => {
   const sql = getDb(c.env)
   try {
     const all = await listConnections(sql)
+    const backoff_until = await gmailBackoffUntil(sql)
     const conn = all.find((c) => c.is_default) ?? all[0] ?? null
     const multi = await hasMultiMailbox(sql)
     const runs = await sql.unsafe(`SELECT r.id, r.started_at, r.finished_at, r.trigger, r.threads_seen, r.messages_new, r.cases_new, r.status, r.error
@@ -48,7 +49,7 @@ gmailApi.get('/status', async (c) => {
       }
     }
     return c.json({
-      configured, configError,
+      configured, configError, backoff_until,
       connected: Boolean(conn),
       connection: conn ? { ...conn, refresh_token_enc: undefined } : null,
       mailboxes: all.map((m) => ({ ...m, refresh_token_enc: undefined, cases: countOf(m.id) })),

@@ -1,0 +1,24 @@
+Hello,
+
+We initiated a refund of GBP 0.01 to [buyer] for order 203-6734713-7728355.
+
+Refund details
+Order ID
+Item name
+ASIN
+SKU
+Return quantity
+Item price refund
+Outbound delivery cost refund
+Refund reason
+203-6734713-7728355
+Apple iPhone 12 64GB Black (Renewed)
+B08PP5MSVB
+I12-64-BLK-A-AMZ
+1
+GBP 0.01
+GBP 0.00
+Customer Return
+
+Sincerely,
+Amazon Services Europe

@@ -2,9 +2,9 @@
 // Rules: manager mailbox (bijalshah.cc@gmail.com) only; buyer name stripped; dedupe by Gmail message id; never sends
 // anything; nothing here is ever passed to OpenAI.
 import type { Bindings } from '../db'
-import { accessToken, listThreadIds, getThread, header, messageBody, GmailQuotaError, listConnections, type GmailMessage } from '../gmail'
+import { gmailBackoffUntil, setGmailBackoff, accessToken, listThreadIds, getThread, header, messageBody, GmailQuotaError, listConnections, type GmailMessage } from '../gmail'
 import { fetchOrder, spapiConfigured, type SpapiEnv } from '../spapi'
-import { parseRefundInitiated, classifyRefundNotice, isPartialRefund } from './refundParser'
+import { parseRefundInitiated, classifyRefundNotice, judgePartial, canonicalReason } from './refundParser'
 import type { Sql } from './service'
 
 export const REFUND_MAILBOX = 'bijalshah.cc@gmail.com'
@@ -28,10 +28,8 @@ export async function ingestRefundEmail(sql: Sql, env: Bindings, m: GmailMessage
   if (!r.orderId) return 'skip'
   const at = new Date(Number(m.internalDate))
   const [k] = await sql`SELECT id FROM cases WHERE order_id = ${r.orderId} ORDER BY id LIMIT 1`
-  // Partial? Compare against the order's item price if we know it (case → SP-API), else leave NULL and let reconcile fill it.
-  let isPartial: boolean | null = null
-  const unit = await orderUnitPrice(sql, env, r.orderId, r.items[0]?.sku ?? null)
-  if (unit != null && r.items[0]) isPartial = isPartialRefund(r.items[0].item_refund, unit, r.items[0].quantity ?? 1)
+  // Partial? Order price (SP-API) → highest refund seen for the same ASIN/SKU → absolute floor. NULL only when undecidable.
+  const isPartial = (await decidePartial(sql, env, r.orderId, r.amount, r.items[0]?.sku ?? null, r.items[0]?.asin ?? null, r.items[0]?.quantity ?? 1)).partial
   const [ret] = await sql`SELECT id, status FROM returns WHERE order_id = ${r.orderId} ORDER BY created_at DESC LIMIT 1`.catch(() => [] as any[])
   const [ev] = await sql`
     INSERT INTO amazon_events (case_id, order_id, kind, status, amount, currency, received_at, asin, sku, quantity, product, gmail_message_id, gmail_thread_id, raw_excerpt,
@@ -50,6 +48,17 @@ export async function ingestRefundEmail(sql: Sql, env: Bindings, m: GmailMessage
   return 'new'
 }
 
+/** Partial-refund decision with whatever price evidence exists (see judgePartial). */
+export async function decidePartial(sql: Sql, env: Bindings, orderId: string, amount: number | null, sku: string | null, asin: string | null, qty: number | null) {
+  const unitPrice = await orderUnitPrice(sql, env, orderId, sku)
+  let peerMax: number | null = null
+  if (unitPrice == null && (sku || asin)) {
+    const [p] = await sql`SELECT MAX(amount)::float8 AS m FROM amazon_events WHERE kind = 'refund_initiated' AND order_id <> ${orderId} AND ((${sku}::text IS NOT NULL AND upper(sku) = upper(${sku})) OR (${asin}::text IS NOT NULL AND upper(asin) = upper(${asin})))`.catch(() => [{ m: null }])
+    peerMax = p?.m ?? null
+  }
+  return judgePartial(amount, { unitPrice, quantity: qty, peerMax })
+}
+
 /** Order item price for the partial-refund check: SP-API Orders when configured (one call per refund email), else unknown. */
 async function orderUnitPrice(_sql: Sql, env: Bindings, orderId: string, sku: string | null): Promise<number | null> {
   if (!spapiConfigured(env as SpapiEnv)) return null
@@ -66,6 +75,8 @@ export async function pollRefundEmails(sql: Sql, env: Bindings, opts: { days: nu
   const out: IngestResult = { messagesNew: 0, dup: 0, skipped: [] }
   const mb = await refundMailbox(sql)
   if (!mb) { out.skipped.push({ id: '-', reason: `${REFUND_MAILBOX} is not connected or is paused — refund emails are read from that mailbox only` }); return out }
+  const bo = await gmailBackoffUntil(sql)
+  if (bo) { out.rateLimited = true; out.skipped.push({ id: '-', reason: `Gmail back-off until ${bo.toISOString().slice(11, 16)} UTC` }); return out }
   const { token } = await accessToken(env, sql, mb.id)
   const q = `from:donotreply@amazon.com subject:"${REFUND_SUBJECT}" newer_than:${Math.max(1, opts.days)}d${opts.before ? ` before:${opts.before}` : ''}`
   const ids = await listThreadIds(token, q, opts.max ?? 40)
@@ -73,7 +84,7 @@ export async function pollRefundEmails(sql: Sql, env: Bindings, opts: { days: nu
     const [seen] = await sql`SELECT 1 FROM amazon_events WHERE kind = 'refund_initiated' AND gmail_thread_id = ${tid} LIMIT 1`
     if (seen) { out.dup++; continue }
     let thread
-    try { thread = await getThread(token, tid) } catch (e) { if (e instanceof GmailQuotaError) { out.rateLimited = true; break } throw e }
+    try { thread = await getThread(token, tid) } catch (e) { if (e instanceof GmailQuotaError) { out.rateLimited = true; await setGmailBackoff(sql, 'refund poll: per-minute quota'); break } throw e }
     for (const m of thread.messages) {
       if (!classifyRefundNotice(header(m, 'From'), header(m, 'Subject'))) continue
       const r = await ingestRefundEmail(sql, env, m, mb.id)
@@ -100,15 +111,20 @@ async function orderShipped(sql: Sql, env: Bindings, orderId: string): Promise<b
 /** Reconcile every refund event that is open, or alerting (re-check daily; clears when the phone is received). */
 export async function reconcileRefunds(sql: Sql, env: Bindings): Promise<ReconcileResult> {
   const res: ReconcileResult = { checked: 0, ok: 0, alerts: 0, cleared: 0, review: 0, errors: [] }
-  const events = await sql`SELECT id, order_id, refund_reason, status, return_id, sku FROM amazon_events WHERE kind = 'refund_initiated' AND status IN ('open','alert','chasing') ORDER BY received_at ASC LIMIT 300`
+  const events = await sql`SELECT id, order_id, refund_reason, status, return_id, sku, asin, amount, quantity, is_partial FROM amazon_events WHERE kind = 'refund_initiated' AND status IN ('open','alert','chasing') ORDER BY received_at ASC LIMIT 300`
   for (const ev of events) {
     res.checked++
     try {
+      // Any return on this order that has physically arrived (received or later), archived or not
       const [ret] = await sql`SELECT id, status FROM returns WHERE order_id = ${ev.order_id} ORDER BY (status IN ('received','inspected','outcome_agreed','closed')) DESC, created_at DESC LIMIT 1`.catch(() => [] as any[])
       const received = ret && ['received', 'inspected', 'outcome_agreed', 'closed'].includes(ret.status)
-      const reason = String(ev.refund_reason ?? '').toLowerCase().trim()
+      const reason = String(canonicalReason(ev.refund_reason) ?? '').toLowerCase()
+      // Partial / goodwill: fill in if still unknown (price evidence may have arrived since ingest)
+      let partial: boolean | null = ev.is_partial
+      if (partial == null) { const j = await decidePartial(sql, env, ev.order_id, ev.amount == null ? null : Number(ev.amount), ev.sku, ev.asin, ev.quantity); partial = j.partial; if (partial != null) await sql`UPDATE amazon_events SET is_partial = ${partial} WHERE id = ${ev.id}` }
       let result: string, status: string
       if (received) { result = 'ok_return_received'; status = 'ok' }
+      else if (partial === true) { result = 'ok_partial_refund'; status = 'ok' } // goodwill / price adjustment — no phone expected back
       else if (reason === 'buyer cancelled') {
         const shipped = await orderShipped(sql, env, ev.order_id)
         if (shipped === false) { result = 'ok_cancelled_before_dispatch'; status = 'ok' }

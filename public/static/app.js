@@ -1037,6 +1037,7 @@
         <p class="text-sm text-slate-500 mb-4">ReplyIQ reads Amazon customer messages from every connected mailbox every ${st.poll_interval_minutes} minutes. Replies go out from the <strong>same mailbox the customer wrote to</strong>. Email is only ever sent when a member of staff presses <strong>Send to customer</strong> on an approved draft.</p>
         ${flash}
         ${!st.configured ? `<div class="mb-4 rounded-md bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 text-sm"><i class="fas fa-triangle-exclamation mr-1"></i>${esc(st.configError)}</div>` : ''}
+        ${st.backoff_until ? `<div class="mb-4 rounded-md bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 text-sm"><i class="fas fa-hourglass-half mr-1"></i>Gmail asked us to slow down (per-minute quota). All mailbox reads are paused until <strong>${fmtDateTime(st.backoff_until)}</strong> and resume automatically — no action needed.</div>` : ''}
         ${!st.multi_mailbox ? `<div class="mb-4 rounded-md bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 text-sm"><i class="fas fa-database mr-1"></i>To connect more than one mailbox, run <code>db/migrations/0013_multi_mailbox.sql</code> in Supabase, then reload.</div>` : ''}
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div class="lg:col-span-1 space-y-4">

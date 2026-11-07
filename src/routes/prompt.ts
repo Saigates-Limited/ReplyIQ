@@ -113,7 +113,9 @@ promptApi.post('/test', async (c) => {
   try {
     const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${caseId}`
     if (!kase) return c.json({ error: 'Case not found' }, 404)
-    const messages = await sql<MessageRow[]>`SELECT direction, body, sent_at, sender, kind, id FROM messages WHERE case_id = ${caseId} ORDER BY sent_at ASC`
+    const messages = await sql<MessageRow[]>`SELECT m.direction, m.body, m.sent_at, m.sender, m.kind, m.id FROM messages m
+      WHERE m.case_id = ${caseId} AND NOT EXISTS (SELECT 1 FROM amazon_events e WHERE e.id = m.event_id AND e.kind = 'refund_initiated') AND m.sender IS DISTINCT FROM 'Amazon Refund'
+      ORDER BY m.sent_at ASC`
     const atts = await sql<{ message_id: number; filename: string; mime_type: string; size_bytes: number }[]>`SELECT message_id, filename, mime_type, size_bytes FROM attachments WHERE case_id = ${caseId}`.catch(() => [] as any[])
     for (const m of messages as any[]) m.attachments = atts.filter((a) => a.message_id === m.id)
     const events = await sql<EventRow[]>`
