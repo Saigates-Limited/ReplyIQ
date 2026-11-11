@@ -53,7 +53,7 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
         </div>
         <a href="/atoz" data-link data-nav="atoz" class="nav-tab" title="A-to-Z claims"><i class="fas fa-scale-balanced w-5"></i><span class="nav-label">A-to-Z claims</span> <span class="nav-badge" data-badge="atoz"></span></a>
         <a href="/returns" data-link data-nav="returns" class="nav-tab" title="Returns"><i class="fas fa-rotate-left w-5"></i><span class="nav-label">Returns</span> <span class="nav-badge" data-badge="returns"></span></a>
-        <a href="/returns/refunds" data-link class="nav-tab nav-sub-tab" title="Refunds without return"><i class="fas fa-money-bill-transfer w-5"></i><span class="nav-label">Refunds, no return</span> <span class="nav-badge nav-badge-red" data-badge="refund-alerts"></span></a>
+        <a href="/returns/refunds" data-link data-nav="refunds" class="nav-tab nav-sub-tab" title="Refunds without return"><i class="fas fa-money-bill-transfer w-5"></i><span class="nav-label">Refunds, no return</span> <span class="nav-badge nav-badge-red" data-badge="refund-alerts"></span></a>
         <a href="/chargebacks" data-link data-nav="chargebacks" class="nav-tab" title="Chargebacks"><i class="fas fa-credit-card w-5"></i><span class="nav-label">Chargebacks</span> <span class="nav-badge" data-badge="chargebacks"></span></a>
         <a href="/carriers" data-link data-nav="carriers" class="nav-tab" title="Carrier desk"><i class="fas fa-truck-fast w-5"></i><span class="nav-label">Carrier desk</span> <span class="nav-badge" data-badge="carriers"></span></a>
         <div class="nav-group px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Reference</div>
@@ -201,7 +201,7 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
     <article class="bg-white rounded-xl shadow-sm p-8 space-y-6 leading-relaxed">
       <header>
         <h1 class="text-2xl font-bold">Privacy Policy</h1>
-        <p class="text-sm text-slate-500 mt-1">ReplyIQ — an internal customer-service tool operated by Saigates Ltd. Last updated 11 October 2026.</p>
+        <p class="text-sm text-slate-500 mt-1">ReplyIQ — an internal customer-service tool operated by Saigates Ltd. Last updated 11 November 2026.</p>
       </header>
 
       <section>
@@ -222,6 +222,7 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
       <section>
         <h2 class="font-semibold text-lg mb-2">AI drafting</h2>
         <p>To help staff write replies, ReplyIQ sends a reduced version of the case to OpenAI. Before anything is sent we remove personal details: only the customer's first name is included, and surnames, email addresses, phone numbers, postal addresses and postcodes are stripped from the message text. Requests are made with OpenAI's <code>store: false</code> setting, so OpenAI does not retain the content for training or storage.</p>
+        <p class="mt-2">The text sent to OpenAI may include a device's <strong>IMEI number</strong> (the 15-digit serial of a phone), for example when a customer quotes it or when we confirm a replacement handset. IMEIs are not redacted. They are sent without the customer's name or address, only the first name is ever included, and with <code>store: false</code> as above.</p>
       </section>
 
       <section>

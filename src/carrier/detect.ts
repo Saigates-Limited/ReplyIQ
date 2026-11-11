@@ -19,7 +19,8 @@ export type Detection = { issue: CarrierIssue; phrase: string }
 
 // "I have not received a grade A phone" / "didn't receive what I ordered" describe the item they DID get (quality or
 // wrong item), not a parcel that never arrived. Lookahead used after "received" in the lost rule.
-const RECEIVED_QUALITY = String.raw`\s+(?:a|an|what|the\s+(?:right|correct|condition|grade|quality|model|colou?r))\b`
+// "a/an" only counts as a quality complaint when a quality word follows; "not received a parcel" / "an order" stay lost.
+const RECEIVED_QUALITY = String.raw`\s+(?:(?:a|an)\s+(?:grade|working|genuine|new|proper|refurbished|decent)|what|the\s+(?:right|correct|condition|grade|quality|model|colou?r))\b`
 
 // Order matters: the most specific pattern wins.
 const RULES: { issue: CarrierIssue; re: RegExp }[] = [

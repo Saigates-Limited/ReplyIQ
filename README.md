@@ -34,7 +34,7 @@ Built from an explicit allow-list in `src/ai.ts → buildPayload()`:
 
 - `customer_first_name` **only** — never surname, email, phone or address (these live in separate columns that are never read by the AI code path)
 - Thread text, after redaction of: the known surname/email/phone/address values (and each comma-separated part of the address), any email address, any UK phone number (mobile or landline, +44 or 0), **street-address lines** (e.g. "Flat 3, 22 Castle Street", "9 Abbey Close"), UK postcodes, and "First Last" signatures
-- IMEI numbers are **not** redacted: staff may quote a (replacement) IMEI to the customer and the AI may see and repeat it. Internal SPC return references are still redacted.
+- IMEI numbers are **not** redacted: staff may quote a (replacement) IMEI to the customer and the AI may see and repeat it. 15-digit runs are shielded from the UK-phone regex in both `redactPii` and `serverChecks` (that regex has no leading `\b` and used to match inside ~40% of valid IMEIs, redacting them and failing the draft as "Repeats a phone number"). They go to OpenAI without names or addresses and with `store: false`; the public `/privacy` page says so. Internal SPC return references are still redacted.
 - Every OpenAI request is sent with **`store: false`** (OpenAI does not retain the prompt or completion)
 - Agent-filled case fields (order ID, device, dates, yes/no flags, approved price, tracking, carrier)
 

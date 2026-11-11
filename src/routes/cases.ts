@@ -53,7 +53,7 @@ const archExpr = (has: boolean, expr: string) => (has ? expr : expr.replace(/cas
 // 24h customer-reply clock. It stops once we have replied (any outbound message, incl. Seller Central copies, at or after
 // the latest customer message) and restarts when the customer writes again. Without this, answered cases stayed "overdue".
 const REPLY_DEADLINE = `(CASE WHEN NOT EXISTS (SELECT 1 FROM messages rm WHERE rm.case_id = cases.id AND rm.direction = 'outbound'
-    AND rm.kind <> 'event' AND rm.sent_at >= cases.last_customer_message_at)
+    AND rm.kind IS DISTINCT FROM 'event' AND rm.sent_at >= cases.last_customer_message_at)
   THEN cases.last_customer_message_at + INTERVAL '24 hours' END)`
 const CASE_COLUMNS = `
   id, case_ref, subject, status,
@@ -91,7 +91,7 @@ async function hasStatusChangedCol(sql: ReturnType<typeof getDb>) {
   return statusChangedKnown
 }
 const deadlineExpr = (hasSc: boolean) => `LEAST(
-  CASE WHEN EXISTS (SELECT 1 FROM messages m WHERE m.case_id = cases.id AND m.direction = 'inbound' AND m.kind <> 'event')
+  CASE WHEN EXISTS (SELECT 1 FROM messages m WHERE m.case_id = cases.id AND m.direction = 'inbound' AND m.kind IS DISTINCT FROM 'event')
        THEN ${REPLY_DEADLINE} END,
   ${hasSc ? `CASE WHEN cases.status = 'update_customer' THEN COALESCE(cases.status_changed_at, cases.updated_at) + INTERVAL '24 hours' END,` : ''}
   (SELECT MIN(e.deadline_at) FROM amazon_events e WHERE e.case_id = cases.id AND e.status IN ('open','info_requested')))`

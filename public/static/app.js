@@ -77,7 +77,7 @@
     const rm = p.match(/^\/returns\/(\d+)$/)
     const fm = p.match(/^\/inbox\/([a-z_]+)$/)
     if (fm && folderList().some(([v]) => v === fm[1])) { listFilter = fm[1]; localStorage.setItem('riq.filter', listFilter) }
-    setActiveNav(m || p === '/inbox' || fm ? 'messages' : p.startsWith('/carriers') ? 'carriers' : p === '/atoz' ? 'atoz' : p.startsWith('/returns') ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
+    setActiveNav(m || p === '/inbox' || fm ? 'messages' : p.startsWith('/carriers') ? 'carriers' : p === '/atoz' ? 'atoz' : p === '/returns/refunds' ? 'refunds' : p.startsWith('/returns') ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
     refreshBadges()
     document.getElementById('sidebar')?.classList.remove('open')
     if (m) renderInbox(Number(m[1]))

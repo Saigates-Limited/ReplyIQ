@@ -104,6 +104,12 @@ export function redactPii(text: string, kase: CaseRow): string {
     orders.push(m)
     return `\u0000ORDER${orders.length - 1}\u0000`
   })
+  // Protect IMEIs (15 digits, allowed through by Saigates decision 2026-11-11): the UK phone regex below has no leading
+  // word boundary and would otherwise redact roughly 4 in 10 IMEIs as "phone numbers".
+  out = out.replace(/\b\d{15}\b/g, (m) => {
+    orders.push(m)
+    return `\u0000ORDER${orders.length - 1}\u0000`
+  })
   // Known values for this customer
   const known = [kase.customer_last_name, kase.customer_email, kase.customer_phone, kase.customer_address].filter(
     (v): v is string => !!v && v.trim().length > 1
@@ -294,7 +300,8 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
   if (kase.customer_last_name && d.includes(kase.customer_last_name.toLowerCase())) add('pii', 'fail', 'Contains the customer surname')
   if (kase.customer_email && d.includes(kase.customer_email.toLowerCase())) add('pii', 'fail', 'Contains the customer email address')
   // Amazon order IDs (ddd-ddddddd-ddddddd) look like phone numbers to the regex — strip them first.
-  const draftNoOrders = draft.replace(/\b\d{3}-\d{7}-\d{7}\b/g, '[order]')
+  // IMEIs (15 digits) are allowed in replies; strip them too, or the phone regex (no leading \\b) matches inside ~40% of them.
+  const draftNoOrders = draft.replace(/\b\d{3}-\d{7}-\d{7}\b/g, '[order]').replace(/\b\d{15}\b/g, '[imei]')
   if (/(?:\+44[\s-]?\(?0?\)?|\(?0)\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}\b/.test(draftNoOrders) && !paidRepairApproved(kase))
     add('pii', 'fail', 'Repeats a phone number in the reply')
   if (kase.customer_address) {

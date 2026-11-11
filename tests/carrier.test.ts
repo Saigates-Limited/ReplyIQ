@@ -70,6 +70,11 @@ test('detects carrier issues in customer messages', () => {
   assert.equal(detectCarrierIssue('I have not received my phone yet')?.issue, 'lost')
   assert.equal(detectCarrierIssue('Still not received the parcel, tracking is stuck')?.issue, 'lost')
   assert.equal(detectCarrierIssue("I haven't received anything")?.issue, 'lost')
+  // Regression: "not received a/an <noun>" is a lost parcel; only a/an + quality word is a quality complaint
+  assert.equal(detectCarrierIssue('I have not received a parcel yet')?.issue, 'lost')
+  assert.equal(detectCarrierIssue("I haven't received an order I placed last week")?.issue, 'lost')
+  assert.equal(detectCarrierIssue('I have not received a working phone'), null)
+  assert.equal(detectCarrierIssue("I haven't received a genuine Apple charger"), null)
 })
 
 test('finds and normalises tracking numbers', () => {
