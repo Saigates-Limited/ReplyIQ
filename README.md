@@ -173,7 +173,7 @@ curl "http://localhost:3000/__scheduled?cron=*/15+*+*+*+*"   # fire the cron loc
 
 ## Phase 8 — Amazon notices, trackers, tone, tickets, draft modes, UI v2 (LIVE 2026-10-12)
 
-**Production:** https://replyiq.saigateslimited.workers.dev · Worker version `3dc27e1e` · DB migrations applied through **0008 + 0008b** (verified: 4 triggers + status CHECK + archive columns).
+**Production:** https://replyiq.saigateslimited.workers.dev · Worker version `5061e00a-9265-4fbe-ba52-bb71b1fe5eea` (deployed 2026-11-11 with `npm run deploy` = `wrangler deploy`; Hyperdrive + 15-min cron; never `wrangler pages deploy`, replyiq.pages.dev is a retired redirect) · DB migrations applied through **0008 + 0008b** (verified: 4 triggers + status CHECK + archive columns).
 
 ### Features
 - Gmail sync reads customer messages **and** Amazon notices: `atoz-guarantee-no-reply@`, `cb-seller-notification@`, `donotreply@amazon.com` (Return authorisation notifications + "Your email to <Name>" Seller Central reply copies).
@@ -452,6 +452,8 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - Reconcile clears an alert when **any** return on the order is received (archived or not); the Refunds tab links to that return even if it was not linked at ingest.
 - `POST /api/returns/backfill` (manager, "Backfill from notices", dry run → commit): Expected returns for return-authorisation notices with no return yet.
 - Sheet import matches **any** existing return by order ID (notice/manual/import), enriching it instead of creating a second row.
+- Sheet import, IMEI column (`parseImeiCell` in `src/returns/imei.ts`): blank → imports with the note "no IMEI (legacy)", not on the review list · letters+digits, 8-14 chars → kept as `Serial: … (no IMEI)` in Notes, not on the review list · 30 digits that are two valid Luhn IMEIs (separators allowed) → two phones (two `return_items`) on the same return · same IMEI twice → one phone, flagged · anything else (digits-only, wrong length, bad check digit) → review list with the original value.
+- Sheet import, order ID: Amazon format, `PO-nnn-nnnnnnnn…`, or any reference when the Marketplace column names a non-Amazon marketplace. The Marketplace value is kept (blank + PO- number → `Non-Amazon`). Manual "New return" still requires Amazon format.
 - Gmail quota back-off: a 403/429 "quota" sets a 5-minute pause honoured by the cron, manual syncs and the refund poll; shown on the Gmail page.
 - Rewrite guardrail: "full refund" only refused when the instruction is to offer/promise one; refund-email timeline rows are excluded from the model payload (drafts + prompt preview).
 
