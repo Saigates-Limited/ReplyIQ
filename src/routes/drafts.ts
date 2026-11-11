@@ -142,7 +142,7 @@ draftsApi.post('/drafts/:id/revise', async (c) => {
     [/\brefund (them|the customer|him|her) in full\b|\brefund everything\b/, 'promises a full refund — only a manager can authorise that'],
     [/\b(don'?t|do not|never) (mention|say|tell)[^.]{0,30}\b(warranty|amazon|return|policy)\b/, 'hides policy information from the customer'],
     [/\b(send|email|forward)\b[^.]{0,30}\b(amazon|seller central|a-?to-?z)\b/, 'asks for an Amazon-side statement — use a Seller Central mode instead'],
-    [/\b(include|add|put|write)\b[^.]{0,30}\b(imei|serial|tracking number of the return|internal note|staff note)\b/, 'would put internal data in a customer email'],
+    [/\b(include|add|put|write)\b[^.]{0,30}\b(serial|tracking number of the return|internal note|staff note)\b/, 'would put internal data in a customer email'],
   ]
   const hit = blocked.find(([re]) => re.test(g))
   if (hit) return c.json({ error: `Change request refused: it ${hit[1]}. Reword it, or ask a manager.` }, 422)

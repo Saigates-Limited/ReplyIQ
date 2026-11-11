@@ -34,6 +34,7 @@ Built from an explicit allow-list in `src/ai.ts → buildPayload()`:
 
 - `customer_first_name` **only** — never surname, email, phone or address (these live in separate columns that are never read by the AI code path)
 - Thread text, after redaction of: the known surname/email/phone/address values (and each comma-separated part of the address), any email address, any UK phone number (mobile or landline, +44 or 0), **street-address lines** (e.g. "Flat 3, 22 Castle Street", "9 Abbey Close"), UK postcodes, and "First Last" signatures
+- IMEI numbers are **not** redacted: staff may quote a (replacement) IMEI to the customer and the AI may see and repeat it. Internal SPC return references are still redacted.
 - Every OpenAI request is sent with **`store: false`** (OpenAI does not retain the prompt or completion)
 - Agent-filled case fields (order ID, device, dates, yes/no flags, approved price, tracking, carrier)
 
@@ -434,7 +435,7 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - "Update customer" now has a deadline: 24 h after the status was set (`status_changed_at`, stamped on single edits, bulk actions and resolve).
 - Amazon reply lock: customer replies are sent only from the Seller Central-registered mailbox (bijalshah.cc@gmail.com); sending is refused if it is not connected.
 - Throttled all-mailbox import: the 12-thread round budget is shared across mailboxes (min 4 each).
-- Rewrite guardrails: change requests that ask to ignore policy, offer > £15, promise full refunds, hide warranty/return info, address Amazon, or include IMEI/internal notes are refused before the model runs; the rewrite is re-checked and the agent is told if it now fails or needs a manager.
+- Rewrite guardrails: change requests that ask to ignore policy, offer > £15, promise full refunds, hide warranty/return info, address Amazon, or include internal notes are refused before the model runs; the rewrite is re-checked and the agent is told if it now fails or needs a manager.
 - Bulk actions show a persistent result banner above the inbox list (count, destination folder, skipped cases with reasons).
 - Settings → "Database migrations" card (manager) shows which migration files have run against the live database.
 

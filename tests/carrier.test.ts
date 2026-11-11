@@ -64,6 +64,12 @@ test('detects carrier issues in customer messages', () => {
   assert.equal(detectCarrierIssue('Where is my order? No updates since Monday')?.issue, 'lost')
   assert.equal(detectCarrierIssue('The battery drains fast, can I return it?'), null)
   assert.equal(detectCarrierIssue('How long does delivery take before I order?'), null)
+  // Regression (case RIQ-1289): quality complaint about a phone the customer HAS, not a lost parcel
+  assert.equal(detectCarrierIssue('I was sold a grade A phone but I have not received a grade A phone. The screen is defective'), null)
+  assert.equal(detectCarrierIssue("I didn't receive what I ordered, this is the wrong colour")?.issue ?? null, null)
+  assert.equal(detectCarrierIssue('I have not received my phone yet')?.issue, 'lost')
+  assert.equal(detectCarrierIssue('Still not received the parcel, tracking is stuck')?.issue, 'lost')
+  assert.equal(detectCarrierIssue("I haven't received anything")?.issue, 'lost')
 })
 
 test('finds and normalises tracking numbers', () => {

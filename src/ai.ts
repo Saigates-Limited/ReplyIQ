@@ -119,6 +119,9 @@ export function redactPii(text: string, kase: CaseRow): string {
   }
   // Amazon notice blocks that carry a full name + address
   out = out.replace(/(?:^|\n)[ \t]*shipping address:?[ \t]*\n(?:[^\n]+\n?){1,6}/gi, '\n[shipping address redacted]\n')
+  // IMEIs are allowed through (Saigates decision 2026-11-11: staff quote replacement IMEIs to customers and the AI may see/use them).
+  // Internal SPC return references are still redacted so the privacy guard in generateDraft never blocks a case for them.
+  out = out.replace(/SPC-[A-Za-z]+-\d{6,}/g, '[return ref redacted]')
   // Generic patterns
   out = out.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email redacted]')
   // Any UK-style number: +44 or leading 0, then 9-10 more digits allowing spaces/dashes/brackets
@@ -212,8 +215,9 @@ export async function generateDraft(
   // Hard guard: attachments are summarised as counts only. If any file content ever reaches this point, abort.
   assertNoAttachmentContent(userMsg)
   assertNoAttachmentContent(systemMsg)
-  // Hard guard: nothing from the physical-returns desk or refund emails (IMEIs, SPC refs, refund events) may reach the model.
-  if (/\b\d{15}\b/.test(userMsg) || /SPC-[A-Za-z]+-\d{6,}/.test(userMsg) || /refund_initiated/.test(userMsg)) throw new Error('Privacy guard: returns/refund data found in the model payload')
+  // Hard guard: nothing from the physical-returns desk or refund emails (SPC refs, refund events) may reach the model.
+  // IMEIs are deliberately NOT blocked: they are allowed in the thread and in replies (Saigates decision 2026-11-11).
+  if (/SPC-[A-Za-z]+-\d{6,}/.test(userMsg) || /refund_initiated/.test(userMsg)) throw new Error('Privacy guard: returns/refund data found in the model payload')
 
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',

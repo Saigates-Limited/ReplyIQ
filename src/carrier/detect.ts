@@ -17,13 +17,17 @@ export const ISSUE_LABEL: Record<CarrierIssue, string> = {
 
 export type Detection = { issue: CarrierIssue; phrase: string }
 
+// "I have not received a grade A phone" / "didn't receive what I ordered" describe the item they DID get (quality or
+// wrong item), not a parcel that never arrived. Lookahead used after "received" in the lost rule.
+const RECEIVED_QUALITY = String.raw`\s+(?:a|an|what|the\s+(?:right|correct|condition|grade|quality|model|colou?r))\b`
+
 // Order matters: the most specific pattern wins.
 const RULES: { issue: CarrierIssue; re: RegExp }[] = [
   { issue: 'empty_parcel', re: /\b(?:(?:box|parcel|package|envelope|bag)\s+(?:was|is|came|arrived)\s+(?:completely\s+|totally\s+)?empty|empty\s+(?:box|parcel|package|envelope|bag)|nothing\s+(?:was\s+)?(?:inside|in\s+(?:the|it))|no\s+(?:phone|device|iphone|handset)\s+(?:was\s+)?(?:inside|in\s+the\s+(?:box|parcel|package))|(?:phone|device|iphone)\s+(?:was\s+)?missing\s+from\s+the\s+(?:box|parcel|package)|only\s+(?:the\s+)?(?:charger|cable|box)\s+(?:was\s+)?(?:inside|in\s+(?:the\s+)?(?:box|parcel)))\b/i },
   { issue: 'delivered_not_received', re: /\b(?:(?:says|shows|showing|marked|marked\s+as|states|tracking\s+says)\s+(?:it\s+(?:was|has\s+been)\s+|as\s+)?delivered\b[^.?!\n]{0,80}\b(?:not|never|haven'?t|hasn'?t|didn'?t|no)\b|(?:not|never|haven'?t|didn'?t)\s+(?:actually\s+)?(?:received|got)\b[^.?!\n]{0,80}\b(?:says|shows|marked|showing)\s+(?:as\s+)?delivered|delivered\s+to\s+(?:the\s+)?wrong\s+(?:address|house|door|person)|left\s+(?:it\s+)?(?:with|at)\s+(?:a\s+)?(?:neighbou?r|safe\s*place)[^.?!\n]{0,60}\b(?:not|no|can'?t\s+find))/i },
   { issue: 'damaged', re: /\b(?:(?:box|parcel|package|packaging)\s+(?:was\s+|is\s+|arrived\s+|came\s+)?(?:badly\s+)?(?:damaged|crushed|torn|ripped|smashed|soaked|wet|opened|tampered(?:\s+with)?)|arrived\s+(?:damaged|broken|smashed|cracked|in\s+pieces)|damaged\s+(?:in|during)\s+(?:transit|delivery|the\s+post))\b/i },
   { issue: 'return_to_sender', re: /\b(?:return(?:ed|ing)?\s+to\s+sender|being\s+sent\s+back\s+to\s+you|sent\s+back\s+to\s+the\s+seller)\b/i },
-  { issue: 'lost', re: /\b(?:(?:has|have|hasn'?t|haven'?t|still\s+(?:has\s+)?not|still\s+haven'?t|not\s+yet|never|did\s+not|didn'?t)\s+(?:yet\s+)?(?:been\s+)?(?:arrived?|received|delivered|got\s+(?:it|the\s+(?:phone|parcel|order)))|(?:not|never)\s+(?:yet\s+)?(?:arrived|received|delivered)|where\s+is\s+my\s+(?:order|parcel|package|phone|item|delivery)|(?:tracking|it)\s+(?:has(?:n'?t|\s+not)\s+(?:been\s+)?(?:updated|moved|changed)|(?:is\s+)?(?:stuck|not\s+(?:moving|updating)))|no\s+(?:tracking\s+)?updates?\s+(?:since|for)|still\s+waiting\s+for\s+(?:my|the)\s+(?:order|parcel|phone|delivery|package)|(?:parcel|package|order|phone)\s+(?:is|has\s+been|was|got)\s+lost|lost\s+in\s+(?:the\s+)?(?:post|transit))\b/i },
+  { issue: 'lost', re: new RegExp(String.raw`\b(?:(?:has|have|hasn'?t|haven'?t|still\s+(?:has\s+)?not|still\s+haven'?t|not\s+yet|never|did\s+not|didn'?t)\s+(?:yet\s+)?(?:been\s+)?(?:arrived?|received(?!${RECEIVED_QUALITY})|delivered|got\s+(?:it|the\s+(?:phone|parcel|order)))|(?:not|never)\s+(?:yet\s+)?(?:arrived|received(?!${RECEIVED_QUALITY})|delivered)|where\s+is\s+my\s+(?:order|parcel|package|phone|item|delivery)|(?:tracking|it)\s+(?:has(?:n'?t|\s+not)\s+(?:been\s+)?(?:updated|moved|changed)|(?:is\s+)?(?:stuck|not\s+(?:moving|updating)))|no\s+(?:tracking\s+)?updates?\s+(?:since|for)|still\s+waiting\s+for\s+(?:my|the)\s+(?:order|parcel|phone|delivery|package)|(?:parcel|package|order|phone)\s+(?:is|has\s+been|was|got)\s+lost|lost\s+in\s+(?:the\s+)?(?:post|transit))\b`, 'i') },
 ]
 
 /** Questions about tracking from someone who has not ordered yet, or who already has the phone, are not carrier issues. */

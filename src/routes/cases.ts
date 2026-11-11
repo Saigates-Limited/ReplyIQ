@@ -50,6 +50,11 @@ const archExpr = (has: boolean, expr: string) => (has ? expr : expr.replace(/cas
 // Columns returned to the agent UI. PII columns (last name, email, phone,
 // address) are returned here because agents need them, but they are NEVER
 // included in anything sent to OpenAI (see the draft generation step).
+// 24h customer-reply clock. It stops once we have replied (any outbound message, incl. Seller Central copies, at or after
+// the latest customer message) and restarts when the customer writes again. Without this, answered cases stayed "overdue".
+const REPLY_DEADLINE = `(CASE WHEN NOT EXISTS (SELECT 1 FROM messages rm WHERE rm.case_id = cases.id AND rm.direction = 'outbound'
+    AND rm.kind <> 'event' AND rm.sent_at >= cases.last_customer_message_at)
+  THEN cases.last_customer_message_at + INTERVAL '24 hours' END)`
 const CASE_COLUMNS = `
   id, case_ref, subject, status,
   customer_first_name, customer_last_name, customer_email, customer_phone, customer_address,
@@ -59,7 +64,7 @@ const CASE_COLUMNS = `
   gmail_thread_id, customer_reply_to,
   __MAILBOX__
   last_customer_message_at,
-  (last_customer_message_at + INTERVAL '24 hours') AS reply_deadline,
+  ${REPLY_DEADLINE} AS reply_deadline,
   created_at, updated_at
 `
 // Same columns, qualified for joins
@@ -72,7 +77,7 @@ const CASE_COLUMNS_Q = `
   cases.gmail_thread_id, cases.customer_reply_to,
   __MAILBOX__
   cases.last_customer_message_at,
-  (cases.last_customer_message_at + INTERVAL '24 hours') AS reply_deadline,
+  ${REPLY_DEADLINE} AS reply_deadline,
   cases.created_at, cases.updated_at
 `
 // Effective deadline: the 24h customer-reply deadline (only when a real customer message exists on the case)
@@ -87,7 +92,7 @@ async function hasStatusChangedCol(sql: ReturnType<typeof getDb>) {
 }
 const deadlineExpr = (hasSc: boolean) => `LEAST(
   CASE WHEN EXISTS (SELECT 1 FROM messages m WHERE m.case_id = cases.id AND m.direction = 'inbound' AND m.kind <> 'event')
-       THEN cases.last_customer_message_at + INTERVAL '24 hours' END,
+       THEN ${REPLY_DEADLINE} END,
   ${hasSc ? `CASE WHEN cases.status = 'update_customer' THEN COALESCE(cases.status_changed_at, cases.updated_at) + INTERVAL '24 hours' END,` : ''}
   (SELECT MIN(e.deadline_at) FROM amazon_events e WHERE e.case_id = cases.id AND e.status IN ('open','info_requested')))`
 // Stamp the status clock whenever status changes (single edit, bulk, resolve). No-op before 0018.

@@ -156,6 +156,7 @@ app.get('/returns', (c) => c.html(page(c.get('user'))))
 app.get('/returns/:rest', (c) => c.html(page(c.get('user'))))
 app.get('/chargebacks', (c) => c.html(page(c.get('user'))))
 app.get('/carriers', (c) => c.html(page(c.get('user'))))
+app.get('/carrier', (c) => c.redirect('/carriers', 301))
 app.get('/carriers/:id', (c) => c.html(page(c.get('user'))))
 
 app.onError((err, c) => {
