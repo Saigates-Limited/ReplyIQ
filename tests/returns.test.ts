@@ -2,9 +2,9 @@
 // Run: npm run test:unit
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { checkImei, imeiCheckDigit, luhnOk, normaliseImei } from '../src/returns/imei'
+import { checkImei, imeiCheckDigit, luhnOk, normaliseImei, parseImeiCell } from '../src/returns/imei'
 import { evaluateItem, isOverdue, daysSince, canMove } from '../src/returns/rules'
-import { parseCsv, cleanRow, normaliseSku, matchSku, mapCable, mapReason, mapOutcome, parseUkDate, dateFromNotes } from '../src/returns/importer'
+import { parseCsv, cleanRow, parseOrderId, normaliseSku, matchSku, mapCable, mapReason, mapOutcome, parseUkDate, dateFromNotes } from '../src/returns/importer'
 import { parseRefundInitiated, classifyRefundNotice, stripBuyerName, isPartialRefund } from '../src/returns/refundParser'
 
 // ───────── IMEI ─────────
@@ -245,4 +245,57 @@ test('Refund: unknown reason is kept verbatim and flagged; partial detection', (
   assert.equal(isPartialRefund(null, 359), null)
   const p = parseRefundInitiated(SAMPLE_2.replace('£223.00', '£150.00').replace('GBP 223.00', 'GBP 150.00'))
   assert.equal(p.amount, 150); assert.equal(isPartialRefund(p.items[0].item_refund, 223), true)
+})
+
+// ───────── Return register import: blank / serial / double IMEI / non-Amazon ─────────
+const HDR = 'Order Date,Date of Return,Marketplace,Customer Name,Order ID,Item details,Reason,IMEI NO,Notes'
+const regRow = (order: string, imei: string, market = 'Amazon.co.uk', notes = '') =>
+  cleanRow(parseCsv(`${HDR}\n01/01/2025,02/01/2025,${market},Jo,${order},I13-128-MDT-A,COM,"${imei}",${notes}`)[0], 2, new Set(['I13-128-MDT-A']), new Set())
+
+test('Import (a): a blank IMEI on a legacy row imports with a note and is NOT on the review list', () => {
+  const r = regRow('205-1900538-4667561', '')
+  assert.equal(r.imei, null); assert.deepEqual(r.imeis, []); assert.equal(r.imei_kind, 'none')
+  assert.equal(r.review.length, 0, JSON.stringify(r.review)); assert.equal(r.notes, 'no IMEI (legacy)')
+  assert.equal(regRow('205-1900538-4667561', '', 'Amazon.co.uk', 'left screen scratched').notes, 'left screen scratched | no IMEI (legacy)')
+})
+
+test('Import (b): serial numbers (letters+digits, 8-14 chars) go to Notes, not the review list; other junk still does', () => {
+  for (const sn of ['F9FXK2LMQ1GC', 'R58N90ABCDE', 'DMPXYZ12345', 'C39ZR0QDLMN']) {
+    const r = regRow('205-1900538-4667561', sn)
+    assert.equal(r.imei, null); assert.equal(r.serial, sn); assert.equal(r.imei_kind, 'serial')
+    assert.equal(r.review.length, 0, sn); assert.ok(r.notes!.includes(`Serial: ${sn} (no IMEI)`))
+  }
+  assert.equal(regRow('205-1900538-4667561', 'abcd efgh 12').serial, 'ABCDEFGH12')   // spaces ignored
+  assert.equal(regRow('205-1900538-4667561', '12345678').imei_kind, 'review')          // digits only = mistyped IMEI
+  assert.equal(regRow('205-1900538-4667561', 'ABCDEFGHIJ').imei_kind, 'review')        // letters only
+  assert.equal(regRow('205-1900538-4667561', 'F9FXK2LMQ1GC123').imei_kind, 'review')  // 15 chars: too long for a serial
+  assert.equal(regRow('205-1900538-4667561', 'A1B2C3').imei_kind, 'review')            // 6 chars: too short
+})
+
+test('Import (c): 30 digits made of two valid IMEIs split into two phones on the same return', () => {
+  const a = validImei('35487028857015'), b = validImei('35693803564380')
+  assert.ok(luhnOk(a) && luhnOk(b))
+  for (const cell of [a + b, `${a} ${b}`, `${a}/${b}`, `${a}, ${b}`]) {
+    const r = regRow('205-1900538-4667561', cell)
+    assert.deepEqual(r.imeis, [a, b], cell); assert.equal(r.imei, a); assert.equal(r.imei_kind, 'split'); assert.equal(r.review.length, 0)
+    assert.match(r.notes!, /two IMEIs/)
+  }
+  const bad = regRow('205-1900538-4667561', a + b.slice(0, 14) + String((Number(b[14]) + 1) % 10))
+  assert.equal(bad.imei_kind, 'review'); assert.deepEqual(bad.imeis, []); assert.match(bad.review[0].reason, /30 digits/)
+  const dup = regRow('205-1900538-4667561', a + a)
+  assert.deepEqual(dup.imeis, [a]); assert.ok(dup.review.some((x) => /twice/.test(x.reason)))
+  assert.equal(parseImeiCell(a).kind, 'imei')
+})
+
+test('Import (d): non-Amazon rows (PO- numbers, other marketplaces) import with their marketplace kept', () => {
+  const po = regRow('PO-210-12440920335993639', validImei('35487028857015'), 'Backmarket')
+  assert.equal(po.order_id, 'PO-210-12440920335993639'); assert.equal(po.marketplace, 'Backmarket'); assert.equal(po.non_amazon, true)
+  assert.ok(!po.review.some((x) => x.field === 'Order ID'))
+  assert.equal(regRow('po-210-12440920335993639', '', '').marketplace, 'Non-Amazon')   // PO- number, marketplace column empty
+  assert.equal(regRow('eBay-77881234', '', 'eBay').order_id, 'eBay-77881234')
+  const amz = regRow('205-1900538-4667561', '')
+  assert.equal(amz.non_amazon, false); assert.equal(amz.marketplace, 'Amazon.co.uk')
+  // Still unusable: nothing that looks like an order, or free text on an Amazon row
+  assert.equal(regRow('', '').order_id, null); assert.equal(regRow('see notes', '', 'Amazon.co.uk').order_id, null)
+  assert.deepEqual(parseOrderId('PO-210-12440920335993639', ''), { order_id: 'PO-210-12440920335993639', non_amazon: true })
 })

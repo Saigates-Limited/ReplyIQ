@@ -217,7 +217,9 @@ returnsApi.post('/import', requireManager, async (c) => {
     const review = clean.flatMap((r) => r.review)
     const importable = clean.filter((r) => r.order_id)
     const preview = { rows: rows.length, importable: importable.length, unimportable: clean.length - importable.length, review_count: review.length, review,
-      sample: importable.slice(0, 8).map((r) => ({ row: r.row, order_id: r.order_id, sku: r.sku ?? `? ${r.sku_raw}`, reason: r.reason, cable: r.cable, outcome: r.outcome, imei: r.imei ? 'ok' : r.review.some((x) => x.field === 'IMEI NO') ? 'review' : '—', return_date: r.return_date })),
+      sample: importable.slice(0, 8).map((r) => ({ row: r.row, order_id: r.order_id, sku: r.sku ?? `? ${r.sku_raw}`, reason: r.reason, cable: r.cable, outcome: r.outcome, imei: r.imei_kind === 'split' ? '2 IMEIs' : r.imei_kind === 'imei' ? 'ok' : r.imei_kind === 'serial' ? `serial ${r.serial}` : r.imei_kind === 'review' ? 'review' : 'none (legacy)', marketplace: r.marketplace, return_date: r.return_date })),
+      imei_summary: { ok: clean.filter((r) => r.imei_kind === 'imei').length, split_into_two: clean.filter((r) => r.imei_kind === 'split').length, serial_in_notes: clean.filter((r) => r.imei_kind === 'serial').length, none_legacy: clean.filter((r) => r.imei_kind === 'none').length, review: clean.filter((r) => r.imei_kind === 'review').length },
+      non_amazon: clean.filter((r) => r.order_id && r.non_amazon).length,
       unmatched_skus: [...new Set(clean.filter((r) => !r.sku && r.sku_raw).map((r) => r.sku_raw))] }
     if (!b.commit) {
       const [batch] = await sql`INSERT INTO return_import_batches (filename, mode, row_count, review_count, review, created_by) VALUES (${b.filename ?? null}, 'dry_run', ${rows.length}, ${review.length}, ${sql.json(review)}, ${user.id}) RETURNING id`
@@ -236,12 +238,21 @@ returnsApi.post('/import', requireManager, async (c) => {
       const flags = r.review.map((x) => `${x.field}: ${x.reason}`)
       if (existing) {
         id = existing.id
-        await sql`UPDATE returns SET order_date = COALESCE(order_date, ${r.order_date}), sku = COALESCE(sku, ${r.sku}), marketplace = COALESCE(marketplace, ${r.marketplace}), notes = COALESCE(${r.notes}, notes), received_at = COALESCE(received_at, ${r.return_date ? new Date(r.return_date + 'T12:00:00Z') : null}), review_flags = ${sql.json(flags)}, import_row = ${r.row} WHERE id = ${id}`
+        await sql`UPDATE returns SET order_date = COALESCE(order_date, ${r.order_date}), sku = COALESCE(sku, ${r.sku}), marketplace = COALESCE(marketplace, ${r.marketplace}), notes = CASE WHEN ${r.notes}::text IS NULL THEN notes WHEN notes IS NULL OR notes = '' THEN ${r.notes} WHEN position(${r.notes} in notes) > 0 THEN notes ELSE notes || ' | ' || ${r.notes} END, received_at = COALESCE(received_at, ${r.return_date ? new Date(r.return_date + 'T12:00:00Z') : null}), review_flags = ${sql.json(flags)}, import_row = ${r.row} WHERE id = ${id}`
         updated++
       } else {
-        id = await createReturn(sql, { order_id: r.order_id!, case_id: k?.id ?? null, order_date: r.order_date, marketplace: r.marketplace, sku: r.sku ?? r.sku_raw, quantity: 1, notes: r.notes, status: status === 'expected' ? 'expected' : 'received',
+        id = await createReturn(sql, { order_id: r.order_id!, case_id: k?.id ?? null, order_date: r.order_date, marketplace: r.marketplace, sku: r.sku ?? r.sku_raw, quantity: Math.max(1, r.imeis.length), notes: r.notes, status: status === 'expected' ? 'expected' : 'received',
           received_at: r.return_date ? new Date(r.return_date + 'T12:00:00Z') : null, received_by: null, legacy_customer_name: k ? null : r.customer_name, import_batch_id: batch.id, import_row: r.row, review_flags: flags }, user.id)
         created++
+      }
+      // A 30-digit cell holds two phones: make sure the return has a second item row, then give each phone its own IMEI.
+      if (r.imeis.length > 1) {
+        const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM return_items WHERE return_id = ${id}`
+        for (let no = n + 1; no <= r.imeis.length; no++) await sql`INSERT INTO return_items (return_id, item_no) VALUES (${id}, ${no})`
+        await sql`UPDATE returns SET quantity = GREATEST(quantity, ${r.imeis.length}) WHERE id = ${id}`
+        for (let no = 2; no <= r.imeis.length; no++)
+          await sql`UPDATE return_items SET imei = COALESCE(imei, ${r.imeis[no - 1]}), reason_category = COALESCE(reason_category, ${r.reason}), cable = COALESCE(cable, ${r.cable}), frp_lock = COALESCE(frp_lock, ${r.frp}),
+                      supplier_code = COALESCE(supplier_code, ${r.supplier_code}), outcome = COALESCE(outcome, ${r.outcome}) WHERE return_id = ${id} AND item_no = ${no}`
       }
       const [item] = await sql`SELECT id FROM return_items WHERE return_id = ${id} ORDER BY item_no LIMIT 1`
       await sql`UPDATE return_items SET imei = COALESCE(${r.imei}, imei), reason_category = COALESCE(${r.reason}, reason_category), cable = COALESCE(${r.cable}, cable), frp_lock = COALESCE(${r.frp}, frp_lock),

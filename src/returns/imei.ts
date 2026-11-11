@@ -41,3 +41,30 @@ export function imeiCheckDigit(first14: string): string {
   }
   return String((10 - (sum % 10)) % 10)
 }
+
+export type ImeiCell =
+  | { kind: 'none' }
+  | { kind: 'imei'; imeis: string[]; split: boolean; duplicate: boolean }
+  | { kind: 'serial'; serial: string }
+  | { kind: 'bad'; reason: string; digits: string }
+
+// Letters AND digits, 8-14 characters (iPad / Samsung / Watch serials). Digits-only values never qualify: those are
+// truncated or mistyped IMEIs and still go to review.
+const SERIAL_RE = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{8,14}$/
+
+/** Interpret one spreadsheet "IMEI NO" cell: nothing, one IMEI, two IMEIs run together (30 digits), a serial number, or junk. */
+export function parseImeiCell(raw: unknown): ImeiCell {
+  const text = String(raw ?? '').trim()
+  if (!text) return { kind: 'none' }
+  const one = checkImei(text)
+  if (one.ok) return { kind: 'imei', imeis: [one.imei], split: false, duplicate: false }
+  const digits = normaliseImei(text)
+  if (digits.length === 30) {
+    const a = digits.slice(0, 15), b = digits.slice(15)
+    if (luhnOk(a) && luhnOk(b)) return a === b ? { kind: 'imei', imeis: [a], split: true, duplicate: true } : { kind: 'imei', imeis: [a, b], split: true, duplicate: false }
+    return { kind: 'bad', reason: '30 digits (two IMEIs?) but at least one check digit does not match', digits }
+  }
+  const compact = text.replace(/[\s-]+/g, '')
+  if (SERIAL_RE.test(compact)) return { kind: 'serial', serial: compact.toUpperCase() }
+  return { kind: 'bad', reason: one.reason, digits }
+}

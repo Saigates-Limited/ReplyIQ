@@ -1,6 +1,6 @@
 // One-time import from the Google Sheet "Returns" export. Pure clean-up functions + CSV parsing; the API does the DB work.
 // Nothing here guesses: anything ambiguous goes to the review list with the original value kept.
-import { checkImei } from './imei'
+import { parseImeiCell } from './imei'
 import type { Cable, Outcome, Reason } from './rules'
 
 export type SheetRow = Record<string, string>
@@ -22,7 +22,11 @@ export type CleanRow = {
   outcome: Outcome | null
   frp: boolean | null
   notes: string | null
-  imei: string | null
+  imei: string | null            // first IMEI (kept for existing callers)
+  imeis: string[]                // every phone on this return: 0, 1 or 2 (a 30-digit cell splits into two)
+  serial: string | null          // serial-number-looking value from the IMEI column (also copied into notes)
+  imei_kind: 'none' | 'imei' | 'split' | 'serial' | 'review'
+  non_amazon: boolean            // order id is not in Amazon format (PO-… or another marketplace)
   supplier_code: string | null
   cms_ticket: string | null
   compensation_ref: string | null
@@ -63,6 +67,18 @@ export function col(row: SheetRow, ...names: string[]): string {
 
 // ───────── field clean-up ─────────
 const ORDER_RE = /\b(\d{3}-\d{7}-\d{7})\b/
+const PO_RE = /\b(PO-\d{3}-\d{8,20})\b/i
+
+/** Amazon order id, or a non-Amazon one (PO-… number, or any reference when the Marketplace column names another marketplace). */
+export function parseOrderId(orderRaw: string, marketplace: string): { order_id: string | null; non_amazon: boolean } {
+  const amazon = orderRaw.match(ORDER_RE)?.[1]
+  if (amazon) return { order_id: amazon, non_amazon: false }
+  const po = orderRaw.match(PO_RE)?.[1]
+  if (po) return { order_id: po.toUpperCase(), non_amazon: true }
+  const ref = orderRaw.trim().replace(/\s+/g, ' ')
+  if (ref.length >= 4 && ref.length <= 64 && /[A-Za-z0-9]{4}/.test(ref) && marketplace.trim() && !/amazon/i.test(marketplace)) return { order_id: ref, non_amazon: true }
+  return { order_id: null, non_amazon: false }
+}
 
 /** "DD/MM/YYYY", "D/M/YY", "YYYY-MM-DD", "6 Jan 2026" → YYYY-MM-DD or null. UK day-first. */
 export function parseUkDate(v: string | null | undefined): string | null {
@@ -152,8 +168,9 @@ const CMS_RE = /^\d{6,}$|^[A-Z]{2,}-?\d{5,}$/i
 export function cleanRow(row: SheetRow, idx: number, knownSkus: Set<string>, knownSuppliers: Set<string>): CleanRow {
   const review: ReviewItem[] = []
   const orderRaw = col(row, 'Order ID', 'OrderID', 'Order')
-  const order_id = orderRaw.match(ORDER_RE)?.[1] ?? null
-  if (!order_id) review.push({ row: idx, order_id: null, field: 'Order ID', value: orderRaw, reason: 'not an Amazon order ID' })
+  const marketplaceRaw = col(row, 'Marketplace')
+  const { order_id, non_amazon } = parseOrderId(orderRaw, marketplaceRaw)
+  if (!order_id) review.push({ row: idx, order_id: null, field: 'Order ID', value: orderRaw, reason: 'no usable order ID (needs Amazon format, a PO-… number, or a non-Amazon Marketplace)' })
   const flag = (field: string, value: string, reason: string) => review.push({ row: idx, order_id, field, value, reason })
 
   const order_date = parseUkDate(col(row, 'Order Date'))
@@ -179,8 +196,17 @@ export function cleanRow(row: SheetRow, idx: number, knownSkus: Set<string>, kno
   const extraNotes: string[] = []
 
   const imeiRaw = col(row, 'IMEI NO', 'IMEI', 'IMEI No')
-  let imei: string | null = null
-  if (imeiRaw) { const c = checkImei(imeiRaw); if (c.ok) imei = c.imei; else flag('IMEI NO', imeiRaw, `IMEI ${c.reason}`) }
+  let imeis: string[] = [], serial: string | null = null
+  let imei_kind: CleanRow['imei_kind'] = 'none'
+  const cell = parseImeiCell(imeiRaw)
+  if (cell.kind === 'none') extraNotes.push('no IMEI (legacy)')   // normal for old register rows: imports as usual, not on the review list
+  else if (cell.kind === 'imei') {
+    imeis = cell.imeis; imei_kind = cell.split ? 'split' : 'imei'
+    if (cell.split) extraNotes.push(cell.duplicate ? 'IMEI cell held the same IMEI twice: imported once' : `IMEI cell held two IMEIs (${cell.imeis.join(', ')}): imported as 2 phones on this return`)
+    if (cell.duplicate) flag('IMEI NO', imeiRaw, 'same IMEI entered twice — imported once')
+  } else if (cell.kind === 'serial') { serial = cell.serial; imei_kind = 'serial'; extraNotes.push(`Serial: ${cell.serial} (no IMEI)`) }
+  else { imei_kind = 'review'; flag('IMEI NO', imeiRaw, `IMEI ${cell.reason}`) }
+  const imei = imeis[0] ?? null
 
   const supRaw = col(row, 'SUPPLIER CODE', 'Supplier code', 'Supplier').toUpperCase().trim()
   let supplier_code: string | null = null
@@ -203,9 +229,9 @@ export function cleanRow(row: SheetRow, idx: number, knownSkus: Set<string>, kno
 
   return {
     row: idx, order_id, order_date, return_date,
-    marketplace: col(row, 'Marketplace') || null,
+    marketplace: marketplaceRaw.trim() || (non_amazon ? 'Non-Amazon' : null),
     customer_name: col(row, 'Customer Name', 'Customer') || null,
     sku_raw: itemRaw || null, sku, model: itemRaw ? itemRaw.replace(/^[:\s]+/, '').trim() : null,
-    reason, cable, outcome, frp, notes, imei, supplier_code, cms_ticket, compensation_ref, replacement_sent_on, review,
+    reason, cable, outcome, frp, notes, imei, imeis, serial, imei_kind, non_amazon, supplier_code, cms_ticket, compensation_ref, replacement_sent_on, review,
   }
 }
