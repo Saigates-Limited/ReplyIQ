@@ -173,7 +173,7 @@ curl "http://localhost:3000/__scheduled?cron=*/15+*+*+*+*"   # fire the cron loc
 
 ## Phase 8 — Amazon notices, trackers, tone, tickets, draft modes, UI v2 (LIVE 2026-10-12)
 
-**Production:** https://replyiq.saigateslimited.workers.dev · Worker version `5061e00a-9265-4fbe-ba52-bb71b1fe5eea` (deployed 2026-11-11 with `npm run deploy` = `wrangler deploy`; Hyperdrive + 15-min cron; never `wrangler pages deploy`, replyiq.pages.dev is a retired redirect) · DB migrations applied through **0008 + 0008b** (verified: 4 triggers + status CHECK + archive columns).
+**Production:** https://replyiq.saigateslimited.workers.dev · Worker version `79cc8590-ba71-4bb0-b7ee-092f32a35666` (deployed 2026-11-11 with `npm run deploy` = `wrangler deploy`; Hyperdrive + 15-min cron; never `wrangler pages deploy`, replyiq.pages.dev is a retired redirect) · DB migrations applied through **0008 + 0008b** (verified: 4 triggers + status CHECK + archive columns).
 
 ### Features
 - Gmail sync reads customer messages **and** Amazon notices: `atoz-guarantee-no-reply@`, `cb-seller-notification@`, `donotreply@amazon.com` (Return authorisation notifications + "Your email to <Name>" Seller Central reply copies).
