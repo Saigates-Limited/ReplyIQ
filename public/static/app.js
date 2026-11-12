@@ -17,8 +17,8 @@
   }
   // Inbox folders (sidebar). "open" = every unresolved case (what used to be Active + Open).
   const FOLDERS = [['open', 'Open'], ['awaiting_customer', 'Awaiting customer'], ['update_customer', 'Update customer'], ['resolved', 'Resolved'], ['all', 'All']]
-  const folderList = () => [...FOLDERS, ...(isManager ? [['archived', 'Archive']] : [])]
-  const FOLDER_ICON = { open: 'fa-envelope-open', awaiting_customer: 'fa-hourglass-half', update_customer: 'fa-bell', resolved: 'fa-circle-check', all: 'fa-layer-group', archived: 'fa-box-archive' }
+  const folderList = () => [...FOLDERS, ...(isManager ? [['staff_sent', 'Sent by staff without manager approval'], ['archived', 'Archive']] : [])]
+  const FOLDER_ICON = { open: 'fa-envelope-open', awaiting_customer: 'fa-hourglass-half', update_customer: 'fa-bell', resolved: 'fa-circle-check', all: 'fa-layer-group', staff_sent: 'fa-user-clock', archived: 'fa-box-archive' }
 
   // Tone labels (AI-suggested, staff can override). Order = severity rank.
   const TONE_META = {
@@ -741,7 +741,8 @@
                 ${d.rejection_reason ? `<span class="block w-full text-right text-[11px] text-red-700" style="flex-basis:100%"><i class="fas fa-rotate-left mr-1"></i>Sent back by ${esc(d.rejected_by_name || 'a manager')}${d.rejected_at ? ' · ' + fmtDateTime(d.rejected_at) : ''}: <em>${esc(d.rejection_reason)}</em></span>` : ''}
                 <button id="request-btn" ${canRequest ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canRequest ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}" title="${canRequest ? 'Ask a manager to approve this exact text' : 'Fix failing checks first'}"><i class="fas fa-user-check mr-1"></i>Request approval</button>
                 ${isManager ? `<button id="approve-btn" ${canApprove ? '' : 'disabled'} class="px-4 py-1.5 rounded-md text-sm font-medium ${canApprove ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-200 text-slate-500 cursor-not-allowed'}" title="${canApprove ? 'Approve this exact text (manager)' : 'Fix failing checks first'}"><i class="fas fa-check mr-1"></i>Approve</button>` : ''}
-                ${fails.length ? `<span class="block w-full text-right text-[11px] text-red-700" style="flex-basis:100%"><i class="fas fa-lock mr-1"></i>Blocked while a check is <strong>FAIL</strong>. Edit the reply (or use <em>Tell the AI what to change</em>), then <strong>Save &amp; re-check</strong>.</span>` : `<span class="block w-full text-right text-[11px] text-slate-500" style="flex-basis:100%"><i class="fas fa-shield-halved mr-1"></i>Nothing is sent without a manager's approval — ${isManager ? 'approve, then Send appears' : 'request approval and a manager will review it on their dashboard'}.</span>`}` : ''}
+                ${!isManager && !fails.length ? '<span id="routine-slot" class="contents"></span>' : ''}
+                ${fails.length ? `<span class="block w-full text-right text-[11px] text-red-700" style="flex-basis:100%"><i class="fas fa-lock mr-1"></i>Blocked while a check is <strong>FAIL</strong>. Edit the reply (or use <em>Tell the AI what to change</em>), then <strong>Save &amp; re-check</strong>.</span>` : `<span id="approval-hint" class="block w-full text-right text-[11px] text-slate-500" style="flex-basis:100%"><i class="fas fa-shield-halved mr-1"></i>${isManager ? 'Approve, then Send appears.' : 'Checking whether this is a routine reply you can send yourself…'}</span>`}` : ''}
               ${pending ? `
                 <span class="block w-full text-right text-[11px] text-violet-700" style="flex-basis:100%"><i class="fas fa-hourglass-half mr-1"></i>Approval requested${d.approval_requested_by_name ? ' by ' + esc(d.approval_requested_by_name) : ''}${d.approval_requested_at ? ' · ' + fmtDateTime(d.approval_requested_at) : ''}${d.approval_note ? ` — <em>${esc(d.approval_note)}</em>` : ''}</span>
                 ${isManager ? `
@@ -770,7 +771,7 @@
             <div>Generated ${fmtDateTime(d.created_at)} by ${esc(d.created_by_name || '—')}</div>
             ${d.edited_at ? `<div>Edited ${fmtDateTime(d.edited_at)} by ${esc(d.edited_by_name || '—')}</div>` : ''}
             ${d.approved_at ? `<div class="text-emerald-700">Approved ${fmtDateTime(d.approved_at)} by ${esc(d.approved_by_name || '—')}</div>` : ''}
-            ${d.sent_recorded_at ? `<div class="text-sky-700">Sent ${d.sent_via === 'gmail' ? 'via Gmail' : '(recorded manually)'} ${fmtDateTime(d.sent_recorded_at)} by ${esc(d.sent_recorded_by_name || '—')}</div>` : ''}
+            ${d.sent_recorded_at ? `<div class="text-sky-700">Sent ${d.sent_via === 'gmail' ? 'via Gmail' : '(recorded manually)'} ${fmtDateTime(d.sent_recorded_at)} by ${esc(d.sent_recorded_by_name || '—')}${d.sent_without_manager_approval ? ' <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 font-semibold" title="Routine reply sent by staff under Settings → Staff can send routine replies. The server checked it at send time."><i class="fas fa-user-clock"></i> Sent by staff without manager approval</span>' : ` · approved by ${esc(d.approved_by_name || 'a manager')}`}</div>` : ''}
           </dl>
         </div>
 
@@ -817,7 +818,8 @@
         reviseBtn.disabled = true; reviseBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Rewriting…'
         try {
           const { data: rv } = await axios.post(`/api/drafts/${d.id}/revise`, { guidance, draft_text: text.value }, { timeout: 90000 })
-          if (rv.guardrail) toast(`Rewritten. ${rv.guardrail}`, 'err', true); else toast('Rewritten — review the new draft')
+          if (rv.guardrail) toast(`Rewritten and re-checked. ${esc(rv.guardrail)}`, 'err', true)
+          else toast('Rewritten and re-checked: PASS, no warnings, no manager rule. Review the new draft.')
           refresh()
         } catch (err) {
           toast(err.response?.data?.error || err.message, 'err')
@@ -848,6 +850,28 @@
       }
     }
     const unsaved = () => text.value.trim() !== d.draft_text.trim() || (notes.value || '') !== (d.staff_notes || '')
+    // Staff + plain draft: ask the SERVER whether this is a routine reply the agent may send themselves. The server re-checks again when Send is pressed.
+    const slot = document.getElementById('routine-slot')
+    if (slot && d.status === 'draft') {
+      const hint = document.getElementById('approval-hint')
+      const isGmail = (!d.mode || d.mode === 'customer') && kase.gmail_thread_id && kase.customer_reply_to
+      const setHint = (cls, html) => { if (!hint) return; hint.className = `block w-full text-right text-[11px] ${cls}`; hint.style.flexBasis = '100%'; hint.innerHTML = html }
+      axios.get(`/api/drafts/${d.id}/routine-check`).then(({ data: rc }) => {
+        if (!document.body.contains(slot)) return
+        if (rc.eligible && (!d.mode || d.mode === 'customer')) {
+          slot.outerHTML = isGmail
+            ? '<button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800" title="Routine reply: PASS, no warnings, no manager rule, no A-to-Z / chargeback / battery flag"><i class="fas fa-paper-plane mr-1"></i>Send to customer</button>'
+            : '<button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="This case has no Gmail thread: paste the text into Amazon, then record it here"><i class="fas fa-paste mr-1"></i>Mark as sent in Amazon</button>'
+          setHint('text-emerald-700', '<i class="fas fa-circle-check mr-1"></i>Routine reply: you can send it yourself. It is logged as <strong>sent by staff without manager approval</strong> and a manager can review it.')
+          wireSend(); wireRecordSent()
+        } else {
+          slot.remove()
+          const why = (rc.reasons || []).filter(Boolean)
+          if (rc.setting_on && why.length) setHint('text-violet-700', `<i class="fas fa-user-shield mr-1"></i>Needs a manager: ${why.map(esc).join('; ')}. Request approval and a manager will review it.`)
+          else setHint('text-slate-500', `<i class="fas fa-shield-halved mr-1"></i>${why.length ? esc(why[0]) + '. ' : ''}Request approval and a manager will review it on their dashboard.`)
+        }
+      }).catch(() => { slot.remove(); setHint('text-slate-500', '<i class="fas fa-shield-halved mr-1"></i>Request approval and a manager will review it on their dashboard.') })
+    }
     document.getElementById('approve-btn')?.addEventListener('click', () => {
       if (unsaved()) return toast('Save & re-check your edits first — approval applies to the exact saved text', 'err')
       act(() => axios.post(`/api/drafts/${d.id}/approve`), 'Approved — Send to customer is now available')
@@ -863,7 +887,7 @@
       if (reason.trim().length < 3) return toast('Give a short reason', 'err')
       act(() => axios.post(`/api/drafts/${d.id}/reject`, { reason }), 'Sent back to the agent')
     })
-    document.getElementById('send-btn')?.addEventListener('click', () => {
+    function wireSend() { document.getElementById('send-btn')?.addEventListener('click', () => {
       const modal = document.createElement('div')
       modal.id = 'send-confirm'
       modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50'
@@ -875,7 +899,7 @@
             <dt class="text-slate-500">From</dt><dd class="col-span-3 font-mono text-xs" id="send-from">connected mailbox</dd>
             <dt class="text-slate-500">To</dt><dd class="col-span-3 font-mono text-xs break-all">${esc(kase.customer_reply_to)}</dd>
             <dt class="text-slate-500">Case</dt><dd class="col-span-3">${esc(kase.case_ref)} · ${esc(kase.subject)}</dd>
-            <dt class="text-slate-500">Approved by</dt><dd class="col-span-3">${esc(d.approved_by_name || '—')} <span class="text-violet-700">(manager)</span>${d.approved_at ? ' · ' + fmtDateTime(d.approved_at) : ''}</dd>
+            <dt class="text-slate-500">Approval</dt><dd class="col-span-3">${d.status === 'approved' ? `${esc(d.approved_by_name || '—')} <span class="text-violet-700">(manager)</span>${d.approved_at ? ' · ' + fmtDateTime(d.approved_at) : ''}` : `<span class="text-amber-800 font-medium">No manager approval: routine reply, sent by you (${esc(ME.name || 'you')}).</span> <span class="text-xs text-slate-500">The server re-checks it when you press Send, and it is logged for review.</span>`}</dd>
           </dl>
           <pre class="message-body text-sm bg-slate-50 border border-slate-200 rounded-md p-3 max-h-64 overflow-auto font-sans">${esc(text.value.trim())}</pre>
 
@@ -891,19 +915,24 @@
       modal.querySelector('#send-now').onclick = async () => {
         const b = modal.querySelector('#send-now'); b.disabled = true; b.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Sending…'
         try {
-          if (unsaved()) throw new Error('The text on screen differs from the approved reply. Save your edits (this withdraws the approval) and get it approved again.')
+          if (unsaved()) throw new Error('The text on screen differs from the saved reply. Save & re-check your edits first (an edit after approval withdraws the approval).')
           await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: d.draft_text.trim() }, { timeout: 60000 })
           modal.remove(); toast('Reply sent to the customer'); refresh()
         } catch (err) {
           b.disabled = false; b.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send now'
           toast(err.response?.data?.error || err.message, 'err')
+          // The server refused a staff send (the case changed, or the reply stopped being routine): close the dialog and re-show the manager route.
+          if (err.response?.status === 403 && d.status === 'draft') { modal.remove(); refresh() }
         }
       }
-    })
-    document.getElementById('record-sent-btn')?.addEventListener('click', () => {
+    }) }
+    wireSend()
+    function wireRecordSent() { document.getElementById('record-sent-btn')?.addEventListener('click', () => {
+      if (unsaved()) return toast('Save & re-check your edits first', 'err')
       if (!confirm('Confirm you have sent this exact reply to the customer via Amazon. ReplyIQ will log it on the thread.')) return
       act(() => axios.post(`/api/drafts/${d.id}/record-sent`), 'Recorded as sent')
-    })
+    }) }
+    wireRecordSent()
     document.getElementById('discard-btn')?.addEventListener('click', () => {
       if (!confirm('Discard this draft?')) return
       act(() => axios.post(`/api/drafts/${d.id}/discard`), 'Draft discarded')
@@ -943,7 +972,7 @@
     app.innerHTML = `
       <section id="staff-section">
         <h1 class="text-2xl font-bold mb-1">Staff</h1>
-        <p class="text-sm text-slate-500 mb-4">Managers can approve any draft, including those flagged <em>needs manager</em>. Agents can approve ordinary drafts only.</p>
+        <p class="text-sm text-slate-500 mb-4">Managers can approve any draft, including those flagged <em>needs manager</em>. Agents can send their own routine replies only while <strong>Settings → Staff can send routine replies</strong> is ON; everything else needs a manager.</p>
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div class="lg:col-span-2 bg-white rounded-xl shadow-sm overflow-hidden">
             <table class="w-full text-sm">
@@ -1278,6 +1307,7 @@
           <span class="pill pill-${pri} shrink-0">${pri.toUpperCase()}</span>
         </div>
         <div class="mt-0.5 pl-6 text-[11px] text-slate-500 flex items-center gap-2 min-w-0"><span class="truncate">${esc(k.customer_first_name)} ${esc(k.customer_last_name || '')}</span><span class="font-mono text-slate-400 shrink-0">${esc(k.order_id || k.case_ref)}</span>${k.message_count > 1 ? `<span class="text-slate-400 shrink-0" title="${k.message_count} messages"><i class="far fa-comments"></i> ${k.message_count}</span>` : ''}</div>
+        ${k.staff_sent_at ? `<div class="pl-6 text-[10px] text-amber-800"><i class="fas fa-user-clock mr-1"></i>Sent by ${esc(k.staff_sent_by_name || 'staff')} without manager approval · ${fmtDateTime(k.staff_sent_at)}</div>` : ''}
         ${k.last_preview ? `<div class="pl-6 ticket-preview" title="${esc(k.last_preview)}"><span class="who">${k.last_direction === 'outbound' ? 'You: ' : ''}</span>${esc(k.last_preview)}</div>` : ''}
         <div class="mt-1 pl-6 flex items-center justify-between gap-2 text-[10px]">
           <span class="flex items-center gap-1 overflow-hidden whitespace-nowrap">${statusBadge(k.status)}${toneChip(k.tone)}${k.open_atoz ? '<span class="pill" style="background:#ede9fe;color:#6d28d9">A-to-Z</span>' : ''}${k.open_returns ? '<span class="pill" style="background:#cffafe;color:#155e75">RETURN</span>' : ''}${k.open_chargebacks ? '<span class="pill" style="background:#ffe4e6;color:#9f1239">CHARGEBACK</span>' : ''}${k.battery_flag ? '<span class="pill" style="background:#dc2626;color:#fff"><i class="fas fa-fire"></i></span>' : ''}${k.carrier_status ? `<span class="pill ${k.carrier_status === 'sla_breach' || k.carrier_update_due ? 'bg-sky-600 text-white' : 'bg-sky-100 text-sky-800'}" title="Carrier: ${esc(k.carrier_status.replace(/_/g, ' '))}${k.carrier_update_due ? ' — news for the customer' : ''}"><i class="fas fa-truck-fast"></i>${k.carrier_update_due ? ' NEWS' : ''}</span>` : k.carrier_issue ? '<span class="pill bg-amber-100 text-amber-800" title="Customer reports a delivery problem"><i class="fas fa-truck-fast"></i>?</span>' : ''}</span>
@@ -1488,12 +1518,16 @@
             <div id="prompt-summary" class="text-xs text-slate-500 mt-2">checking…</div>
             <a href="/settings/prompt" data-link class="inline-block mt-3 px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-pen mr-1"></i>Open editor</a>
           </div>` : ''}
+          <div class="bg-white rounded-xl shadow-sm p-5" id="approval-card">
+            <h2 class="font-semibold mb-2"><i class="fas fa-user-check mr-2 text-slate-400"></i>Who can send a reply</h2>
+            <div id="approval-body" class="text-sm text-slate-500">checking…</div>
+          </div>
           <div class="bg-white rounded-xl shadow-sm p-5">
             <h2 class="font-semibold mb-2"><i class="fas fa-paper-plane mr-2 text-slate-400"></i>Sending controls</h2>
             <div class="flex items-center justify-between py-2 border-b border-slate-100 text-sm"><span><strong>Auto-send</strong><br><span class="text-xs text-slate-500">AI sends replies without a human</span></span><span class="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 text-xs font-semibold">OFF — by design</span></div>
             <ul class="mt-3 text-sm space-y-1 text-slate-700">
-              <li><i class="fas fa-check text-emerald-600 mr-1"></i>Only <em>approved</em> drafts can be sent</li>
-              <li><i class="fas fa-check text-emerald-600 mr-1"></i>Drafts flagged <em>needs manager</em> require a manager's approval</li>
+              <li><i class="fas fa-check text-emerald-600 mr-1"></i>A reply is sent only if a manager approved it, or it is a <em>routine</em> reply from its author (setting above) that the server re-checks at send time</li>
+              <li><i class="fas fa-check text-emerald-600 mr-1"></i>Drafts flagged <em>needs manager</em> always require a manager's approval</li>
               <li><i class="fas fa-check text-emerald-600 mr-1"></i>Text must match the approved version exactly</li>
               <li><i class="fas fa-check text-emerald-600 mr-1"></i>All guardrail checks must pass</li>
               <li><i class="fas fa-check text-emerald-600 mr-1"></i>Seller Central / chargeback statements can never be emailed</li>
@@ -1533,6 +1567,7 @@
           </div>` : ''}
         </div>
       </section>`
+    loadApprovalCard()
     if (isManager) axios.get('/api/prompt').then(({ data }) => { const el = document.getElementById('prompt-summary'); if (!el) return; el.innerHTML = data.migration_needed ? `<span class="text-amber-700"><i class="fas fa-database mr-1"></i>Run <code>db/migrations/${esc(data.migration_needed)}</code> first</span>` : data.current && data.current.body.trim() ? `<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>v${data.current.version} in force</span> · ${data.current.body.trim().length} chars · saved ${dayjs(data.current.created_at).fromNow()} by ${esc(data.current.created_by_name || '—')}` : '<span class="text-slate-500">No custom prompt yet — the model gets the policy file and knowledge base only.</span>' }).catch(() => {})
     axios.get('/api/spapi/status').then(({ data }) => { const el = document.getElementById('spapi-state'); if (el) el.innerHTML = data.configured ? '<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>Configured</span>' : '<span class="text-amber-700"><i class="fas fa-circle-exclamation mr-1"></i>Not configured</span>' }).catch(() => {})
     document.getElementById('spapi-test')?.addEventListener('click', async (e) => {
@@ -1540,6 +1575,33 @@
       try { const { data } = await axios.post('/api/spapi/test'); out.innerHTML = data.ok ? `<span class="text-emerald-700">✓ ${esc(data.detail)}</span>` : `<span class="text-red-700">✗ ${esc(data.detail)}</span>` } catch (err) { out.innerHTML = `<span class="text-red-700">${esc(err.response?.data?.error || err.message)}</span>` }
       e.target.disabled = false
     })
+  }
+
+  // "Staff can send routine replies": manager toggle (default ON). Everyone sees the state; only a manager can change it.
+  async function loadApprovalCard() {
+    const el = document.getElementById('approval-body'); if (!el) return
+    let a
+    try { ;({ data: a } = await axios.get('/api/approval-settings')) } catch (err) { el.innerHTML = `<span class="text-red-700">${esc(err.response?.data?.error || err.message)}</span>`; return }
+    const draw = (a) => {
+      el.innerHTML = `
+        <label class="flex items-start gap-3 ${isManager ? 'cursor-pointer' : ''}">
+          <input type="checkbox" id="staff-routine-toggle" class="mt-1 h-4 w-4" ${a.staff_can_send_routine ? 'checked' : ''} ${isManager ? '' : 'disabled'}>
+          <span class="text-slate-800"><strong>Staff can send routine replies</strong>
+            <span class="ml-1 pill ${a.staff_can_send_routine ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'}">${a.staff_can_send_routine ? 'ON' : 'OFF'}</span><br>
+            <span class="text-xs text-slate-500">${a.staff_can_send_routine
+              ? 'An agent can send their <em>own</em> draft without a manager, but only if the server confirms at send time that the guardrail result is PASS with no warnings, needs-manager is false, and the case has no open A-to-Z, no open chargeback and no battery flag. Anything else needs Request approval and a manager.'
+              : 'Every reply needs a manager\'s approval before it can be sent.'}</span></span>
+        </label>
+        ${a.staff_can_send_routine && !a.migration_ok ? `<p class="mt-3 text-xs rounded-md bg-amber-50 border border-amber-200 text-amber-900 p-2"><i class="fas fa-database mr-1"></i>The setting is ON but staff sending is <strong>paused</strong>: run <code>db/migrations/0020_staff_routine_send.sql</code> in the Supabase SQL editor first (it adds the audit columns). Until then every reply needs a manager.</p>` : ''}
+        ${a.updated_at ? `<p class="mt-2 text-[11px] text-slate-400">Last changed ${fmtDateTime(a.updated_at)}${a.updated_by_name ? ' by ' + esc(a.updated_by_name) : ''}</p>` : '<p class="mt-2 text-[11px] text-slate-400">Default (never changed).</p>'}
+        ${isManager ? `<p class="mt-2 text-xs"><a href="/inbox/staff_sent" data-link class="text-sky-700 hover:underline"><i class="fas fa-user-clock mr-1"></i>Review replies sent by staff without manager approval →</a></p>` : '<p class="mt-2 text-[11px] text-slate-400">Only a manager can change this.</p>'}`
+      document.getElementById('staff-routine-toggle')?.addEventListener('change', async (e) => {
+        const want = e.target.checked; e.target.disabled = true
+        try { const { data } = await axios.put('/api/approval-settings', { staff_can_send_routine: want }); toast(`Staff can send routine replies: ${data.staff_can_send_routine ? 'ON' : 'OFF'}`); loadApprovalCard() }
+        catch (err) { toast(err.response?.data?.error || err.message, 'err'); e.target.checked = !want; e.target.disabled = false }
+      })
+    }
+    draw(a)
   }
 
   // ---------- CUSTOM SYSTEM PROMPT EDITOR (managers only; versioned; test before save) ----------

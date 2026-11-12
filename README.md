@@ -26,7 +26,7 @@ AI-assisted reply drafting for **Saigates Ltd** Amazon UK customer service.
 | Transparency — the API returns the exact payload sent to the model (`sent_to_model`) | ✅ |
 | **Gmail connection** — manager clicks *Connect Gmail*; OAuth (`gmail.readonly` + `gmail.send`); refresh token stored AES-256-GCM encrypted (`TOKEN_ENC_KEY`) | ✅ |
 | **Poller** — Worker cron `*/15 * * * *` reads Amazon buyer-seller threads (1-hour lookback), creates/updates cases, stores Gmail `internalDate` as the received time so the 24-hour deadline is exact. Read-only. Also *Sync now* button. | ✅ |
-| **Send to customer** — on **approved** drafts of Gmail-sourced cases only. Gates: approved status, manager approval honoured, on-screen text must equal approved text, server checks must pass, atomic one-send claim, logged with who/when. Confirmation modal shows recipient + text. The only code path that sends email. | ✅ |
+| **Send to customer** — Gmail-sourced cases only. Two routes through the gate: **(A)** a manager approved this exact text, or **(B)** Settings → *Staff can send routine replies* is ON and the server re-verifies at send time that the sender's **own** draft is routine (Phase 17). Either way: on-screen text must equal the saved text, server checks must pass, atomic one-send claim, logged with who/when. Confirmation modal shows recipient + text. The only code path that sends email. | ✅ |
 
 ## Privacy: what reaches OpenAI
 
@@ -478,3 +478,19 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 - Server gates on `/api/drafts/:id/send`: refuses draft/pending; requires `approved_by` to be a **manager**; the text sent must equal the approved text exactly (edits drop the draft back to `draft` and clear the approval).
 - `POST /api/drafts/:id/request-approval {note}` (anyone), `/withdraw-request`, `/approve` (manager), `/reject {reason}` (manager; reason shown on the draft), `GET /api/drafts/pending` (managers: all; agents: own).
 - Dashboard: "N replies waiting for your approval" panel with inline Approve / Reject and the full text; agents see their own requests and the outcome. Sidebar badge on Dashboard; "Awaiting approval" KPI. Bulk resolve skips cases with a pending request.
+
+## Phase 17 — "Staff can send routine replies" (Nov 2026)
+**Migration:** `db/migrations/0020_staff_routine_send.sql` — **run it in the Supabase SQL editor.** Until it is run, staff sending stays **paused** (fail closed: a send that could not be recorded is not allowed) and every reply needs a manager exactly as in Phase 16. Settings → *Database migrations* shows whether it has been applied.
+- **Setting** (Settings → *Who can send a reply*, managers change it, everyone can see it; stored in `app_settings` key `approval`; **default ON**; if the settings table cannot be read the app treats it as OFF). `GET/PUT /api/approval-settings` (PUT manager-only).
+- **ON:** an agent can send their **own** draft without a manager only if the server confirms **all** of these at the moment of sending (`src/approval.ts`, recomputed from the live case, thread and open Amazon notices, never trusted from a stored flag alone):
+  1. guardrail result is **PASS with no warnings** (fresh `serverChecks` run *and* the saved result);
+  2. `needs_manager` is false (stored flag *and* a fresh `decideManager` recompute: refund issued, legal wording, battery wording, refund > £15, Seller Central modes);
+  3. no open A-to-Z, no open chargeback, no `battery_flag` (case flags *and* open `amazon_events` notices).
+  Anything else: the agent must use **Request approval** and a manager approves, exactly as before. Seller Central / Amazon statements never qualify.
+- **OFF:** current behaviour, every draft needs a manager.
+- **Unchanged gates:** the approver's role is read from the `users` table at send time (a demoted or inactive approver is refused); the text on screen must equal the saved text; an edit after approval clears the approval; `/approve` stays manager-only; one send per draft (the claim also matches the exact text).
+- **Audit:** `drafts.sent_recorded_by/at` = who sent (every reply, both routes); `sent_without_manager_approval` = TRUE and `routine_check` (JSON snapshot of what the server verified) on staff-only sends. The draft footer shows *Sent by staff without manager approval*.
+- **Review filter (managers):** inbox folder / sidebar link **"Sent by staff without manager approval"** → `GET /api/cases?status=staff_sent` (403 for agents; empty before the migration). Rows show who sent and when.
+- **Rewrite box** ("Rewrite with these changes"): the rewrite goes through the same generation, `serverChecks` and `decideManager` as a new draft, always starts as a plain `draft` (never inherits an approval or a pending request), and the response/toast reports FAIL, warnings, needs-manager and "approval does not carry over". A rewrite that becomes `needs_manager` cannot be staff-sent.
+- `GET /api/drafts/:id/routine-check` tells the case screen whether to show **Send to customer** to the agent (UI hint only; `/send` re-checks). `POST /api/drafts/:id/record-sent` (Seller Central / manual) follows the same two routes.
+- **Tests:** `npm run test:unit` (42 incl. `tests/approval.test.ts`); `DATABASE_URL=<throwaway *_test db> npm run test:e2e -- tests/approval.e2e.ts` drives the real Hono app against Postgres with fake Gmail/OpenAI (10 sections: setting, send + audit, review filter, 10 blockers, other gates, manager route, OFF, rewrite, case changing between draft and send, migration missing).

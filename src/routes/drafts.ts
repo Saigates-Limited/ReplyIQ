@@ -4,6 +4,7 @@ import { requireManager, type Vars } from '../auth'
 import { generateDraft, serverChecks, MODEL, DRAFT_MODES, type CaseRow, type MessageRow, type EventRow, type DraftMode } from '../ai'
 import { loadActiveRules } from '../kb'
 import { loadCurrentPrompt } from '../systemPrompt'
+import { decideManager, getApprovalSettings, saveApprovalSettings, hasStaffSendCols, staffRoutineVerdict } from '../approval'
 
 export const draftsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
@@ -18,25 +19,7 @@ const DRAFT_JOINS = `
   LEFT JOIN users su ON su.id = d.sent_recorded_by
 `
 
-/** needs_manager: the model's flag OR any Step-0 / rule trigger we can verify from the data. Shared with the prompt test route. */
-export function decideManager(result: { needs_manager: boolean; urgency: string }, kase: CaseRow, messages: MessageRow[], findings: { rule: string }[], mode: DraftMode) {
-  const threadText = messages.filter((m) => m.direction === 'inbound').map((m) => m.body).join('\n').toLowerCase()
-  const legal = /\b(consumer rights act|trading standards|legal action|solicitor|chargeback|a[- ]to[- ]z|a-z claim|section 75|small claims|ombudsman)\b/.test(threadText)
-  const batterySafety = /\b(swollen|swelling|bulging|burning|smoke|smoking|very hot|too hot|overheat)/.test(threadText) && /\b(battery|charg|hot|burn|smoke|swell|bulg)/.test(threadText)
-  const reasons: string[] = []
-  if (kase.refund_issued === true) reasons.push('refund already issued')
-  if (kase.a_to_z_open === true) reasons.push('A-to-Z claim open')
-  if (kase.chargeback_open === true) reasons.push('chargeback open')
-  if (legal) reasons.push('customer mentions legal/A-to-Z/chargeback')
-  if (batterySafety) reasons.push('swollen/hot/burning battery')
-  if (kase.battery_flag === true) reasons.push('battery/heat flag on order')
-  if (findings.some((f) => f.rule === 'refund_over_15')) reasons.push('refund above £15')
-  if (mode !== 'customer') reasons.push('statement to Amazon / Seller Central')
-  if (result.needs_manager && !reasons.length) reasons.push('flagged by model')
-  const needsManager = result.needs_manager || reasons.length > 0
-  const urgency = batterySafety || kase.battery_flag === true ? 'high' : result.urgency
-  return { needsManager, reasons, urgency }
-}
+export { decideManager }
 
 async function loadDraft(sql: ReturnType<typeof getDb>, id: number) {
   const hasReq = (await draftCols(sql)).has('approval_requested_by')
@@ -156,11 +139,20 @@ draftsApi.post('/drafts/:id/revise', async (c) => {
     const r = await createDraft(c.env, sql, prev.case_id, user.id, prev.mode ?? 'customer', { previousDraft, guidance, previousDraftId: id })
     if ('error' in r) return c.json({ error: r.error }, r.status)
     await sql`UPDATE drafts SET status = 'discarded', updated_at = now() WHERE id = ${id} AND status IN ('draft','approved','pending_approval')`
-    // Guardrail result: the rewrite went through the same server checks + manager rules as a fresh draft. Tell the agent what changed.
+    // The rewrite went through exactly the same server checks + manager rules as a fresh draft (createDraft). It always starts as
+    // 'draft': it never inherits an approval or a pending request from the version it replaces. Report the outcome plainly.
     const nd: any = r.draft
-    const warn = nd.check_result === 'FAIL' ? 'The rewrite FAILS the server checks — fix the highlighted lines before approving.'
-      : nd.needs_manager && !prev.needs_manager ? `The rewrite now needs a manager (${nd.needs_manager_reason || 'policy rule'}).` : null
-    return c.json({ draft: r.draft, superseded: id, guardrail: warn }, 201)
+    const fnd = (nd.server_findings ?? []) as { severity: string; detail: string }[]
+    const fails = fnd.filter((f) => f.severity === 'fail'), warns = fnd.filter((f) => f.severity === 'warn')
+    const approvalCleared = prev.status === 'approved' || prev.status === 'pending_approval'
+    const notes: string[] = []
+    if (fails.length) notes.push(`The rewrite FAILS the server checks (${fails.map((f) => f.detail).join('; ')}) — fix it before sending.`)
+    if (warns.length) notes.push(`Guardrail warning${warns.length > 1 ? 's' : ''}: ${warns.map((f) => f.detail).join('; ')}.`)
+    if (nd.needs_manager) notes.push(`The rewrite needs a manager's approval (${nd.needs_manager_reason || 'policy rule'}).`)
+    if (approvalCleared) notes.push(prev.status === 'approved' ? 'The earlier approval does not carry over — the rewrite needs approval again.' : 'The earlier approval request was cancelled — request approval again for the rewrite.')
+    const check = { result: nd.check_result, warnings: warns.length, needs_manager: !!nd.needs_manager, needs_manager_reason: nd.needs_manager_reason || null, approval_cleared: approvalCleared, clean: !fails.length && !warns.length && !nd.needs_manager }
+    const warn = notes.length ? notes.join(' ') : null
+    return c.json({ draft: r.draft, superseded: id, guardrail: warn, check }, 201)
   } finally {
     await sql.end()
   }
@@ -198,11 +190,51 @@ draftsApi.patch('/drafts/:id', async (c) => {
   }
 })
 
+// ───────── Setting: "Staff can send routine replies" (manager-controlled, default ON) ─────────
+// GET: everyone signed in (the Settings page and the draft panel need to show it). PUT: managers only.
+draftsApi.get('/approval-settings', async (c) => {
+  const sql = getDb(c.env)
+  try {
+    const s = await getApprovalSettings(sql)
+    const migrated = await hasStaffSendCols(sql).catch(() => false)
+    const [u] = s.updated_by ? await sql`SELECT name FROM users WHERE id = ${s.updated_by}`.catch(() => [] as any[]) : []
+    return c.json({ staff_can_send_routine: s.staff_can_send_routine, effective: s.staff_can_send_routine && migrated, migration_ok: migrated, updated_at: s.updated_at, updated_by_name: u?.name ?? null })
+  } finally { await sql.end() }
+})
+draftsApi.put('/approval-settings', requireManager, async (c) => {
+  const user = c.get('user')
+  const body = (await c.req.json().catch(() => ({}))) as { staff_can_send_routine?: unknown }
+  if (typeof body.staff_can_send_routine !== 'boolean') return c.json({ error: 'staff_can_send_routine must be true or false' }, 400)
+  const sql = getDb(c.env)
+  try {
+    const next = await saveApprovalSettings(sql, { staff_can_send_routine: body.staff_can_send_routine }, user.id)
+    const migrated = await hasStaffSendCols(sql).catch(() => false)
+    return c.json({ staff_can_send_routine: next.staff_can_send_routine, effective: next.staff_can_send_routine && migrated, migration_ok: migrated })
+  } finally { await sql.end() }
+})
+
+// GET /api/drafts/:id/routine-check — can the signed-in user send THIS draft without a manager, right now? (UI hint only; /send re-checks.)
+draftsApi.get('/drafts/:id/routine-check', async (c) => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id)) return c.json({ error: 'Invalid id' }, 400)
+  const user = c.get('user')
+  const sql = getDb(c.env)
+  try {
+    const d = await loadDraft(sql, id)
+    if (!d) return c.json({ error: 'Draft not found' }, 404)
+    if (user.role === 'manager' || d.status !== 'draft') return c.json({ applies: false, eligible: false, reasons: [] })
+    const v = await staffRoutineVerdict(sql, user, d)
+    return c.json({ applies: true, eligible: v.ok, setting_on: v.enabled, reasons: v.reasons })
+  } finally { await sql.end() }
+})
+
 // ───────── Approval flow ─────────
 // draft ──(anyone: Request approval)──▶ pending_approval ──(manager: Approve)──▶ approved ──▶ sent
 //                                       └──(manager: Reject, with reason)──▶ draft
-// A manager may also approve a plain draft directly. Approval is ALWAYS an explicit manager action — even for the owner —
-// and nothing is ever sent without one. Editing after approval drops the draft back to 'draft'.
+// A manager may also approve a plain draft directly. Approval is an explicit manager action, with ONE exception: when Settings →
+// "Staff can send routine replies" is ON, an agent may send their OWN draft without a manager if the server re-verifies at send time
+// that it is routine (approval.ts: PASS with no warnings, needs_manager false, no open A-to-Z / chargeback, no battery_flag).
+// That path is audited (sent_without_manager_approval). Editing after approval drops the draft back to 'draft'.
 
 // POST /api/drafts/:id/request-approval {note?} — agent (or anyone) asks a manager to approve this text
 draftsApi.post('/drafts/:id/request-approval', async (c) => {
@@ -320,10 +352,18 @@ draftsApi.post('/drafts/:id/record-sent', async (c) => {
   try {
     const d = await loadDraft(sql, id)
     if (!d) return c.json({ error: 'Draft not found' }, 404)
-    if (d.status !== 'approved') return c.json({ error: 'Only approved drafts can be recorded as sent' }, 409)
+    // Same two routes as /send: a manager-approved draft, or (setting ON) the sender's own routine draft, re-verified now.
+    let routine: Record<string, unknown> | null = null
+    if (d.status === 'draft') {
+      const v = await staffRoutineVerdict(sql, user, d)
+      if (!v.ok) return c.json({ error: v.error.replace(/^This reply has not been approved\. /, 'This reply has not been approved, so it cannot be recorded as sent. '), reasons: v.reasons }, 403)
+      routine = v.check ?? {}
+    } else if (d.status !== 'approved') return c.json({ error: 'Only approved drafts can be recorded as sent' }, 409)
     const toAmazon = d.mode && d.mode !== 'customer'
     await sql.begin(async (tx) => {
-      await tx`UPDATE drafts SET status = 'sent', sent_recorded_by = ${user.id}, sent_recorded_at = now(), updated_at = now() WHERE id = ${id}`
+      const upd = await tx`UPDATE drafts SET status = 'sent', sent_recorded_by = ${user.id}, sent_recorded_at = now(), updated_at = now() WHERE id = ${id} AND status = ${d.status} AND draft_text = ${d.draft_text} RETURNING id`
+      if (!upd.length) throw new Error('The draft changed while it was being recorded — reload and try again')
+      if (routine) await tx`UPDATE drafts SET sent_without_manager_approval = TRUE, routine_check = ${tx.json(routine as any)} WHERE id = ${id}`
       await tx`INSERT INTO messages (case_id, direction, sender, body, kind) VALUES (${d.case_id}, 'outbound', ${(toAmazon ? 'Saigates → Amazon/Seller Central (' : 'Saigates Support (') + user.name + ')'}, ${d.draft_text}, ${toAmazon ? 'seller_central_copy' : 'message'})`
       if (toAmazon) {
         // Mark the matching open Amazon event as responded

@@ -8,6 +8,7 @@ import { REFUND_MAILBOX } from '../returns/refunds'
 /** Amazon only accepts buyer-messaging replies from the address registered on Seller Central. Every reply goes from that mailbox, whichever mailbox the copy arrived in. */
 const AMAZON_REPLY_MAILBOX = REFUND_MAILBOX
 import { serverChecks, redactPii, type CaseRow } from '../ai'
+import { staffRoutineVerdict } from '../approval'
 import { classifyTone } from '../tone'
 import { getAttachment, getMessage } from '../gmail'
 import { AMAZON_ATTACHMENT_RULES, checkAttachments } from '../attachments'
@@ -294,9 +295,12 @@ export const sendApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 // POST /api/drafts/:id/send — the ONLY place in the system that sends email.
 // Gates: approved status, manager approval honoured, text unchanged since approval, server checks clean,
 // one send per draft, Gmail-sourced case with a reply-to address.
-// One-step flow: {confirm_text, final_text?}. If final_text is given it is saved as the draft (re-checked), the draft is
-// approved by the sender (same gates as /approve: no FAIL findings; needs_manager → manager only) and then sent. Nothing
-// is skipped — the three steps simply happen in one request so staff press one button instead of three.
+// Two ways through the gate (see approval.ts):
+//   A. a MANAGER approved this exact text (Request approval → manager Approve), or
+//   B. Settings → "Staff can send routine replies" is ON and the server re-verifies at this moment that the sender's OWN draft is
+//      routine: guardrail PASS with no warnings, needs_manager false, no open A-to-Z / chargeback, no battery_flag. B is audited
+//      (sent_without_manager_approval) and shows up in the "Sent by staff without manager approval" folder.
+// In both cases the text on screen must equal the saved text, and any edit after approval has already cleared the approval.
 sendApi.post('/drafts/:id/send', async (c) => {
   const id = Number(c.req.param('id'))
   const user = c.get('user')
@@ -308,13 +312,20 @@ sendApi.post('/drafts/:id/send', async (c) => {
     if (d.status === 'sent') return c.json({ error: 'This draft has already been sent' }, 409)
     if (d.status === 'sending') return c.json({ error: 'Draft is already being sent' }, 409)
     if (d.status === 'discarded') return c.json({ error: 'This draft was discarded' }, 409)
-    // No one-step send. The reply must already be APPROVED BY A MANAGER, and the text on screen must be exactly the approved text.
+    // Who may send? Either (A) a manager approved this exact text, or (B) the "Staff can send routine replies" setting is ON and the SERVER
+    // re-verifies, right now, that this is a routine reply the sender wrote themselves (see approval.ts). Everything else needs a manager.
     if (d.status === 'pending_approval') return c.json({ error: 'This reply is waiting for a manager to approve it. It cannot be sent until then.' }, 403)
-    if (d.status === 'draft') return c.json({ error: user.role === 'manager' ? 'Approve the reply first, then send it.' : 'This reply has not been approved. Press "Request approval" and a manager will review it.' }, 403)
-    if (d.status !== 'approved') return c.json({ error: 'Only approved drafts can be sent' }, 403)
-    if (!d.approved_by) return c.json({ error: 'Manager approval missing' }, 403)
-    const [approver] = await sql`SELECT role FROM users WHERE id = ${d.approved_by}`
-    if (approver?.role !== 'manager') return c.json({ error: 'This reply was approved by a non-manager account. A manager must approve it before it can be sent.' }, 403)
+    let routine: Record<string, unknown> | null = null // set when route B is used: what the server verified
+    if (d.status === 'draft') {
+      const v = await staffRoutineVerdict(sql, user, d)
+      if (!v.ok) return c.json({ error: v.error, reasons: v.reasons }, 403)
+      routine = v.check ?? {}
+    } else {
+      if (d.status !== 'approved') return c.json({ error: 'Only approved drafts can be sent' }, 403)
+      if (!d.approved_by) return c.json({ error: 'Manager approval missing' }, 403)
+      const [approver] = await sql`SELECT role, is_active FROM users WHERE id = ${d.approved_by}`
+      if (approver?.role !== 'manager' || approver.is_active === false) return c.json({ error: 'This reply was approved by a non-manager account. A manager must approve it before it can be sent.' }, 403)
+    }
     const onScreen = String(body.confirm_text ?? body.final_text ?? '').trim()
     if (onScreen && onScreen !== String(d.draft_text).trim()) return c.json({ error: 'The text on screen differs from the approved reply. Save your edits (which withdraws the approval) and get it approved again.' }, 409)
     // Seller Central / chargeback statements are never emailed to the customer.
@@ -344,7 +355,8 @@ sendApi.post('/drafts/:id/send', async (c) => {
     const subject = lastInbound?.subject ? (/^re:/i.test(lastInbound.subject) ? lastInbound.subject : `Re: ${lastInbound.subject}`) : `Re: ${kase.subject}`
 
     // Atomically claim the send so two clicks cannot both go out
-    const claimed = await sql`UPDATE drafts SET status = 'sending', updated_at = now() WHERE id = ${id} AND status = 'approved' RETURNING id`
+    const fromStatus = d.status as 'draft' | 'approved'
+    const claimed = await sql`UPDATE drafts SET status = 'sending', updated_at = now() WHERE id = ${id} AND status = ${fromStatus} AND draft_text = ${d.draft_text} RETURNING id`
     if (!claimed.length) return c.json({ error: 'Draft is already being sent' }, 409)
 
     try {
@@ -353,7 +365,7 @@ sendApi.post('/drafts/:id/send', async (c) => {
       const conns = await listConnections(sql)
       const amazonConn = conns.find((x) => x.email_address.toLowerCase() === AMAZON_REPLY_MAILBOX && x.enabled)
       if (!amazonConn) {
-        await sql`UPDATE drafts SET status = 'approved', updated_at = now() WHERE id = ${id} AND status = 'sending'`
+        await sql`UPDATE drafts SET status = ${fromStatus}, updated_at = now() WHERE id = ${id} AND status = 'sending'`
         return c.json({ error: `Replies to Amazon customers must go from ${AMAZON_REPLY_MAILBOX} (the address registered on Seller Central). That mailbox is not connected or is paused — connect it under Gmail, or copy the text into Seller Central and Mark as sent.` }, 409)
       }
       const { token, conn } = await accessToken(c.env, sql, amazonConn.id)
@@ -368,6 +380,8 @@ sendApi.post('/drafts/:id/send', async (c) => {
       })
       await sql.begin(async (tx) => {
         await tx`UPDATE drafts SET status = 'sent', sent_via = 'gmail', sent_gmail_message_id = ${sent.id}, sent_recorded_by = ${user.id}, sent_recorded_at = now(), updated_at = now() WHERE id = ${id}`
+        // Route B only: record that no manager approved this reply, who sent it, and what the server verified (migration 0020 columns; checked before we got here).
+        if (routine) await tx`UPDATE drafts SET sent_without_manager_approval = TRUE, routine_check = ${tx.json(routine as any)} WHERE id = ${id}`
         await tx`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at)
                  VALUES (${kase.id}, 'outbound', ${'Saigates Support (' + user.name + ')'}, ${d.draft_text}, ${subject}, ${sent.id}, now())`
         await tx`UPDATE cases SET status = 'awaiting_customer', updated_at = now() WHERE id = ${kase.id} AND status = 'open'`
@@ -376,7 +390,7 @@ sendApi.post('/drafts/:id/send', async (c) => {
       await sql`UPDATE carrier_cases SET customer_update_due = FALSE WHERE case_id = ${kase.id} AND customer_update_due`.catch(() => {})
       return c.json({ ok: true, gmail_message_id: sent.id })
     } catch (e: any) {
-      await sql`UPDATE drafts SET status = 'approved', updated_at = now() WHERE id = ${id} AND status = 'sending'`
+      await sql`UPDATE drafts SET status = ${fromStatus}, updated_at = now() WHERE id = ${id} AND status = 'sending'`
       return c.json({ error: `Send failed: ${e.message}` }, 502)
     }
   } finally {

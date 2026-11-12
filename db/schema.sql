@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS drafts (
   sent_recorded_at TIMESTAMPTZ,
   sent_via        TEXT,                                 -- gmail | manual
   sent_gmail_message_id TEXT,
+  sent_without_manager_approval BOOLEAN NOT NULL DEFAULT FALSE,   -- 0020: staff sent a routine reply themselves (Settings → Staff can send routine replies)
+  routine_check   JSONB,                                -- 0020: what the server verified at send time
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );

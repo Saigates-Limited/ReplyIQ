@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
 import { TONES, TONE_META } from '../tone'
+import { hasStaffSendCols } from '../approval'
 
 export const casesApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
@@ -105,17 +106,22 @@ const EVENT_FLAGS = `
   (SELECT MIN(e.deadline_at) FROM amazon_events e WHERE e.case_id = cases.id AND e.deadline_at IS NOT NULL AND e.status IN ('open','info_requested'))::timestamptz AS event_deadline
 `
 
-// GET /api/cases?status=open|awaiting_customer|update_customer|resolved|all|archived  (default "active" = open, i.e. everything not resolved)
+// GET /api/cases?status=open|awaiting_customer|update_customer|resolved|all|archived|staff_sent (manager)  (default "active" = open, i.e. everything not resolved)
 // Folders: Open (= every unresolved case, incl. awaiting/update) · Awaiting customer · Update customer · Resolved · Archive
 casesApi.get('/', async (c) => {
   const sql = getDb(c.env)
   const status = c.req.query('status') ?? 'active'
+  if (status === 'staff_sent' && c.get('user').role !== 'manager') return c.json({ error: 'Managers only' }, 403)
   try {
     // Queue order (agreed with Saigates): overdue first, then Red (angry) / Purple (dispute), then everyone else by deadline.
     // "Deadline" is the earlier of the 24h customer-reply deadline and any open Amazon event deadline.
     const has = await hasArchiveCols(sql)
     const carrierCols = await hasCarrierCols(sql)
     const DEADLINE_EXPR = deadlineExpr(await hasStatusChangedCol(sql))
+    // "Sent by staff without manager approval" (migration 0020). Before the migration nothing can be in it, so the folder is simply empty.
+    const hasStaff = await hasStaffSendCols(sql)
+    const STAFF_AT = hasStaff ? `(SELECT MAX(d.sent_recorded_at) FROM drafts d WHERE d.case_id = cases.id AND d.sent_without_manager_approval)` : `NULL::timestamptz`
+    const STAFF_BY = hasStaff ? `(SELECT su.name FROM drafts d JOIN users su ON su.id = d.sent_recorded_by WHERE d.case_id = cases.id AND d.sent_without_manager_approval ORDER BY d.sent_recorded_at DESC LIMIT 1)` : `NULL::text`
     const rows = await sql.unsafe(
       mailboxExpr(await hasMailboxCol(sql), spapiExpr(await hasSpapiCols(sql), archExpr(has, `SELECT ${CASE_COLUMNS_Q}, u.name AS assigned_to_name, ${EVENT_FLAGS},
               (SELECT COUNT(*) FROM messages m WHERE m.case_id = cases.id AND m.kind <> 'event')::int AS message_count,
@@ -124,13 +130,16 @@ casesApi.get('/', async (c) => {
               (SELECT status FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_status,
               (SELECT needs_manager FROM drafts d WHERE d.case_id = cases.id AND d.status <> 'discarded' ORDER BY created_at DESC LIMIT 1) AS latest_draft_needs_manager,
               ${carrierCols ? CARRIER_EXPR : CARRIER_NULL}
+              ${STAFF_AT} AS staff_sent_at, ${STAFF_BY} AS staff_sent_by_name,
               ${DEADLINE_EXPR} AS effective_deadline
        FROM cases LEFT JOIN users u ON u.id = cases.assigned_to
        WHERE CASE WHEN $1 = 'archived' THEN cases.archived_at IS NOT NULL
+                  WHEN $1 = 'staff_sent' THEN ${STAFF_AT} IS NOT NULL
                   WHEN $1 = 'all' THEN cases.archived_at IS NULL
                   WHEN $1 IN ('active','open') THEN cases.status <> 'resolved' AND cases.archived_at IS NULL
                   ELSE cases.status = $1 AND cases.archived_at IS NULL END
        ORDER BY
+         CASE WHEN $1 = 'staff_sent' THEN ${STAFF_AT} END DESC NULLS LAST,  -- review folder: newest staff send first
          CASE WHEN cases.status = 'resolved' THEN 1 ELSE 0 END,  -- in "All", resolved cases sink to the bottom
          CASE WHEN cases.status <> 'resolved' AND ${DEADLINE_EXPR} < now() THEN 0 ELSE 1 END,
          CASE WHEN cases.tone IN ('angry','dispute') THEN 0 ELSE 1 END,

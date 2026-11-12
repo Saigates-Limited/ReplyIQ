@@ -131,6 +131,7 @@ app.get('/api/settings/migrations', async (c) => {
       ['0011_knowledge_base', 'table', 'kb_rules'], ['0012_system_prompt', 'table', 'system_prompt_versions'], ['0013_multi_mailbox', 'column', 'gmail_connection', 'label'],
       ['0014_templates_and_kb_seed', 'table', 'reply_templates'], ['0015_carrier_desk', 'table', 'carrier_cases'], ['0016_draft_revisions', 'column', 'drafts', 'revision_of'],
       ['0017_returns_and_refunds', 'table', 'returns'], ['0018_returns_archive_guard', 'trigger', 'trg_returns_no_delete'],
+      ['0019_draft_approval_requests', 'column', 'drafts', 'approval_requested_by'], ['0020_staff_routine_send', 'column', 'drafts', 'sent_without_manager_approval'],
     ]
     const tables = new Set((await sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`).map((r: any) => r.table_name))
     const cols = new Set((await sql`SELECT table_name || '.' || column_name AS k FROM information_schema.columns WHERE table_schema = 'public'`).map((r: any) => r.k))
