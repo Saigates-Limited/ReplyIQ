@@ -363,6 +363,9 @@ CREATE TABLE IF NOT EXISTS public.reply_templates (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 0021: databases where reply_templates existed before 0014 never got these (CREATE TABLE IF NOT EXISTS skipped it)
+ALTER TABLE public.reply_templates ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE public.reply_templates ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES public.users(id) ON DELETE SET NULL;
 DROP TRIGGER IF EXISTS trg_reply_templates_updated ON public.reply_templates;
 CREATE TRIGGER trg_reply_templates_updated BEFORE UPDATE ON public.reply_templates FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 DROP TRIGGER IF EXISTS trg_reply_templates_no_delete ON public.reply_templates;

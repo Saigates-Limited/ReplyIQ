@@ -361,6 +361,11 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
   if (toAmazon ? /\b(product review|seller feedback|leave (?:a |us )?(?:review|feedback)|star rating|5[- ]star|five[- ]star)\b/.test(d) : /\b(review|feedback|star rating|5[- ]star|five[- ]star)\b/.test(d))
     add('never_reviews', 'fail', 'Mentions reviews or feedback')
 
+  // ── Never mention statutory, consumer or legal rights (Saigates: not at all, even when the customer raises them).
+  // Applies to customer replies AND statements to Amazon. A FAIL blocks Approve and Send, so the wording cannot slip back in.
+  if (/\bstatutory\b|\bconsumer rights?\b|\blegal rights?\b/.test(d))
+    add('never_statutory_rights', 'fail', 'Mentions statutory, consumer or legal rights (never use this wording; reply on the facts and next steps)')
+
   // ── Never "no rights" / "no claim"
   if (/\bno (?:legal )?rights?\b|\bno (?:valid )?claim\b|\bnot entitled\b/.test(d)) add('never_no_rights', 'fail', 'Tells the customer they have no rights / no claim')
 

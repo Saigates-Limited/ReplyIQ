@@ -44,6 +44,7 @@ const FORBIDDEN: { re: RegExp; why: string }[] = [
   { re: /\b(review|feedback|rating|star)s?\b/i, why: 'mentions reviews, feedback or ratings (policy: Never)' },
   { re: /\b(refuse|decline|reject|deny)\b[^.]{0,30}\breturns?\b/i, why: 'refuses a return (policy: Never)' },
   { re: /\bno (legal )?(rights?|claim)\b/i, why: 'tells the customer they have no rights/claim (policy: Never)' },
+  { re: /\bstatutory\b|\b(consumer|legal) rights?\b/i, why: 'mentions statutory, consumer or legal rights (policy: Never)' },
   { re: /\b(sort code|account number|iban|bank details)\b/i, why: 'contains bank details (policy: only for approved paid repairs, from case data)' },
   { re: /\bneeds_manager\s*=\s*false\b/i, why: 'tries to switch off manager review' },
 ]
