@@ -297,7 +297,7 @@ export const sendApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 // one send per draft, Gmail-sourced case with a reply-to address.
 // Two ways through the gate (see approval.ts):
 //   A. a MANAGER approved this exact text (Request approval → manager Approve), or
-//   B. Settings → "Staff can send routine replies" is ON and the server re-verifies at this moment that the sender's OWN draft is
+//   B. Settings → "Staff can send routine replies" is ON and the server re-verifies at this moment that the draft is
 //      routine: guardrail PASS with no warnings, needs_manager false, no open A-to-Z / chargeback, no battery_flag. B is audited
 //      (sent_without_manager_approval) and shows up in the "Sent by staff without manager approval" folder.
 // In both cases the text on screen must equal the saved text, and any edit after approval has already cleared the approval.

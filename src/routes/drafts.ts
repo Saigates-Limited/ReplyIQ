@@ -232,7 +232,7 @@ draftsApi.get('/drafts/:id/routine-check', async (c) => {
 // draft ──(anyone: Request approval)──▶ pending_approval ──(manager: Approve)──▶ approved ──▶ sent
 //                                       └──(manager: Reject, with reason)──▶ draft
 // A manager may also approve a plain draft directly. Approval is an explicit manager action, with ONE exception: when Settings →
-// "Staff can send routine replies" is ON, an agent may send their OWN draft without a manager if the server re-verifies at send time
+// "Staff can send routine replies" is ON, any active agent may send an eligible draft (own, a colleague's or system-made) without a manager if the server re-verifies at send time
 // that it is routine (approval.ts: PASS with no warnings, needs_manager false, no open A-to-Z / chargeback, no battery_flag).
 // That path is audited (sent_without_manager_approval). Editing after approval drops the draft back to 'draft'.
 
@@ -352,7 +352,7 @@ draftsApi.post('/drafts/:id/record-sent', async (c) => {
   try {
     const d = await loadDraft(sql, id)
     if (!d) return c.json({ error: 'Draft not found' }, 404)
-    // Same two routes as /send: a manager-approved draft, or (setting ON) the sender's own routine draft, re-verified now.
+    // Same two routes as /send: a manager-approved draft, or (setting ON) any active agent sending an eligible routine draft, re-verified now.
     let routine: Record<string, unknown> | null = null
     if (d.status === 'draft') {
       const v = await staffRoutineVerdict(sql, user, d)

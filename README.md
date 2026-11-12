@@ -482,7 +482,7 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 ## Phase 17 — "Staff can send routine replies" (Nov 2026)
 **Migration:** `db/migrations/0020_staff_routine_send.sql` — **run it in the Supabase SQL editor.** Until it is run, staff sending stays **paused** (fail closed: a send that could not be recorded is not allowed) and every reply needs a manager exactly as in Phase 16. Settings → *Database migrations* shows whether it has been applied.
 - **Setting** (Settings → *Who can send a reply*, managers change it, everyone can see it; stored in `app_settings` key `approval`; **default ON**; if the settings table cannot be read the app treats it as OFF). `GET/PUT /api/approval-settings` (PUT manager-only).
-- **ON:** an agent can send their **own** draft without a manager only if the server confirms **all** of these at the moment of sending (`src/approval.ts`, recomputed from the live case, thread and open Amazon notices, never trusted from a stored flag alone):
+- **ON:** any **active agent** can send **any** eligible draft without a manager (their own, a colleague's, or one created by the system; the sender is recorded as `sent_recorded_by`) only if the server confirms **all** of these at the moment of sending (`src/approval.ts`, recomputed from the live case, thread and open Amazon notices, never trusted from a stored flag alone):
   1. guardrail result is **PASS with no warnings** (fresh `serverChecks` run *and* the saved result);
   2. `needs_manager` is false (stored flag *and* a fresh `decideManager` recompute: refund issued, legal wording, battery wording, refund > £15, Seller Central modes);
   3. no open A-to-Z, no open chargeback, no `battery_flag` (case flags *and* open `amazon_events` notices).

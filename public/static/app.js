@@ -972,7 +972,7 @@
     app.innerHTML = `
       <section id="staff-section">
         <h1 class="text-2xl font-bold mb-1">Staff</h1>
-        <p class="text-sm text-slate-500 mb-4">Managers can approve any draft, including those flagged <em>needs manager</em>. Agents can send their own routine replies only while <strong>Settings → Staff can send routine replies</strong> is ON; everything else needs a manager.</p>
+        <p class="text-sm text-slate-500 mb-4">Managers can approve any draft, including those flagged <em>needs manager</em>. Active agents can send routine replies (their own, a colleague's or system-made) only while <strong>Settings → Staff can send routine replies</strong> is ON; everything else needs a manager.</p>
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div class="lg:col-span-2 bg-white rounded-xl shadow-sm overflow-hidden">
             <table class="w-full text-sm">
@@ -1526,7 +1526,7 @@
             <h2 class="font-semibold mb-2"><i class="fas fa-paper-plane mr-2 text-slate-400"></i>Sending controls</h2>
             <div class="flex items-center justify-between py-2 border-b border-slate-100 text-sm"><span><strong>Auto-send</strong><br><span class="text-xs text-slate-500">AI sends replies without a human</span></span><span class="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 text-xs font-semibold">OFF — by design</span></div>
             <ul class="mt-3 text-sm space-y-1 text-slate-700">
-              <li><i class="fas fa-check text-emerald-600 mr-1"></i>A reply is sent only if a manager approved it, or it is a <em>routine</em> reply from its author (setting above) that the server re-checks at send time</li>
+              <li><i class="fas fa-check text-emerald-600 mr-1"></i>A reply is sent only if a manager approved it, or it is a <em>routine</em> reply sent by an active agent (setting above) that the server re-checks at send time</li>
               <li><i class="fas fa-check text-emerald-600 mr-1"></i>Drafts flagged <em>needs manager</em> always require a manager's approval</li>
               <li><i class="fas fa-check text-emerald-600 mr-1"></i>Text must match the approved version exactly</li>
               <li><i class="fas fa-check text-emerald-600 mr-1"></i>All guardrail checks must pass</li>

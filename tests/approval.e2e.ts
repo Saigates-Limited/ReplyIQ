@@ -133,11 +133,27 @@ async function main() {
   console.log('5. Other gates stay')
   const b = await mk(kul.id)
   await login(raj.id)
-  r = await send(b.id); assert.equal(r.status, 403); assert.match(r.data.error, /only send your own draft/); step("another agent cannot send Kuldeep's draft")
+  const cb = sentCount(); r = await send(b.id); assert.equal(r.status, 200, JSON.stringify(r.data)); assert.equal(sentCount(), cb + 1)
+  st = await state(b.id); assert.equal(st.status, 'sent'); assert.equal(st.flag, true); assert.equal(st.sent_recorded_by, raj.id)
+  assert.equal((await sql`SELECT created_by FROM drafts WHERE id = ${b.id}`)[0].created_by, kul.id)
+  step("a colleague's eligible draft: Raj sends Kuldeep's draft; sender recorded as Raj, flagged, in the review filter")
+  const sys = await mk(kul.id); await sql`UPDATE drafts SET created_by = NULL WHERE id = ${sys.id}`
+  r = await api('GET', `/api/drafts/${sys.id}/routine-check`); assert.equal(r.data.eligible, true, JSON.stringify(r.data))
+  const cs = sentCount(); r = await send(sys.id); assert.equal(r.status, 200, JSON.stringify(r.data)); assert.equal(sentCount(), cs + 1)
+  st = await state(sys.id); assert.equal(st.flag, true); assert.equal(st.sent_recorded_by, raj.id)
+  step('a system-made draft (no author): Raj sends it; sender recorded as Raj, flagged')
+  const sysBad = await mk(kul.id, { kase: { battery_flag: true } }); await sql`UPDATE drafts SET created_by = NULL WHERE id = ${sysBad.id}`
+  const cs2 = sentCount(); r = await send(sysBad.id); assert.equal(r.status, 403); assert.equal(sentCount(), cs2); assert.equal((await state(sysBad.id)).status, 'draft')
+  step("a colleague's/system draft that is NOT eligible (battery_flag) still needs a manager")
+  await sql`UPDATE users SET is_active = FALSE WHERE id = ${raj.id}`
+  const dd = await mk(kul.id); const cd = sentCount(); r = await send(dd.id); assert.ok([401, 403].includes(r.status), String(r.status)); assert.equal(sentCount(), cd); assert.equal((await state(dd.id)).status, 'draft')
+  await sql`UPDATE users SET is_active = TRUE WHERE id = ${raj.id}`
+  step('a deactivated agent cannot send (users table), even an eligible draft')
+  const b2 = await mk(kul.id)
   await login(kul.id)
-  r = await send(b.id, CLEAN + ' EDITED'); const c11 = sentCount(); assert.equal(r.status, 409); assert.equal(sentCount(), c11); assert.equal((await state(b.id)).status, 'draft')
+  r = await send(b2.id, CLEAN + ' EDITED'); const c11 = sentCount(); assert.equal(r.status, 409); assert.equal(sentCount(), c11); assert.equal((await state(b2.id)).status, 'draft')
   step('text on screen must match the saved text (409), nothing sent')
-  r = await api('POST', `/api/drafts/${b.id}/approve`); assert.equal(r.status, 403); step('/approve is still manager-only for agents')
+  r = await api('POST', `/api/drafts/${b2.id}/approve`); assert.equal(r.status, 403); step('/approve is still manager-only for agents')
   // approved by a non-manager account (users-table check)
   const c1 = await mk(kul.id, { status: 'approved' }); await sql`UPDATE drafts SET approved_by=${raj.id}, approved_at=now() WHERE id=${c1.id}`
   r = await send(c1.id); assert.equal(r.status, 403); assert.match(r.data.error, /non-manager/); step('approved by an agent account → refused (checked against the users table)')
@@ -170,7 +186,7 @@ async function main() {
   st = await state(f.id); assert.equal(st.flag, false); assert.equal(st.sent_recorded_by, kul.id)
   step('pending → manager approves → agent sends; recorded as manager-approved (not in the staff-sent filter), sender still recorded')
   await login(mgr.id)
-  r = await api('GET', '/api/cases?status=staff_sent'); assert.equal(r.data.cases.length, 1)
+  r = await api('GET', '/api/cases?status=staff_sent'); assert.equal(r.data.cases.length, 3); assert.deepEqual(r.data.cases.map((x: any) => x.staff_sent_by_name).sort(), ['Kuldeep Kaur', 'Raj', 'Raj'])
 
   console.log('7. OFF = current behaviour')
   r = await api('PUT', '/api/approval-settings', { staff_can_send_routine: false }); assert.equal(r.status, 200); assert.equal(r.data.staff_can_send_routine, false)

@@ -2,7 +2,7 @@
 //
 //  • decideManager  – which drafts need a manager (moved here from routes/drafts.ts so tests can import it without Hono).
 //  • "Staff can send routine replies" – a manager setting (app_settings key 'approval', default ON). When ON, an agent may approve
-//    AND send their OWN draft in one step, but only if the server confirms every condition below at the moment of sending.
+//    AND send any eligible draft (their own, a colleague's, or one made by the system) in one step, but only if the server confirms every condition below at the moment of sending.
 //    Anything else goes through Request approval and a manager, exactly as before. When OFF every draft needs a manager.
 import type { getDb } from './db'
 import { serverChecks, type CaseRow, type MessageRow, type DraftMode, type ServerFinding } from './ai'
@@ -122,7 +122,7 @@ export async function routineEligibility(sql: Sql, d: { case_id: number } & Rout
 export type Verdict = { ok: boolean; enabled: boolean; error: string; reasons: string[]; check?: Record<string, unknown> }
 const ASK = 'Press "Request approval" and a manager will review it.'
 
-/** May this signed-in user send this un-approved draft on their own authority? Role and active flag are read from the users table, not the session. */
+/** May this signed-in user send this un-approved draft on their own authority? Any active agent may send any eligible draft; the sender is recorded (sent_recorded_by). Role and active flag are read from the users table, not the session. */
 export async function staffRoutineVerdict(sql: Sql, user: { id: number }, d: any): Promise<Verdict> {
   const [u] = await sql`SELECT role, is_active FROM users WHERE id = ${user.id}`
   if (!u || u.is_active === false) return { ok: false, enabled: false, error: 'Your account is not active.', reasons: ['Account not active'] }
@@ -131,8 +131,6 @@ export async function staffRoutineVerdict(sql: Sql, user: { id: number }, d: any
   if (!s.staff_can_send_routine) return { ok: false, enabled: false, error: `This reply has not been approved. ${ASK}`, reasons: ['Staff sending of routine replies is switched off — every reply needs a manager'] }
   if (!(await hasStaffSendCols(sql)))
     return { ok: false, enabled: true, error: `Direct sending is paused until database migration 0020 has been run (it records who sent without a manager). ${ASK}`, reasons: ['Migration 0020 has not been run'] }
-  if (d.created_by == null || d.created_by !== user.id)
-    return { ok: false, enabled: true, error: `You can only send your own draft without a manager. ${ASK}`, reasons: ['Only the person who created a draft can send it without a manager'] }
   const e = await routineEligibility(sql, d)
   if (!e.eligible) return { ok: false, enabled: true, error: `This reply needs a manager's approval: ${e.reasons.join('; ')}. ${ASK}`, reasons: e.reasons }
   return { ok: true, enabled: true, error: '', reasons: [], check: e.snapshot }
