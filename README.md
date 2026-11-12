@@ -26,7 +26,7 @@ AI-assisted reply drafting for **Saigates Ltd** Amazon UK customer service.
 | Transparency — the API returns the exact payload sent to the model (`sent_to_model`) | ✅ |
 | **Gmail connection** — manager clicks *Connect Gmail*; OAuth (`gmail.readonly` + `gmail.send`); refresh token stored AES-256-GCM encrypted (`TOKEN_ENC_KEY`) | ✅ |
 | **Poller** — Worker cron `*/15 * * * *` reads Amazon buyer-seller threads (1-hour lookback), creates/updates cases, stores Gmail `internalDate` as the received time so the 24-hour deadline is exact. Read-only. Also *Sync now* button. | ✅ |
-| **Send to customer** — Gmail-sourced cases only. Two routes through the gate: **(A)** a manager approved this exact text, or **(B)** Settings → *Staff can send routine replies* is ON and the server re-verifies at send time that the sender's **own** draft is routine (Phase 17). Either way: on-screen text must equal the saved text, server checks must pass, atomic one-send claim, logged with who/when. Confirmation modal shows recipient + text. The only code path that sends email. | ✅ |
+| **Send to customer** — Gmail-sourced cases only. Two routes through the gate: **(A)** a manager approved this exact text, or **(B)** Settings → *Staff can send routine replies* is ON and the server re-verifies at send time that the draft is routine (any active agent may send any eligible draft, including a colleague's or a system-made one; the sender is recorded) (Phase 17). Either way: on-screen text must equal the saved text, server checks must pass, atomic one-send claim, logged with who/when. Confirmation modal shows recipient + text. The only code path that sends email. | ✅ |
 
 ## Privacy: what reaches OpenAI
 
@@ -173,7 +173,7 @@ curl "http://localhost:3000/__scheduled?cron=*/15+*+*+*+*"   # fire the cron loc
 
 ## Phase 8 — Amazon notices, trackers, tone, tickets, draft modes, UI v2 (LIVE 2026-10-12)
 
-**Production:** https://replyiq.saigateslimited.workers.dev · Worker version `79cc8590-ba71-4bb0-b7ee-092f32a35666` (deployed 2026-11-11 with `npm run deploy` = `wrangler deploy`; Hyperdrive + 15-min cron; never `wrangler pages deploy`, replyiq.pages.dev is a retired redirect) · DB migrations applied through **0008 + 0008b** (verified: 4 triggers + status CHECK + archive columns).
+**Production:** https://replyiq.saigateslimited.workers.dev · Worker version `42f5d919-3a29-4441-aced-b03a6cb01fbd` (deployed 2026-11-11 with `npm run deploy` = `wrangler deploy`; Hyperdrive + 15-min cron; never `wrangler pages deploy`, replyiq.pages.dev is a retired redirect) · DB migrations applied through **0008 + 0008b** (verified: 4 triggers + status CHECK + archive columns).
 
 ### Features
 - Gmail sync reads customer messages **and** Amazon notices: `atoz-guarantee-no-reply@`, `cb-seller-notification@`, `donotreply@amazon.com` (Return authorisation notifications + "Your email to <Name>" Seller Central reply copies).
