@@ -16,6 +16,8 @@ export const AMAZON_ATTACHMENT_RULES = {
   allowedLabel: 'PDF, JPG/JPEG, PNG, XML',
 }
 
+export type OutgoingFile = { filename: string; mimeType: string; base64: string; size: number }
+
 export type AttachmentMeta = {
   filename: string
   mime_type: string
@@ -73,4 +75,22 @@ export function assertNoAttachmentContent(payload: unknown): void {
   if (DATA_URI.test(s)) throw new Error('Refusing to call OpenAI: payload contains a data: URI (attachment content)')
   if (BASE64_RUN.test(s)) throw new Error('Refusing to call OpenAI: payload contains a long base64 run (attachment content)')
   if (BINARY_MAGIC.test(s)) throw new Error('Refusing to call OpenAI: payload contains binary file markers')
+}
+
+/** Validate files attached to an outgoing reply. Returns the decoded size so the 10 MB rule uses real bytes. */
+export function parseOutgoingAttachments(input: unknown): { list: OutgoingFile[] } | { error: string } {
+  if (input == null) return { list: [] }
+  if (!Array.isArray(input)) return { error: 'attachments must be a list' }
+  const list: OutgoingFile[] = []
+  for (const a of input as any[]) {
+    const filename = String(a?.filename ?? '').replace(/[\r\n"\\/]+/g, ' ').trim().slice(0, 120)
+    const base64 = String(a?.base64 ?? '').replace(/^data:[^,]*,/, '').replace(/\s+/g, '')
+    const mimeType = String(a?.mime_type ?? a?.mimeType ?? '').toLowerCase().split(';')[0].trim() || 'application/octet-stream'
+    if (!filename || !base64) return { error: 'Each attachment needs a file name and content' }
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) return { error: `"${filename}" could not be read` }
+    const size = Math.floor((base64.length * 3) / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0)
+    list.push({ filename, mimeType, base64, size })
+  }
+  const chk = checkAttachments(list.map((f) => ({ filename: f.filename, mime_type: f.mimeType, size_bytes: f.size })))
+  return chk.ok ? { list } : { error: chk.problems.join('; ') }
 }

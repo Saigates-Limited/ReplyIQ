@@ -774,8 +774,10 @@
           ${locked || seller ? '' : `<select id="template-pick" class="field-input py-0.5 text-xs mt-0" style="width:auto;max-width:13rem" title="Replace the text with a ready-made reply"><option value="">Template…</option></select>`}
           ${locked ? '' : '<button id="revise-toggle" class="hover:text-slate-800"><i class="fas fa-wand-magic-sparkles mr-1"></i>Ask AI to change</button>'}
           <button id="copy-draft-btn" class="hover:text-slate-800"><i class="far fa-copy mr-1"></i>Copy</button>
+          ${!locked && isGmailReply ? '<button id="attach-btn" class="hover:text-slate-800" title="PDF, JPG, PNG or XML · up to 5 files · 10 MB in total"><i class="fas fa-paperclip mr-1"></i>Attach file</button><input id="attach-input" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.xml,application/pdf,image/jpeg,image/png" class="hidden">' : ''}
           <span id="draft-save-indicator"></span>
         </div>
+        <div id="attach-list" class="mt-1 flex flex-wrap gap-1.5"></div>
         ${locked ? '' : `
         <div id="revise-panel" class="hidden mt-2 rounded-md border border-indigo-200 bg-indigo-50/60 p-2">
           <textarea id="revise-text" class="field-input text-sm mt-0" rows="2" placeholder="What should change? e.g. Shorter. Offer the repair first. Ask for a photo of the screen."></textarea>
@@ -793,6 +795,8 @@
         </details>
       </div>`
   }
+
+  const pendingFiles = new Map() // draft id → files waiting to be sent with it
 
   function wireDraftEditor(caseId, kase, d) {
     const text = document.getElementById('draft-text')
@@ -814,6 +818,31 @@
       return d
     }
     // Send with a 5-second Undo instead of a confirmation dialog. Nothing leaves until the countdown ends.
+    // Files to send with this reply. Kept per draft so they survive a re-render; read as base64 in the browser.
+    const files = pendingFiles.get(d.id) || []; pendingFiles.set(d.id, files)
+    const fileSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'
+    function renderFiles() {
+      const box = document.getElementById('attach-list'); if (!box) return
+      box.innerHTML = files.map((f, i) => `<span class="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs"><i class="far fa-file-pdf text-red-600"></i>${esc(f.filename)} <span class="text-slate-400">${fileSize(f.size)}</span><button data-unattach="${i}" class="ml-1 text-slate-400 hover:text-red-700" title="Remove">&times;</button></span>`).join('')
+      box.querySelectorAll('[data-unattach]').forEach((b) => (b.onclick = () => { files.splice(Number(b.dataset.unattach), 1); renderFiles() }))
+    }
+    async function addFiles(list) {
+      for (const file of list) {
+        const ext = (file.name.split('.').pop() || '').toLowerCase()
+        if (!['pdf', 'jpg', 'jpeg', 'png', 'xml'].includes(ext)) { toast(`${file.name}: Amazon accepts PDF, JPG, PNG or XML only`, 'err'); continue }
+        if (files.length >= 5) { toast('Amazon allows at most 5 files per message', 'err'); break }
+        const total = files.reduce((n, f) => n + f.size, 0) + file.size
+        if (total * 1.37 > 10 * 1048576) { toast('Amazon limits a message to 10 MB including files', 'err'); break }
+        const base64 = await new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] || ''); r.onerror = bad; r.readAsDataURL(file) })
+        files.push({ filename: file.name, mime_type: file.type || (ext === 'pdf' ? 'application/pdf' : ext === 'png' ? 'image/png' : ext === 'xml' ? 'application/xml' : 'image/jpeg'), size: file.size, base64 })
+      }
+      renderFiles()
+    }
+    const attachInput = document.getElementById('attach-input')
+    document.getElementById('attach-btn')?.addEventListener('click', () => attachInput?.click())
+    attachInput?.addEventListener('change', () => { addFiles([...attachInput.files]); attachInput.value = '' })
+    renderFiles()
+
     function sendWithUndo(prepare) {
       const area = document.getElementById('action-area'); const before = area.innerHTML
       let left = 5, cancelled = false
@@ -825,8 +854,10 @@
         area.innerHTML = '<span class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Sending…</span>'
         try {
           const saved = await prepare()
-          const { data: sr } = await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: saved.draft_text.trim(), resolve: resolveAfterSend }, { timeout: 60000 })
-          toast(sentMessage('Reply sent to the customer', sr), sr?.resolve_blocked?.length ? 'err' : 'ok'); refresh()
+          const attachments = files.map(({ filename, mime_type, base64 }) => ({ filename, mime_type, base64 }))
+          const { data: sr } = await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: saved.draft_text.trim(), resolve: resolveAfterSend, attachments }, { timeout: 90000 })
+          pendingFiles.delete(d.id)
+          toast(sentMessage(attachments.length ? `Reply sent with ${attachments.length} file${attachments.length > 1 ? 's' : ''}` : 'Reply sent to the customer', sr), sr?.resolve_blocked?.length ? 'err' : 'ok'); refresh()
         } catch (err) { fail(err); refresh() }
       }
     }

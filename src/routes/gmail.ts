@@ -12,8 +12,8 @@ import { staffRoutineVerdict } from '../approval'
 import { statusAfterSend } from '../caseOps'
 import { applyCleared } from '../contextCheck'
 import { classifyTone } from '../tone'
-import { getAttachment, getMessage } from '../gmail'
-import { AMAZON_ATTACHMENT_RULES, checkAttachments } from '../attachments'
+import { getAttachment, getMessage, listAttachments } from '../gmail'
+import { AMAZON_ATTACHMENT_RULES, checkAttachments, parseOutgoingAttachments } from '../attachments'
 
 // Protected (mounted behind requireAuth)
 export const gmailApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -306,7 +306,10 @@ export const sendApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 sendApi.post('/drafts/:id/send', async (c) => {
   const id = Number(c.req.param('id'))
   const user = c.get('user')
-  const body = (await c.req.json().catch(() => ({}))) as { confirm_text?: string; final_text?: string; staff_notes?: string; resolve?: boolean }
+  const body = (await c.req.json().catch(() => ({}))) as { confirm_text?: string; final_text?: string; staff_notes?: string; resolve?: boolean; attachments?: unknown }
+  // Files to send with the reply (base64 from the browser). Same Amazon rules as the upload check: PDF/JPG/PNG/XML, ≤5 files, ≤10 MB.
+  const files = parseOutgoingAttachments(body.attachments)
+  if ('error' in files) return c.json({ error: files.error }, 400)
   const sql = getDb(c.env)
   try {
     let [d] = await sql`SELECT * FROM drafts WHERE id = ${id}`
@@ -379,14 +382,22 @@ sendApi.post('/drafts/:id/send', async (c) => {
         inReplyTo: lastInbound?.rfc_message_id || undefined,
         references: refs.map((r) => r.rfc_message_id).join(' ') || undefined,
         threadId: kase.gmail_thread_id,
+        attachments: files.list,
       })
+      // Where Gmail stored the files we just sent, so they show on the thread and open like customer attachments.
+      const sentFiles = files.list.length ? await getMessage(token, sent.id).then(listAttachments).catch(() => []) : []
       let after: Awaited<ReturnType<typeof statusAfterSend>> | null = null
       await sql.begin(async (tx) => {
         await tx`UPDATE drafts SET status = 'sent', sent_via = 'gmail', sent_gmail_message_id = ${sent.id}, sent_recorded_by = ${user.id}, sent_recorded_at = now(), updated_at = now() WHERE id = ${id}`
         // Route B only: record that no manager approved this reply, who sent it, and what the server verified (migration 0020 columns; checked before we got here).
         if (routine) await tx`UPDATE drafts SET sent_without_manager_approval = TRUE, routine_check = ${tx.json(routine as any)} WHERE id = ${id}`
-        await tx`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at)
-                 VALUES (${kase.id}, 'outbound', ${'Saigates Support (' + user.name + ')'}, ${d.draft_text}, ${subject}, ${sent.id}, now())`
+        const [om] = await tx`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at)
+                 VALUES (${kase.id}, 'outbound', ${'Saigates Support (' + user.name + ')'}, ${d.draft_text}, ${subject}, ${sent.id}, now()) RETURNING id`
+        for (const f of files.list) {
+          const g = sentFiles.find((x) => x.filename === f.filename)
+          await tx`INSERT INTO attachments (message_id, case_id, filename, mime_type, size_bytes, source, gmail_message_id, gmail_attachment_id, uploaded_by)
+                   VALUES (${om.id}, ${kase.id}, ${f.filename}, ${f.mimeType}, ${f.size}, 'gmail', ${sent.id}, ${g?.attachmentId ?? null}, ${user.id})`
+        }
         after = await statusAfterSend(tx as any, kase.id, !!body.resolve, id)
       })
       // Carrier desk: the customer has now heard the latest carrier news
@@ -451,3 +462,4 @@ gmailCallback.get('/auth/google/callback', async (c) => {
     await sql.end()
   }
 })
+

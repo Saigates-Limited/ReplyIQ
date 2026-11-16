@@ -280,24 +280,35 @@ const b64wrap = (s: string) => btoa(unescape(encodeURIComponent(s))).replace(/(.
  *  which keeps paragraphs and line breaks; plain-text-only mail is shown there as one unbroken block. */
 export async function sendReply(
   token: string,
-  args: { from: string; to: string; subject: string; body: string; inReplyTo?: string; references?: string; threadId: string }
+  args: { from: string; to: string; subject: string; body: string; inReplyTo?: string; references?: string; threadId: string; attachments?: OutgoingAttachment[] }
 ) {
   const boundary = `=_riq_${crypto.randomUUID().replace(/-/g, '')}`
+  const files = args.attachments ?? []
+  const outer = files.length ? `=_riqm_${crypto.randomUUID().replace(/-/g, '')}` : ''
   const headers = [
     `From: Customer Support Team <${args.from}>`,
     `To: ${args.to}`,
     `Subject: ${encodeHeaderUtf8(args.subject)}`,
     'MIME-Version: 1.0',
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    outer ? `Content-Type: multipart/mixed; boundary="${outer}"` : `Content-Type: multipart/alternative; boundary="${boundary}"`,
   ]
   if (args.inReplyTo) headers.push(`In-Reply-To: ${args.inReplyTo}`)
   if (args.references) headers.push(`References: ${args.references}`)
   const text = args.body.replace(/\r\n/g, '\n').trim()
-  const parts = [
+  let parts = [
     `--${boundary}`, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', b64wrap(text),
     `--${boundary}`, 'Content-Type: text/html; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', b64wrap(textToHtml(text)),
     `--${boundary}--`, '',
   ]
+  if (outer) {
+    // multipart/mixed: the text/HTML alternative first, then each file (already base64 from the browser).
+    const fileParts = files.flatMap((f) => {
+      const name = encodeHeaderUtf8(f.filename)
+      return [`--${outer}`, `Content-Type: ${f.mimeType}; name="${name}"`, `Content-Disposition: attachment; filename="${name}"`,
+        'Content-Transfer-Encoding: base64', '', f.base64.replace(/\s+/g, '').replace(/(.{76})/g, '$1\r\n')]
+    })
+    parts = [`--${outer}`, `Content-Type: multipart/alternative; boundary="${boundary}"`, '', ...parts, ...fileParts, `--${outer}--`, '']
+  }
   const raw = headers.join('\r\n') + '\r\n\r\n' + parts.join('\r\n')
   const rawUrl = btoa(unescape(encodeURIComponent(raw))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
   return gapi<{ id: string; threadId: string }>(token, '/messages/send', {
@@ -306,6 +317,8 @@ export async function sendReply(
     body: JSON.stringify({ raw: rawUrl, threadId: args.threadId }),
   })
 }
+
+export type OutgoingAttachment = { filename: string; mimeType: string; base64: string }
 
 /** A plain business email (carrier investigations and chases). New thread unless threadId is given.
  *  `from` may be a verified "Send mail as" alias of the connected Gmail account (e.g. ecom@saigates.com);
