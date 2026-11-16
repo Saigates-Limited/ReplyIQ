@@ -85,6 +85,9 @@ invoicesApi.get('/prefill', async (c) => {
       try { contact = await fetchOrderContact(env, k.order_id) } catch (e: any) {
         contactError = e?.status === 403 ? 'Amazon refused the buyer name and address: the ReplyIQ app needs the personal-data (PII) role in Seller Central (Apps & Services > Develop apps). Paste the Order details page instead.' : `Amazon did not return the address (${e?.message || 'error'}). Paste the Order details page instead.`
       }
+      // Without the restricted address role Amazon sends only town, county and postcode (no street, no recipient name).
+      if (contact && contact.addressLines.length && !contact.fields.some((f) => /^addressLine1:text/.test(f)) && !contactError)
+        contactError = 'Amazon only gave the town, county and postcode, not the street (the ReplyIQ app needs Amazon\'s Tax Invoicing or Direct-to-Consumer Shipping role for that). Paste the Order details page below to fill in the full address.'
       if (contact && !contact.addressLines.length && !contactError) contactError = 'Amazon returned no address for this order (the app may be missing the personal-data role). Paste the Order details page instead.'
     }
     const existing = k.order_id ? await sql`SELECT id, invoice_number, created_at FROM invoices WHERE order_id = ${k.order_id} ORDER BY id DESC` : []

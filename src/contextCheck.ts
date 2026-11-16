@@ -20,6 +20,8 @@ export const CONTEXT_RULES: Record<string, string> = {
     'Does the reply quote an amount the customer must PAY us (for example a repair price)? The order price, amounts the customer mentioned, refund amounts, or Amazon fees do NOT count.',
   safety_stop_using:
     'Should THIS reply tell the customer to stop using and charging the phone? It applies only if the phone is still with the customer and the conversation shows a current swelling, heat, smoke or lifting-screen risk. It does NOT apply if the phone has already been returned to or received by us, or the customer has said it was sent back.',
+  never_ask_id:
+    'Does the reply ask the customer to send or show a document proving who THEY are (passport, driving licence, photo ID, proof of address)? Identifying the phone, parcel or order (e.g. writing the order ID on the packing slip) does NOT count.',
   price_mismatch:
     'Does the reply quote a price for the customer to PAY us that differs from the approved repair price? The order price or amounts the customer mentioned do NOT count.',
 }

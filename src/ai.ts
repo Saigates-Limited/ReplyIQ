@@ -326,7 +326,8 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
     add('never_ask_phone', 'fail', 'Asks for the customer phone number')
   if (asks(/\b(your|an?) email address\b|\bemail (?:us|me) (?:at|on)\b/))
     add('never_ask_email', 'fail', 'Asks for an email address')
-  if (asks(/\b(photo id|photographic id|passport|driving licence|driver'?s licen[cs]e|proof of (?:id|identity|address)|id document|identification)\b/))
+  // "identification" alone is too broad ("for easy identification of your phone"): only a person's ID counts.
+  if (asks(/\b(photo id|photographic id|passport|driving licence|driver'?s licen[cs]e|proof of (?:id|identity|address)|id document|identity document|(?:photo|photographic|personal|valid|official|government|a form of|your) identification|identification (?:document|card|papers))\b/))
     add('never_ask_id', 'fail', 'Asks for an ID document')
   if (asks(/\b(give us a call|call us|phone us|ring us|call our (?:team|office|line)|telephone us)\b/))
     add('never_ask_call', 'fail', 'Asks the customer to call us')

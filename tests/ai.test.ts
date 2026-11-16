@@ -87,3 +87,13 @@ test('reviews rule: everyday "review" passes, review/feedback asks fail', () => 
     'We would appreciate it if you could review us on Amazon.'])
     assert.equal(rule(bad), true, bad)
 })
+
+test('ID rule: identifying the phone is not asking for ID (RIQ case 347)', () => {
+  const rules = (t: string) => serverChecks(t, kase).map((f: any) => f.rule)
+  assert.ok(!rules("Don't forget to write your Amazon Order ID in the packing slip for easy identification of your phone.").includes('never_ask_id'))
+  assert.ok(!rules('Please include the order number for identification of the parcel.').includes('never_ask_id'))
+  assert.ok(rules('Please send a copy of your photo ID.').includes('never_ask_id'))
+  assert.ok(rules('We will need proof of address before we continue.').includes('never_ask_id'))
+  assert.ok(rules('Please provide a form of identification such as a passport.').includes('never_ask_id'))
+  assert.ok(rules('Please send your identification document.').includes('never_ask_id'))
+})
