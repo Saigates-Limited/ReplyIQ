@@ -5,6 +5,7 @@ import { generateDraft, serverChecks, MODEL, DRAFT_MODES, type CaseRow, type Mes
 import { loadActiveRules } from '../kb'
 import { loadCurrentPrompt } from '../systemPrompt'
 import { statusAfterSend } from '../caseOps'
+import { reviewInContext, openFindings, CONTEXT_RULES } from '../contextCheck'
 import { decideManager, getApprovalSettings, saveApprovalSettings, hasStaffSendCols, staffRoutineVerdict } from '../approval'
 
 export const draftsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -42,6 +43,13 @@ async function draftCols(sql: Sql) {
   return draftColsCache
 }
 
+/** Thread used by the context check on a manual edit (same privacy filter as drafting: no refund-email entries). */
+async function threadFor(sql: Sql, caseId: number) {
+  return sql<MessageRow[]>`SELECT m.direction, m.body, m.sent_at, m.sender, m.kind, m.id FROM messages m
+    WHERE m.case_id = ${caseId} AND NOT EXISTS (SELECT 1 FROM amazon_events e WHERE e.id = m.event_id AND e.kind = 'refund_initiated') AND m.sender IS DISTINCT FROM 'Amazon Refund'
+    ORDER BY m.sent_at ASC`
+}
+
 /** Generate + store one draft for a case. Shared by "Generate draft" and "Request changes" (revision). */
 async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: number, mode: DraftMode,
   revision?: { previousDraft: string; guidance: string; previousDraftId: number } | null) {
@@ -64,7 +72,8 @@ async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: numb
   const kbRules = await loadActiveRules(sql, mode)
   const promptVersion = await loadCurrentPrompt(sql)
   const { result, payload, kbRuleIds } = await generateDraft(env, kase, messages, { events, mode, kbRules, customPrompt: promptVersion?.body, revision })
-  const findings = serverChecks(result.draft, kase, mode)
+  const stored = await reviewInContext(env, kase, messages, events, result.draft, serverChecks(result.draft, kase, mode))
+  const findings = openFindings(stored)
   const checkResult = findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS'
   const { needsManager, reasons, urgency } = decideManager(result, kase, messages, findings, mode)
 
@@ -78,7 +87,7 @@ async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: numb
                         needs_manager, needs_manager_reason, urgency, model, created_by, mode
                         ${hasKb ? sql`, kb_rule_ids` : sql``} ${hasSpv ? sql`, system_prompt_version` : sql``} ${hasRev ? sql`, revision_of, agent_guidance` : sql``})
     VALUES (${caseId}, ${result.lane}, ${result.draft}, ${result.draft}, ${result.staff_notes}, ${checkResult},
-            ${sql.json([])}, ${sql.json(findings)},
+            ${sql.json([])}, ${sql.json(stored as any)},
             ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${MODEL}, ${userId}, ${mode}
             ${hasKb ? sql`, string_to_array(${kbRuleIds.join(',')}, ',')::int[]` : sql``} ${hasSpv ? sql`, ${promptVersion?.version ?? null}` : sql``}
             ${hasRev ? sql`, ${revision?.previousDraftId ?? null}, ${revision?.guidance ?? null}` : sql``})
@@ -174,15 +183,23 @@ draftsApi.patch('/drafts/:id', async (c) => {
     if (!text) return c.json({ error: 'Draft text cannot be empty' }, 400)
     const notes = typeof body.staff_notes === 'string' ? body.staff_notes : existing.staff_notes
     const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${existing.case_id}`
-    const findings = serverChecks(text, kase, (existing.mode as DraftMode) || 'customer')
-    const serverFail = findings.some((f) => f.severity === 'fail')
+    const raw = serverChecks(text, kase, (existing.mode as DraftMode) || 'customer')
+    // Context check only when a judgement rule fired (one extra model call); otherwise this stays instant.
+    const findings = raw.some((f) => CONTEXT_RULES[f.rule]) ? await reviewInContext(c.env, kase, await threadFor(sql, existing.case_id), [], text, raw) : raw
+    const open = openFindings(findings)
+    const serverFail = open.some((f) => f.severity === 'fail')
+    // "Refund above £15" is the one manager reason that comes from these checks. If the edited text no longer offers one
+    // (or the context check cleared it) and it was the only reason, the draft no longer needs a manager.
+    const dropRefundReason = existing.needs_manager && String(existing.needs_manager_reason || '').trim() === 'refund above £15' && !open.some((f) => f.rule === 'refund_over_15')
     // Editing an approved draft un-approves it — approval must be re-given on the final text.
     await sql`
-      UPDATE drafts SET draft_text = ${text}, staff_notes = ${notes}, server_findings = ${sql.json(findings)},
+      UPDATE drafts SET draft_text = ${text}, staff_notes = ${notes}, server_findings = ${sql.json(findings as any)},
         check_result = ${serverFail ? 'FAIL' : 'PASS'},
         status = CASE WHEN status = 'approved' THEN 'draft' ELSE status END,
         approved_by = CASE WHEN status = 'approved' THEN NULL ELSE approved_by END,
         approved_at = CASE WHEN status = 'approved' THEN NULL ELSE approved_at END,
+        needs_manager = CASE WHEN ${dropRefundReason} THEN FALSE ELSE needs_manager END,
+        needs_manager_reason = CASE WHEN ${dropRefundReason} THEN NULL ELSE needs_manager_reason END,
         edited_by = ${user.id}, edited_at = now(), updated_at = now()
       WHERE id = ${id}`
     return c.json({ draft: await loadDraft(sql, id) })

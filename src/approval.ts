@@ -5,6 +5,7 @@
 //    AND send any eligible draft (their own, a colleague's, or one made by the system) in one step, but only if the server confirms every condition below at the moment of sending.
 //    Anything else goes through Request approval and a manager, exactly as before. When OFF every draft needs a manager.
 import type { getDb } from './db'
+import { applyCleared } from './contextCheck'
 import { serverChecks, type CaseRow, type MessageRow, type DraftMode, type ServerFinding } from './ai'
 
 type Sql = ReturnType<typeof getDb>
@@ -76,7 +77,7 @@ export type Eligibility = { eligible: boolean; reasons: string[]; findings: Serv
 /** Every condition is recomputed here from the draft text and the live case: nothing is trusted from a stored flag alone. */
 export function evaluateRoutine(i: RoutineInput): Eligibility {
   const mode = ((i.draft.mode as DraftMode) || 'customer') as DraftMode
-  const findings = serverChecks(i.draft.draft_text, i.kase, mode)
+  const findings = applyCleared(serverChecks(i.draft.draft_text, i.kase, mode), (i.draft as any).server_findings, i.draft.draft_text)
   const reasons: string[] = []
   const add = (r: string) => { if (!reasons.includes(r)) reasons.push(r) }
 

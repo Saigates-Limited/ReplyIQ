@@ -6,6 +6,7 @@
 //   GET  /api/prompt/preview?body=   exact assembled system message (policy + custom + KB) for the given/current text
 //   POST /api/prompt/test            {body, case_id, mode} → generates a THROWAWAY draft with the unsaved text.
 //                                    Nothing is stored; the result is returned to the browser only.
+import { reviewInContext, openFindings } from '../contextCheck'
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
@@ -127,7 +128,8 @@ promptApi.post('/test', async (c) => {
 
     // Generate with the NEW text, and (for comparison) note what the current version is.
     const { result, kbRuleIds } = await generateDraft(c.env, kase, messages, { events, mode, kbRules, customPrompt: text })
-    const findings = serverChecks(result.draft, kase, mode)
+    const all = await reviewInContext(c.env, kase, messages, events, result.draft, serverChecks(result.draft, kase, mode))
+    const findings = openFindings(all)
     const { needsManager, reasons, urgency } = decideManager(result, kase, messages, findings, mode)
     return c.json({
       test: true,
@@ -141,7 +143,7 @@ promptApi.post('/test', async (c) => {
       needs_manager_reason: reasons.join('; '),
       urgency,
       check_result: findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS',
-      server_findings: findings,
+      server_findings: all,
       kb_rule_ids: kbRuleIds,
       compared_to_version: current?.version ?? null,
     })

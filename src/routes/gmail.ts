@@ -10,6 +10,7 @@ const AMAZON_REPLY_MAILBOX = REFUND_MAILBOX
 import { serverChecks, redactPii, type CaseRow } from '../ai'
 import { staffRoutineVerdict } from '../approval'
 import { statusAfterSend } from '../caseOps'
+import { applyCleared } from '../contextCheck'
 import { classifyTone } from '../tone'
 import { getAttachment, getMessage } from '../gmail'
 import { AMAZON_ATTACHMENT_RULES, checkAttachments } from '../attachments'
@@ -348,7 +349,7 @@ sendApi.post('/drafts/:id/send', async (c) => {
 
     const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${d.case_id}`
     if (!kase.gmail_thread_id || !kase.customer_reply_to) return c.json({ error: 'This case did not come from Gmail, so it cannot be sent from here. Use "Mark as sent" after sending in Amazon.' }, 400)
-    const fails = serverChecks(d.draft_text, kase).filter((f) => f.severity === 'fail')
+    const fails = applyCleared(serverChecks(d.draft_text, kase), d.server_findings, d.draft_text).filter((f) => f.severity === 'fail')
     if (fails.length) return c.json({ error: 'Draft fails checks: ' + fails.map((f) => f.detail).join('; ') }, 422)
 
     const [lastInbound] = await sql`SELECT subject, rfc_message_id FROM messages WHERE case_id = ${kase.id} AND direction = 'inbound' ORDER BY sent_at DESC LIMIT 1`

@@ -723,6 +723,7 @@
     const server = d.server_findings || []
     const fails = server.filter((f) => f.severity === 'fail')
     const warns = server.filter((f) => f.severity === 'warn')
+    const cleared = server.filter((f) => f.severity === 'cleared')
     const locked = d.status === 'sent'
     const seller = d.mode && d.mode !== 'customer'
     // Flow: edits are saved by whichever button you press. Routine reply → Send (5 s Undo). Needs a manager → Request approval;
@@ -763,6 +764,7 @@
           ${d.check_result === 'PASS' ? '<span class="text-emerald-700 font-semibold"><i class="fas fa-circle-check mr-1"></i>Checks passed</span>' : '<span class="text-red-700 font-semibold"><i class="fas fa-circle-xmark mr-1"></i>Check failed</span>'}
           ${d.urgency === 'high' ? '<span class="text-red-700 font-semibold"><i class="fas fa-bolt mr-1"></i>High urgency</span>' : ''}
           ${reasons.length ? `<span class="text-violet-700"><i class="fas fa-user-shield mr-1"></i>Manager approval: ${reasons.map(esc).join(' · ')}</span>` : ''}
+          ${cleared.length ? `<span class="text-slate-500 cursor-help" title="${esc(cleared.map((f) => f.detail).join('\n'))}"><i class="fas fa-circle-check mr-1"></i>${cleared.length} flag${cleared.length > 1 ? 's' : ''} cleared in context</span>` : ''}
           <span class="ml-auto text-slate-400 cursor-help" title="${esc(info)}"><i class="fas fa-circle-info"></i></span>
         </div>
         ${fails.length || warns.length ? `<ul id="check-panel" class="mb-2 rounded-md border ${fails.length ? 'border-red-200 bg-red-50 text-red-800' : 'border-amber-200 bg-amber-50 text-amber-800'} px-3 py-2 text-sm space-y-0.5">
