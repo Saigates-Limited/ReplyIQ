@@ -4,6 +4,7 @@ import { requireManager, type Vars } from '../auth'
 import { generateDraft, serverChecks, MODEL, DRAFT_MODES, type CaseRow, type MessageRow, type EventRow, type DraftMode } from '../ai'
 import { loadActiveRules } from '../kb'
 import { loadCurrentPrompt } from '../systemPrompt'
+import { statusAfterSend } from '../caseOps'
 import { decideManager, getApprovalSettings, saveApprovalSettings, hasStaffSendCols, staffRoutineVerdict } from '../approval'
 
 export const draftsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -348,6 +349,7 @@ draftsApi.post('/drafts/:id/unapprove', async (c) => {
 draftsApi.post('/drafts/:id/record-sent', async (c) => {
   const id = Number(c.req.param('id'))
   const user = c.get('user')
+  const resolve = !!((await c.req.json().catch(() => ({}))) as { resolve?: boolean }).resolve
   const sql = getDb(c.env)
   try {
     const d = await loadDraft(sql, id)
@@ -360,6 +362,7 @@ draftsApi.post('/drafts/:id/record-sent', async (c) => {
       routine = v.check ?? {}
     } else if (d.status !== 'approved') return c.json({ error: 'Only approved drafts can be recorded as sent' }, 409)
     const toAmazon = d.mode && d.mode !== 'customer'
+    let after: Awaited<ReturnType<typeof statusAfterSend>> | null = null
     await sql.begin(async (tx) => {
       const upd = await tx`UPDATE drafts SET status = 'sent', sent_recorded_by = ${user.id}, sent_recorded_at = now(), updated_at = now() WHERE id = ${id} AND status = ${d.status} AND draft_text = ${d.draft_text} RETURNING id`
       if (!upd.length) throw new Error('The draft changed while it was being recorded — reload and try again')
@@ -372,10 +375,10 @@ draftsApi.post('/drafts/:id/record-sent', async (c) => {
                    response_text = ${d.draft_text}, responded_by = ${user.id}, responded_at = now(), updated_at = now()
                  WHERE case_id = ${d.case_id} AND kind = ANY(string_to_array(${evKind.join(',')}, ',')) AND status IN ('open','requested','info_requested')`
       }
-      await tx`UPDATE cases SET status = 'awaiting_customer', updated_at = now() WHERE id = ${d.case_id} AND status = 'open'`
+      after = await statusAfterSend(tx as any, d.case_id, resolve, id)
     })
     if (!toAmazon) await sql`UPDATE carrier_cases SET customer_update_due = FALSE WHERE case_id = ${d.case_id} AND customer_update_due`.catch(() => {})
-    return c.json({ draft: await loadDraft(sql, id) })
+    return c.json({ draft: await loadDraft(sql, id), case_status: (after as any)?.status, resolve_blocked: (after as any)?.blocked ?? [] })
   } finally {
     await sql.end()
   }

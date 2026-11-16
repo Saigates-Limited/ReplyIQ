@@ -9,6 +9,7 @@ import { REFUND_MAILBOX } from '../returns/refunds'
 const AMAZON_REPLY_MAILBOX = REFUND_MAILBOX
 import { serverChecks, redactPii, type CaseRow } from '../ai'
 import { staffRoutineVerdict } from '../approval'
+import { statusAfterSend } from '../caseOps'
 import { classifyTone } from '../tone'
 import { getAttachment, getMessage } from '../gmail'
 import { AMAZON_ATTACHMENT_RULES, checkAttachments } from '../attachments'
@@ -304,7 +305,7 @@ export const sendApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 sendApi.post('/drafts/:id/send', async (c) => {
   const id = Number(c.req.param('id'))
   const user = c.get('user')
-  const body = (await c.req.json().catch(() => ({}))) as { confirm_text?: string; final_text?: string; staff_notes?: string }
+  const body = (await c.req.json().catch(() => ({}))) as { confirm_text?: string; final_text?: string; staff_notes?: string; resolve?: boolean }
   const sql = getDb(c.env)
   try {
     let [d] = await sql`SELECT * FROM drafts WHERE id = ${id}`
@@ -378,17 +379,18 @@ sendApi.post('/drafts/:id/send', async (c) => {
         references: refs.map((r) => r.rfc_message_id).join(' ') || undefined,
         threadId: kase.gmail_thread_id,
       })
+      let after: Awaited<ReturnType<typeof statusAfterSend>> | null = null
       await sql.begin(async (tx) => {
         await tx`UPDATE drafts SET status = 'sent', sent_via = 'gmail', sent_gmail_message_id = ${sent.id}, sent_recorded_by = ${user.id}, sent_recorded_at = now(), updated_at = now() WHERE id = ${id}`
         // Route B only: record that no manager approved this reply, who sent it, and what the server verified (migration 0020 columns; checked before we got here).
         if (routine) await tx`UPDATE drafts SET sent_without_manager_approval = TRUE, routine_check = ${tx.json(routine as any)} WHERE id = ${id}`
         await tx`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at)
                  VALUES (${kase.id}, 'outbound', ${'Saigates Support (' + user.name + ')'}, ${d.draft_text}, ${subject}, ${sent.id}, now())`
-        await tx`UPDATE cases SET status = 'awaiting_customer', updated_at = now() WHERE id = ${kase.id} AND status = 'open'`
+        after = await statusAfterSend(tx as any, kase.id, !!body.resolve, id)
       })
       // Carrier desk: the customer has now heard the latest carrier news
       await sql`UPDATE carrier_cases SET customer_update_due = FALSE WHERE case_id = ${kase.id} AND customer_update_due`.catch(() => {})
-      return c.json({ ok: true, gmail_message_id: sent.id })
+      return c.json({ ok: true, gmail_message_id: sent.id, case_status: (after as any)?.status, resolve_blocked: (after as any)?.blocked ?? [] })
     } catch (e: any) {
       await sql`UPDATE drafts SET status = ${fromStatus}, updated_at = now() WHERE id = ${id} AND status = 'sending'`
       return c.json({ error: `Send failed: ${e.message}` }, 502)

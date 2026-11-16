@@ -287,6 +287,8 @@
 
   // ---------- CASE SCREEN ----------
   async function renderCase(id) {
+    if (renderCase.lastId !== id) resolveAfterSend = false  // the Resolve dot never carries over to another case
+    renderCase.lastId = id
     const target = document.getElementById('inbox-detail') || app
     target.innerHTML = `<p class="text-slate-500 p-4"><i class="fas fa-spinner fa-spin mr-2"></i>Loading case…</p>`
     let data
@@ -752,8 +754,8 @@
               ${d.status === 'approved' ? `
                 <span class="block w-full text-right text-[11px] text-emerald-700" style="flex-basis:100%"><i class="fas fa-circle-check mr-1"></i>Approved by ${esc(d.approved_by_name || 'manager')}${d.approved_at ? ' · ' + fmtDateTime(d.approved_at) : ''}. Editing the text withdraws the approval.</span>
                 ${isManager ? `<button id="reject-btn" class="px-3 py-1.5 rounded-md text-sm text-slate-500 hover:text-red-700" title="Withdraw approval and send it back with a reason">Withdraw &amp; send back</button>` : ''}
-                ${canSend ? `<button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800"><i class="fas fa-paper-plane mr-1"></i>Send to customer</button>`
-                : `<button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="${isGmailReply ? '' : (!d.mode || d.mode === 'customer') ? 'This case has no Gmail thread to reply on — paste the text into Amazon, then record it here' : 'Seller Central text — paste it there, then record it here'}"><i class="fas fa-paste mr-1"></i>Mark as sent in Seller Central</button>`}` : ''}
+                ${canSend ? `${resolveDotHtml()}<button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800"><i class="fas fa-paper-plane mr-1"></i>Send to customer</button>`
+                : `${resolveDotHtml()}<button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="${isGmailReply ? '' : (!d.mode || d.mode === 'customer') ? 'This case has no Gmail thread to reply on — paste the text into Amazon, then record it here' : 'Seller Central text — paste it there, then record it here'}"><i class="fas fa-paste mr-1"></i>Mark as sent in Seller Central</button>`}` : ''}
               ${d.status === 'sending' ? '<span class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Sending…</span>' : ''}
             </span>
           </div>
@@ -860,10 +862,10 @@
         if (!document.body.contains(slot)) return
         if (rc.eligible && (!d.mode || d.mode === 'customer')) {
           slot.outerHTML = isGmail
-            ? '<button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800" title="Routine reply: PASS, no warnings, no manager rule, no A-to-Z / chargeback / battery flag"><i class="fas fa-paper-plane mr-1"></i>Send to customer</button>'
-            : '<button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="This case has no Gmail thread: paste the text into Amazon, then record it here"><i class="fas fa-paste mr-1"></i>Mark as sent in Amazon</button>'
+            ? resolveDotHtml() + '<button id="send-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-emerald-700 text-white hover:bg-emerald-800" title="Routine reply: PASS, no warnings, no manager rule, no A-to-Z / chargeback / battery flag"><i class="fas fa-paper-plane mr-1"></i>Send to customer</button>'
+            : resolveDotHtml() + '<button id="record-sent-btn" class="px-4 py-1.5 rounded-md text-sm font-medium bg-sky-600 text-white hover:bg-sky-700" title="This case has no Gmail thread: paste the text into Amazon, then record it here"><i class="fas fa-paste mr-1"></i>Mark as sent in Amazon</button>'
           setHint('text-emerald-700', '<i class="fas fa-circle-check mr-1"></i>Routine reply: you can send it yourself. It is logged as <strong>sent by staff without manager approval</strong> and a manager can review it.')
-          wireSend(); wireRecordSent()
+          wireSend(); wireRecordSent(); wireResolveDot()
         } else {
           slot.remove()
           const why = (rc.reasons || []).filter(Boolean)
@@ -916,8 +918,8 @@
         const b = modal.querySelector('#send-now'); b.disabled = true; b.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Sending…'
         try {
           if (unsaved()) throw new Error('The text on screen differs from the saved reply. Save & re-check your edits first (an edit after approval withdraws the approval).')
-          await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: d.draft_text.trim() }, { timeout: 60000 })
-          modal.remove(); toast('Reply sent to the customer'); refresh()
+          const { data: sr } = await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: d.draft_text.trim(), resolve: resolveAfterSend }, { timeout: 60000 })
+          modal.remove(); toast(sentMessage('Reply sent to the customer', sr), sr?.resolve_blocked?.length ? 'err' : 'ok'); refresh()
         } catch (err) {
           b.disabled = false; b.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>Send now'
           toast(err.response?.data?.error || err.message, 'err')
@@ -926,11 +928,13 @@
         }
       }
     }) }
-    wireSend()
+    wireSend(); wireResolveDot()
     function wireRecordSent() { document.getElementById('record-sent-btn')?.addEventListener('click', () => {
       if (unsaved()) return toast('Save & re-check your edits first', 'err')
       if (!confirm('Confirm you have sent this exact reply to the customer via Amazon. ReplyIQ will log it on the thread.')) return
-      act(() => axios.post(`/api/drafts/${d.id}/record-sent`), 'Recorded as sent')
+      axios.post(`/api/drafts/${d.id}/record-sent`, { resolve: resolveAfterSend })
+        .then(({ data: sr }) => { toast(sentMessage('Recorded as sent', sr), sr?.resolve_blocked?.length ? 'err' : 'ok'); refresh() })
+        .catch((err) => toast(err.response?.data?.error || err.message, 'err'))
     }) }
     wireRecordSent()
     document.getElementById('discard-btn')?.addEventListener('click', () => {
@@ -1264,6 +1268,7 @@
               <select data-bulk-select="status" class="field-input text-xs mt-0" style="width:auto"><option value="">Status…</option><option value="open">Open</option><option value="awaiting_customer">Awaiting customer</option><option value="update_customer">Update customer</option></select>
               <select data-bulk-select="assign" class="field-input text-xs mt-0" style="width:auto"><option value="">Assign…</option><option value="__none">Unassigned</option></select>
               <select data-bulk-select="tone" class="field-input text-xs mt-0" style="width:auto"><option value="">Tone…</option>${Object.entries(TONE_META).map(([v, m]) => `<option value="${v}">${m.word}</option>`).join('')}</select>
+              <button id="bulk-merge" class="px-2 py-1 rounded border border-slate-300 text-slate-700" title="Merge duplicate cases into one (e.g. the same email that reached two mailboxes)"><i class="fas fa-code-merge mr-1"></i>Merge</button>
               ${isManager ? '<button data-bulk="archive" class="px-2 py-1 rounded border border-slate-300 text-slate-700" title="Archive (keeps everything, hides from queue)"><i class="fas fa-box-archive"></i></button>' : ''}
               <button id="bulk-clear" class="text-slate-500 underline ml-auto">clear</button>
             </div>
@@ -1340,6 +1345,22 @@
     const sa = document.getElementById('select-all'); if (sa) { sa.checked = pageRows.length > 0 && pageRows.every((k) => selected.has(k.id)); sa.onchange = () => { pageRows.forEach((k) => (sa.checked ? selected.add(k.id) : selected.delete(k.id))); filterInboxList() } }
     updateBulkBar()
   }
+  // "Resolve after sending": a small dot beside Send / Mark as sent. Off by default; per page view. When on, the case goes
+  // straight to Resolved instead of Awaiting customer (the server still keeps it open for A-to-Z, chargeback, battery flag).
+  var resolveAfterSend = false
+  function resolveDotHtml() {
+    return `<button id="resolve-dot" type="button" role="switch" aria-checked="${resolveAfterSend}" class="resolve-dot inline-flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs ${resolveAfterSend ? 'text-emerald-700' : 'text-slate-500 hover:text-slate-800'}" title="Close this case when the reply goes out (instead of Awaiting customer). Use it when nothing more is needed from the customer.">`
+      + `<span class="inline-block w-3 h-3 rounded-full border-2 ${resolveAfterSend ? 'bg-emerald-500 border-emerald-500' : 'border-slate-400'}"></span>${resolveAfterSend ? 'Resolve on send' : 'Resolve'}</button>`
+  }
+  function wireResolveDot() {
+    const b = document.getElementById('resolve-dot'); if (!b) return
+    b.onclick = () => { resolveAfterSend = !resolveAfterSend; b.outerHTML = resolveDotHtml(); wireResolveDot() }
+  }
+  function sentMessage(base, r) {
+    if (r?.case_status === 'resolved') return base + ' · case resolved'
+    if (r?.resolve_blocked?.length) return base + ` · left open: ${r.resolve_blocked.join(', ')}`
+    return base
+  }
   function updateBulkBar() {
     const bar = document.getElementById('bulk-bar'); if (!bar) return
     bar.classList.toggle('hidden', selected.size === 0)
@@ -1361,7 +1382,45 @@
       } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
     }
     bar.querySelectorAll('[data-bulk]').forEach((b) => (b.onclick = () => run(b.dataset.bulk)))
+    document.getElementById('bulk-merge').onclick = () => openMergeDialog([...selected])
     bar.querySelectorAll('[data-bulk-select]').forEach((sel) => (sel.onchange = () => { if (!sel.value) return; const v = sel.value === '__none' ? null : sel.value; const a = sel.dataset.bulkSelect; sel.value = ''; run(a, v) }))
+  }
+  // Merge duplicates: pick which case to keep (default = the one with replies, then the oldest). Everything moves into it,
+  // the others are archived with a note. The server refuses different orders and (for agents) different customers.
+  function openMergeDialog(ids) {
+    const cases = ids.map((id) => inboxCases.find((k) => k.id === id)).filter(Boolean)
+    if (cases.length < 2) return toast('Select at least two cases to merge', 'err')
+    const pick = [...cases].sort((a, b) => (Number(b.message_count || 0) - Number(a.message_count || 0)) || (a.id - b.id))[0]
+    const modal = document.createElement('div')
+    modal.className = 'fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50'
+    modal.innerHTML = `<div class="bg-white rounded-xl shadow-xl max-w-lg w-full p-5">
+      <h3 class="font-bold mb-1"><i class="fas fa-code-merge mr-1"></i>Merge ${cases.length} cases</h3>
+      <p class="text-sm text-slate-600 mb-3">Choose the case to keep. Messages, drafts, attachments, returns and carrier cases from the others move into it; copies of the same email are shown once. The others are archived with a note pointing here.</p>
+      <div class="space-y-1.5 max-h-72 overflow-auto">${cases.map((k) => `
+        <label class="flex items-start gap-2 p-2 rounded border border-slate-200 cursor-pointer hover:bg-slate-50">
+          <input type="radio" name="merge-into" value="${k.id}" ${k.id === pick.id ? 'checked' : ''} class="mt-1">
+          <span class="text-sm"><span class="font-mono">${esc(k.case_ref)}</span> · ${esc(k.customer_first_name || '')} · ${esc(STATUS_LABEL[k.status] || k.status)}<br>
+          <span class="text-xs text-slate-500">${esc(k.subject || '')}${k.order_id ? ' · ' + esc(k.order_id) : ''}</span></span>
+        </label>`).join('')}</div>
+      <div class="mt-4 flex justify-end gap-2">
+        <button id="merge-cancel" class="px-4 py-2 rounded-md border border-slate-300 text-sm">Cancel</button>
+        <button id="merge-go" class="px-4 py-2 rounded-md bg-slate-800 text-white text-sm font-medium"><i class="fas fa-code-merge mr-1"></i>Merge</button>
+      </div></div>`
+    document.body.appendChild(modal)
+    modal.querySelector('#merge-cancel').onclick = () => modal.remove()
+    modal.querySelector('#merge-go').onclick = async () => {
+      const into = Number(modal.querySelector('input[name="merge-into"]:checked')?.value)
+      const b = modal.querySelector('#merge-go'); b.disabled = true; b.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Merging…'
+      try {
+        const { data } = await axios.post('/api/cases/merge', { into, ids })
+        modal.remove(); selected.clear()
+        toast(`Merged ${data.merged.map((m) => m.case_ref).join(', ')} into ${data.into.case_ref}${data.duplicates_removed ? ` · ${data.duplicates_removed} duplicate message(s) shown once` : ''}`, 'ok', true)
+        await loadInboxList(); refreshBadges(); navigate(`/cases/${data.into.id}`)
+      } catch (err) {
+        b.disabled = false; b.innerHTML = '<i class="fas fa-code-merge mr-1"></i>Merge'
+        toast(err.response?.data?.error || err.message, 'err')
+      }
+    }
   }
   function showBulkResult(r) {
     const verb = { resolve: 'resolved', status: 'updated', assign: 'assigned', tone: 'relabelled', archive: 'archived' }[r.action] || 'done'

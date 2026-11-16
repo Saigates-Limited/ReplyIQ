@@ -3,6 +3,7 @@ import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
 import { TONES, TONE_META } from '../tone'
 import { hasStaffSendCols } from '../approval'
+import { mergeCases } from '../caseOps'
 
 export const casesApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
@@ -228,6 +229,24 @@ casesApi.post('/bulk', async (c) => {
       done.push(...todo)
     }
     return c.json({ done, skipped, action, value })
+  } finally {
+    await sql.end()
+  }
+})
+
+// POST /api/cases/merge { into:number, ids:number[] } — manual merge of duplicate cases (e.g. the same email that reached
+// two mailboxes). Everything moves to `into`; the others are archived with a note. Different orders are refused;
+// different customers need a manager. See caseOps.mergeCases.
+casesApi.post('/merge', async (c) => {
+  const b = (await c.req.json().catch(() => ({}))) as { into?: unknown; ids?: unknown }
+  const into = Number(b.into)
+  const ids = Array.isArray(b.ids) ? b.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0) : []
+  if (!Number.isInteger(into) || into <= 0) return c.json({ error: 'Choose the case to keep' }, 400)
+  const sql = getDb(c.env)
+  try {
+    const r = await mergeCases(sql, into, ids, c.get('user') as any)
+    if (!r.ok) return c.json({ error: r.error }, r.status as any)
+    return c.json(r)
   } finally {
     await sql.end()
   }
