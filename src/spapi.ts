@@ -125,7 +125,7 @@ export async function fetchOrder(env: SpapiEnv, orderId: string): Promise<OrderS
 const COUNTRY: Record<string, string> = { GB: 'United Kingdom', UK: 'United Kingdom', IE: 'Ireland', JE: 'Jersey', GG: 'Guernsey', IM: 'Isle of Man' }
 
 /** Buyer name + delivery address for an invoice. Throws SpapiError if Amazon refuses (e.g. the app lacks the PII role). */
-export async function fetchOrderContact(env: SpapiEnv, orderId: string): Promise<{ name: string; buyerName: string; addressLines: string[] }> {
+export async function fetchOrderContact(env: SpapiEnv, orderId: string): Promise<{ name: string; buyerName: string; addressLines: string[]; fields: string[] }> {
   if (!/^\d{3}-\d{7}-\d{7}$/.test(orderId)) throw new SpapiError(400, 'Not a valid Amazon order ID')
   const o: any = await spapi<any>(env, 'GET', `/orders/2026-01-01/orders/${orderId}?includedData=BUYER,RECIPIENT`)
   const order = o.order ?? o.payload ?? o
@@ -137,7 +137,12 @@ export async function fetchOrderContact(env: SpapiEnv, orderId: string): Promise
     pick('city'), pick('districtOrCounty', 'county', 'stateOrRegion', 'stateOrProvinceCode'), pick('postalCode'),
     COUNTRY[country.toUpperCase()] ?? country,
   ].filter(Boolean)
-  return { name: pick('name'), buyerName: String(order.buyer?.buyerName ?? '').trim(), addressLines: [...new Set(lines)] }
+  // Any other address-like text field Amazon adds (street lines under another name) goes after the known ones.
+  const known = new Set(['name', 'addressLine1', 'addressLine2', 'addressLine3', 'city', 'districtOrCounty', 'county', 'stateOrRegion', 'stateOrProvinceCode', 'postalCode', 'countryCode', 'country', 'phone', 'addressType'])
+  const extra = Object.keys(a).filter((k) => !known.has(k) && typeof a[k] === 'string' && /line|street|address|building|house|district/i.test(k)).map((k) => a[k].trim()).filter(Boolean)
+  // Field names only (never values) so a missing line can be diagnosed without exposing the address.
+  const fields = Object.entries(a).map(([k, v]) => `${k}:${typeof v === 'string' ? (v.trim() ? 'text' : 'empty') : typeof v}`)
+  return { name: pick('name'), buyerName: String(order.buyer?.buyerName ?? '').trim(), addressLines: [...new Set([...extra, ...lines])], fields }
 }
 
 // ───────── Solicitations v1 ─────────

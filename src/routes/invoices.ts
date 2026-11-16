@@ -80,7 +80,7 @@ invoicesApi.get('/prefill', async (c) => {
       } catch { /* fall back to paste */ }
     }
     // Name + delivery address straight from Amazon (not stored anywhere except on the invoice the user saves).
-    let contact: { name: string; buyerName: string; addressLines: string[] } | null = null, contactError = ''
+    let contact: { name: string; buyerName: string; addressLines: string[]; fields: string[] } | null = null, contactError = ''
     if (live) {
       try { contact = await fetchOrderContact(env, k.order_id) } catch (e: any) {
         contactError = e?.status === 403 ? 'Amazon refused the buyer name and address: the ReplyIQ app needs the personal-data (PII) role in Seller Central (Apps & Services > Develop apps). Paste the Order details page instead.' : `Amazon did not return the address (${e?.message || 'error'}). Paste the Order details page instead.`
@@ -97,6 +97,7 @@ invoicesApi.get('/prefill', async (c) => {
       buyer_address: contact?.addressLines.length ? contact.addressLines.join('\n') : k.customer_address ?? '',
       contact_source: contact?.addressLines.length ? 'amazon' : 'case',
       contact_error: contactError,
+      address_fields: contact?.fields ?? [],
       order: p ? { orderDate: p.orderDate, shipDate: p.shipDate, currency: p.currency, grandTotal: p.grandTotal, items: p.items ?? [] } : null,
       existing,
     })
