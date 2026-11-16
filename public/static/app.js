@@ -77,7 +77,7 @@
     const rm = p.match(/^\/returns\/(\d+)$/)
     const fm = p.match(/^\/inbox\/([a-z_]+)$/)
     if (fm && folderList().some(([v]) => v === fm[1])) { listFilter = fm[1]; localStorage.setItem('riq.filter', listFilter) }
-    setActiveNav(m || p === '/inbox' || fm ? 'messages' : p.startsWith('/carriers') ? 'carriers' : p === '/atoz' ? 'atoz' : p === '/returns/refunds' ? 'refunds' : p.startsWith('/returns') ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/settings') ? 'settings' : 'dashboard')
+    setActiveNav(m || p === '/inbox' || fm ? 'messages' : p.startsWith('/carriers') ? 'carriers' : p === '/atoz' ? 'atoz' : p === '/returns/refunds' ? 'refunds' : p.startsWith('/returns') ? 'returns' : p === '/chargebacks' ? 'chargebacks' : p === '/gmail' ? 'gmail' : p === '/staff' ? 'staff' : p === '/policy' ? 'policy' : p === '/decision-trees' ? 'trees' : p === '/knowledge' ? 'knowledge' : p === '/templates' ? 'templates' : p.startsWith('/invoices') ? 'invoices' : p.startsWith('/settings') ? 'settings' : 'dashboard')
     refreshBadges()
     document.getElementById('sidebar')?.classList.remove('open')
     if (m) renderInbox(Number(m[1]))
@@ -90,6 +90,9 @@
     else if (p === '/decision-trees') renderDecisionTrees()
     else if (p === '/knowledge') renderKnowledge()
     else if (p === '/templates') renderTemplates()
+    else if (p === '/invoices' && invoicesUI) invoicesUI.renderHistory()
+    else if (p === '/invoices/new' && invoicesUI) invoicesUI.renderNew()
+    else if (p === '/invoices/settings' && invoicesUI) invoicesUI.renderSettings()
     else if (p === '/atoz') renderTracker('atoz')
     else if (p === '/returns' && returnsUI) returnsUI.renderDesk()
     else if (rm && returnsUI) returnsUI.renderReturn(Number(rm[1]))
@@ -168,6 +171,10 @@
   const carrierUI = window.RiqCarrier ? window.RiqCarrier({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderCase: (id) => renderCase(id), renderError: (e) => renderError(e), refreshBadges: () => refreshBadges(), generate: (id, mode) => generate(id, mode) }) : null
 
   // Physical returns + refunds-without-return (public/static/returns.js)
+  // Files waiting to go on a case's next reply (e.g. an invoice made from the case). Picked up by the draft editor.
+  const queuedCaseFiles = new Map()
+  const invoicesUI = window.RiqInvoices ? window.RiqInvoices({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderError: (e) => renderError(e),
+    queueCaseFile: (caseId, file) => queuedCaseFiles.set(caseId, [...(queuedCaseFiles.get(caseId) || []), file]) }) : null
   const returnsUI = window.RiqReturns ? window.RiqReturns({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderError: (e) => renderError(e), refreshBadges: () => refreshBadges(), renderTracker: (k) => renderTracker(k) }) : null
 
   // ---------- header clock ----------
@@ -392,7 +399,8 @@
             <section id="amazon-order-panel" class="bg-white rounded-xl shadow-sm p-5">
               <div class="flex items-center justify-between mb-2">
                 <h2 class="font-semibold"><i class="fab fa-amazon mr-2 text-slate-400"></i>Amazon order</h2>
-                <button id="fetch-order-btn" class="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50" ${k.order_id ? '' : 'disabled'}><i class="fas fa-rotate mr-1"></i>Fetch from Amazon</button>
+                <span class="flex gap-1"><a href="/invoices/new?case=${k.id}" data-link class="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50" title="Make an invoice for this order"><i class="fas fa-file-invoice mr-1"></i>Invoice</a>
+                <button id="fetch-order-btn" class="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50" ${k.order_id ? '' : 'disabled'}><i class="fas fa-rotate mr-1"></i>Fetch from Amazon</button></span>
               </div>
               <div id="amazon-order-body" class="text-sm text-slate-500">${k.order_id ? (k.spapi_synced_at ? 'Loading…' : 'Not fetched yet.') : 'No order ID on this case.'}</div>
               <div id="review-request-box" class="mt-3"></div>
@@ -541,6 +549,9 @@
       lastDay = day
       if (m.kind === 'event' && !m.event_id && /^Carrier update/.test(m.sender || '')) {
         return `${sep}<div class="notice notice-carrier"><div class="font-semibold"><i class="fas fa-truck-fast mr-1"></i>${esc(m.sender)}</div><div class="message-body">${esc(m.body)}</div><div class="opacity-70 mt-1">${fmtDateTime(m.sent_at)} · internal, from the carrier desk</div></div>`
+      }
+      if (m.kind === 'event' && !m.event_id && m.sender === 'ReplyIQ') { // ReplyIQ's own notes: merges, invoices
+        return `${sep}<div class="day-sep" style="font-weight:400"><i class="fas fa-circle-info mr-1 opacity-60"></i>${esc(m.body)} · ${dayjs(m.sent_at).format('HH:mm')}</div>`
       }
       if (m.kind === 'event') {
         const e = evById[m.event_id]
@@ -820,6 +831,11 @@
     // Send with a 5-second Undo instead of a confirmation dialog. Nothing leaves until the countdown ends.
     // Files to send with this reply. Kept per draft so they survive a re-render; read as base64 in the browser.
     const files = pendingFiles.get(d.id) || []; pendingFiles.set(d.id, files)
+    if (queuedCaseFiles.has(caseId) && d.status !== 'sent' && document.getElementById('attach-btn')) {
+      const q = queuedCaseFiles.get(caseId); queuedCaseFiles.delete(caseId)
+      for (const f of q) if (!files.some((x) => x.filename === f.filename)) files.push(f)
+      setTimeout(() => toast(`Attached ${q.map((f) => f.filename).join(', ')} to this reply`), 300)
+    }
     const fileSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'
     function renderFiles() {
       const box = document.getElementById('attach-list'); if (!box) return

@@ -12,6 +12,7 @@ import { kbApi } from './routes/kb'
 import { promptApi } from './routes/prompt'
 import { templatesApi } from './routes/templates'
 import { carrierApi } from './routes/carrier'
+import { invoicesApi } from './routes/invoices'
 import { returnsApi } from './routes/returns'
 import { refundsApi } from './routes/refunds'
 import { dailyRefundCheck, isSevenAmLondon, alreadyRanToday } from './returns/refunds'
@@ -102,6 +103,7 @@ app.route('/api/messages', messagesApi) // tone override
 app.route('/api/kb', kbApi) // knowledge base rules for the drafting model
 app.route('/api/prompt', promptApi) // custom system prompt (manager only)
 app.route('/api/templates', templatesApi) // ready-to-use reply templates
+app.route('/api/invoices', invoicesApi) // invoice generator (migration 0023)
 app.route('/api/carrier', carrierApi) // carrier desk: Royal Mail / DPD / FedEx / Evri investigations and claims
 
 // SPA pages
@@ -159,6 +161,8 @@ app.get('/chargebacks', (c) => c.html(page(c.get('user'))))
 app.get('/carriers', (c) => c.html(page(c.get('user'))))
 app.get('/carrier', (c) => c.redirect('/carriers', 301))
 app.get('/carriers/:id', (c) => c.html(page(c.get('user'))))
+app.get('/invoices', (c) => c.html(page(c.get('user'))))
+app.get('/invoices/:rest', (c) => c.html(page(c.get('user'))))
 
 app.onError((err, c) => {
   console.error(err)

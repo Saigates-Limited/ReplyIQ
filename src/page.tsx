@@ -57,6 +57,7 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
         <a href="/returns/refunds" data-link data-nav="refunds" class="nav-tab nav-sub-tab" title="Refunds without return"><i class="fas fa-money-bill-transfer w-5"></i><span class="nav-label">Refunds, no return</span> <span class="nav-badge nav-badge-red" data-badge="refund-alerts"></span></a>
         <a href="/chargebacks" data-link data-nav="chargebacks" class="nav-tab" title="Chargebacks"><i class="fas fa-credit-card w-5"></i><span class="nav-label">Chargebacks</span> <span class="nav-badge" data-badge="chargebacks"></span></a>
         <a href="/carriers" data-link data-nav="carriers" class="nav-tab" title="Carrier desk"><i class="fas fa-truck-fast w-5"></i><span class="nav-label">Carrier desk</span> <span class="nav-badge" data-badge="carriers"></span></a>
+        <a href="/invoices" data-link data-nav="invoices" class="nav-tab" title="Invoices"><i class="fas fa-file-invoice w-5"></i><span class="nav-label">Invoices</span></a>
         <div class="nav-group px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-slate-500">Reference</div>
         <a href="/policy" data-link data-nav="policy" class="nav-tab" title="Reply policy"><i class="fas fa-book w-5"></i><span class="nav-label">Reply policy</span></a>
         <a href="/decision-trees" data-link data-nav="trees" class="nav-tab" title="Decision Trees"><i class="fas fa-sitemap w-5"></i><span class="nav-label">Decision Trees</span></a>
@@ -99,6 +100,9 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
   <script>dayjs.extend(window.dayjs_plugin_relativeTime)</script>
   <script src="/static/carrier.js"></script>
   <script src="/static/returns.js"></script>
+  <script src="/static/invoice-parser.js"></script>
+  <script src="/static/invoice-pdf.js"></script>
+  <script src="/static/invoices.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>`
