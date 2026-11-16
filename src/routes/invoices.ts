@@ -11,6 +11,7 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
+import { fetchOrder, fetchOrderContact, spapiConfigured, type SpapiEnv } from '../spapi'
 
 export const invoicesApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 const MIGRATION = 'db/migrations/0023_invoices.sql'
@@ -66,14 +67,36 @@ invoicesApi.get('/prefill', async (c) => {
   try {
     const [k] = await sql`SELECT id, case_ref, order_id, customer_first_name, customer_last_name, customer_address FROM cases WHERE id = ${caseId}`
     if (!k) return c.json({ error: 'Case not found' }, 404)
-    const [o] = k.order_id ? await sql`SELECT payload FROM amazon_orders WHERE order_id = ${k.order_id}`.catch(() => []) : []
+    const env = c.env as SpapiEnv
+    const live = !!k.order_id && spapiConfigured(env)
+    // Order (items, prices, dates): the cached copy, or fetch it now if the case was never fetched.
+    let [o] = k.order_id ? await sql`SELECT payload FROM amazon_orders WHERE order_id = ${k.order_id}`.catch(() => []) : []
+    if (!o && live) {
+      try {
+        const summary = await fetchOrder(env, k.order_id)
+        await sql`INSERT INTO amazon_orders (order_id, payload, fetched_at) VALUES (${k.order_id}, ${sql.json(summary as any)}, now())
+                  ON CONFLICT (order_id) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()`
+        o = { payload: summary }
+      } catch { /* fall back to paste */ }
+    }
+    // Name + delivery address straight from Amazon (not stored anywhere except on the invoice the user saves).
+    let contact: { name: string; buyerName: string; addressLines: string[] } | null = null, contactError = ''
+    if (live) {
+      try { contact = await fetchOrderContact(env, k.order_id) } catch (e: any) {
+        contactError = e?.status === 403 ? 'Amazon refused the buyer name and address: the ReplyIQ app needs the personal-data (PII) role in Seller Central (Apps & Services > Develop apps). Paste the Order details page instead.' : `Amazon did not return the address (${e?.message || 'error'}). Paste the Order details page instead.`
+      }
+      if (contact && !contact.addressLines.length && !contactError) contactError = 'Amazon returned no address for this order (the app may be missing the personal-data role). Paste the Order details page instead.'
+    }
     const existing = k.order_id ? await sql`SELECT id, invoice_number, created_at FROM invoices WHERE order_id = ${k.order_id} ORDER BY id DESC` : []
     const p: any = o?.payload ?? null
+    const amazonName = contact?.name || contact?.buyerName || ''
     return c.json({
       case: { id: k.id, case_ref: k.case_ref },
       order_id: k.order_id ?? '',
-      buyer_name: [k.customer_first_name, k.customer_last_name].filter(Boolean).join(' '),
-      buyer_address: k.customer_address ?? '',
+      buyer_name: amazonName || [k.customer_first_name, k.customer_last_name].filter(Boolean).join(' '),
+      buyer_address: contact?.addressLines.length ? contact.addressLines.join('\n') : k.customer_address ?? '',
+      contact_source: contact?.addressLines.length ? 'amazon' : 'case',
+      contact_error: contactError,
       order: p ? { orderDate: p.orderDate, shipDate: p.shipDate, currency: p.currency, grandTotal: p.grandTotal, items: p.items ?? [] } : null,
       existing,
     })

@@ -1,6 +1,8 @@
 // Amazon Selling Partner API — private, self-authorised app for Saigates' own seller account.
-// Roles used: "Inventory and Order Tracking" + "Buyer Solicitation". We NEVER request BUYER / RECIPIENT
-// datasets (the PII), so no restricted-data roles are needed.
+// Roles used: "Inventory and Order Tracking" + "Buyer Solicitation". Order fetches for cases never request BUYER /
+// RECIPIENT (the PII). The ONE exception is fetchOrderContact(), used only by the invoice screen: it asks for the buyer
+// name and delivery address (v2026-01-01 needs no Restricted Data Token, only the PII role on the app). That result is
+// shown to staff on the invoice form and is never cached, stored with the order, or sent to OpenAI.
 //
 // Orders API version: v2026-01-01 (v0 is deprecated per developer-docs.amazon.com, checked 2026-10-12).
 //   GET /orders/2026-01-01/orders/{orderId}?includedData=FULFILLMENT,PACKAGES,PROCEEDS   (0.5 req/s, burst 30)
@@ -118,6 +120,24 @@ export async function fetchOrder(env: SpapiEnv, orderId: string): Promise<OrderS
     deliveryIsEstimate,
     fetchedAt: new Date().toISOString(),
   }
+}
+
+const COUNTRY: Record<string, string> = { GB: 'United Kingdom', UK: 'United Kingdom', IE: 'Ireland', JE: 'Jersey', GG: 'Guernsey', IM: 'Isle of Man' }
+
+/** Buyer name + delivery address for an invoice. Throws SpapiError if Amazon refuses (e.g. the app lacks the PII role). */
+export async function fetchOrderContact(env: SpapiEnv, orderId: string): Promise<{ name: string; buyerName: string; addressLines: string[] }> {
+  if (!/^\d{3}-\d{7}-\d{7}$/.test(orderId)) throw new SpapiError(400, 'Not a valid Amazon order ID')
+  const o: any = await spapi<any>(env, 'GET', `/orders/2026-01-01/orders/${orderId}?includedData=BUYER,RECIPIENT`)
+  const order = o.order ?? o.payload ?? o
+  const a: any = order.recipient?.deliveryAddress ?? order.recipient?.address ?? {}
+  const pick = (...keys: string[]) => keys.map((k) => a[k]).find((v) => typeof v === 'string' && v.trim())?.trim() ?? ''
+  const country = pick('countryCode', 'country')
+  const lines = [
+    pick('addressLine1'), pick('addressLine2'), pick('addressLine3'),
+    pick('city'), pick('districtOrCounty', 'county', 'stateOrRegion', 'stateOrProvinceCode'), pick('postalCode'),
+    COUNTRY[country.toUpperCase()] ?? country,
+  ].filter(Boolean)
+  return { name: pick('name'), buyerName: String(order.buyer?.buyerName ?? '').trim(), addressLines: [...new Set(lines)] }
 }
 
 // ───────── Solicitations v1 ─────────

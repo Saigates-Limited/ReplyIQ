@@ -107,7 +107,7 @@ window.RiqInvoices = function (h) {
       if (caseId) ({ data: pre } = await axios.get('/api/invoices/prefill', { params: { case_id: caseId } }))
     } catch (e) { app.innerHTML = header('new') + (notReady(e) || ''); if (!notReady(e)) h.renderError(e); return }
     if (!form || form.case_id !== caseId) {
-      form = { case_id: caseId, case_ref: pre?.case?.case_ref || '', invoice_number: '', invoice_date: today(), order_id: pre?.order_id || '', seller_order_id: '',
+      form = { case_id: caseId, case_ref: pre?.case?.case_ref || '', invoice_number: '', invoice_date: pre?.order?.orderDate ? dayjs(pre.order.orderDate).format('DD MMM YYYY') : today(), contact_source: pre?.contact_source, contact_error: pre?.contact_error || '', order_id: pre?.order_id || '', seller_order_id: '',
         purchase_date: isoDay(pre?.order?.orderDate), ship_date: isoDay(pre?.order?.shipDate), sales_channel: 'Amazon.co.uk',
         buyer_name: pre?.buyer_name || '', buyer_address: pre?.buyer_address || '', currency: pre?.order?.currency || 'GBP', shipping: 0, notes: '',
         margin_scheme_enabled: settings.margin_scheme_enabled, raw_paste: '',
@@ -130,10 +130,11 @@ window.RiqInvoices = function (h) {
     app.innerHTML = header('new') + `
       <section id="invoice-form" class="grid lg:grid-cols-3 gap-4">
         <div class="lg:col-span-2 space-y-4">
-          ${f.case_id ? `<div class="text-sm rounded-md bg-sky-50 border border-sky-200 px-3 py-2"><i class="fas fa-link mr-1 text-sky-700"></i>From case <a href="/cases/${f.case_id}" data-link class="font-semibold underline">${esc(f.case_ref)}</a>. Order details and the customer were filled in from ReplyIQ; check them before saving.</div>` : ''}
+          ${f.case_id ? `<div class="text-sm rounded-md bg-sky-50 border border-sky-200 px-3 py-2"><i class="fas fa-link mr-1 text-sky-700"></i>From case <a href="/cases/${f.case_id}" data-link class="font-semibold underline">${esc(f.case_ref)}</a>. ${f.contact_source === 'amazon' ? 'Order, items and the customer name and address were filled in from Amazon' : 'Order details were filled in from Amazon'}; check them before saving.</div>` : ''}
+          ${f.contact_error ? `<div class="text-sm rounded-md bg-amber-50 border border-amber-300 px-3 py-2 text-amber-900"><i class="fas fa-address-card mr-1"></i>${esc(f.contact_error)}</div>` : ''}
           ${f.existing?.length ? `<div class="text-sm rounded-md bg-amber-50 border border-amber-300 px-3 py-2 text-amber-900"><i class="fas fa-triangle-exclamation mr-1"></i>This order already has ${f.existing.map((x) => `<button data-redl="${x.id}" class="font-mono font-semibold underline">${esc(x.invoice_number)}</button>`).join(', ')}. Download that instead unless you need a new one.</div>` : ''}
-          <details class="bg-white rounded-xl shadow-sm p-4" ${f.case_id ? '' : 'open'}>
-            <summary class="cursor-pointer font-semibold text-sm"><i class="far fa-clipboard mr-1 text-slate-400"></i>Paste the Seller Central "Order details" page${f.case_id ? ' (for the address, or anything missing)' : ''}</summary>
+          <details class="bg-white rounded-xl shadow-sm p-4" ${f.case_id && f.buyer_address ? '' : 'open'}>
+            <summary class="cursor-pointer font-semibold text-sm"><i class="far fa-clipboard mr-1 text-slate-400"></i>Paste the Seller Central "Order details" page${f.case_id ? ' (only if something is missing)' : ''}</summary>
             <textarea id="inv-paste" class="field-input text-xs font-mono mt-2" rows="5" placeholder="Open the order in Seller Central, select all (Ctrl+A), copy, paste here">${esc(f.raw_paste)}</textarea>
             <button id="inv-parse" class="mt-2 px-3 py-1.5 rounded-md text-sm font-medium bg-slate-800 text-white hover:bg-slate-700"><i class="fas fa-wand-magic-sparkles mr-1"></i>Fill from paste</button>
             <span id="inv-parse-msg" class="ml-2 text-xs text-slate-500"></span>
@@ -206,7 +207,7 @@ window.RiqInvoices = function (h) {
       const p = window.parseAmazonOrderText(raw)
       const fill = (k, v) => { if (v) form[k] = v }
       form.raw_paste = raw
-      fill('order_id', p.orderId); fill('seller_order_id', p.sellerOrderId); fill('purchase_date', p.purchaseDate); fill('ship_date', p.shipDate); fill('sales_channel', p.salesChannel)
+      fill('order_id', p.orderId); fill('seller_order_id', p.sellerOrderId); fill('purchase_date', p.purchaseDate); if (p.purchaseDate) { const d = dayjs(p.purchaseDate.replace(/^[A-Za-z]{3},\s*/, '').replace(/,?\s*\d{1,2}:\d{2}.*$/, '')); if (d.isValid()) form.invoice_date = d.format('DD MMM YYYY') } fill('ship_date', p.shipDate); fill('sales_channel', p.salesChannel)
       if (p.buyerName) { form.buyer_name = p.buyerName; form.buyer_address = p.buyerAddressLines.join('\n') }
       if (p.currency) form.currency = p.currency
       if (p.items.length) {
