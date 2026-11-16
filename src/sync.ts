@@ -121,6 +121,28 @@ async function alreadyImported(sql: Sql, m: GmailMessage, caseId: number | null,
   return null
 }
 
+/** Case that already holds one of these customer emails, imported through another mailbox: same Message-ID header,
+ *  or same sender address + same parsed text within 2 minutes. Used before opening a new case for a thread. */
+export async function caseOfSameEmail(sql: Sql, inbound: GmailMessage[], fromAddress: string): Promise<number | null> {
+  for (const m of inbound) {
+    const rfc = header(m, 'Message-ID') || null
+    if (rfc) {
+      const [r] = await sql`SELECT case_id FROM messages WHERE rfc_message_id = ${rfc} AND case_id IS NOT NULL LIMIT 1`
+      if (r) return r.case_id
+    }
+    const body = parseAmazonBody(messageBody(m)).text
+    if (!body || !fromAddress) continue
+    const at = new Date(Number(m.internalDate))
+    const [r] = await sql`SELECT msg.case_id FROM messages msg JOIN cases c ON c.id = msg.case_id
+                          WHERE msg.direction = 'inbound' AND msg.body = ${body.slice(0, 20000)}
+                            AND abs(extract(epoch from (msg.sent_at - ${at}))) < 120
+                            AND lower(coalesce(c.customer_email, c.customer_reply_to, '')) = lower(${fromAddress})
+                          ORDER BY msg.case_id LIMIT 1`
+    if (r) return r.case_id
+  }
+  return null
+}
+
 /** Sent by us = from any connected Saigates mailbox, or carrying Gmail's SENT label. */
 function isOurs(m: GmailMessage, ourEmails: string[]) {
   const from = parseAddress(header(m, 'From')).address
@@ -249,6 +271,12 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
         ? await sql`SELECT id, last_customer_message_at, status, gmail_thread_id FROM cases WHERE order_id = ${orderId} ORDER BY (source = 'gmail') DESC, id LIMIT 1`
         : await sql`SELECT id, last_customer_message_at, status, gmail_thread_id FROM cases WHERE gmail_thread_id = ${tid}`
       if (!kase) [kase] = await sql`SELECT id, last_customer_message_at, status, gmail_thread_id FROM cases WHERE gmail_thread_id = ${tid}`
+      // Same email delivered to two connected mailboxes: Gmail gives each copy its own thread id, so with no order id
+      // (pre-sale / product questions) the thread lookup above misses and we would open a second case (RIQ-1330/1331).
+      if (!kase) {
+        const caseId = await caseOfSameEmail(sql, inbound, fromParsed.address)
+        if (caseId) [kase] = await sql`SELECT id, last_customer_message_at, status, gmail_thread_id FROM cases WHERE id = ${caseId}`
+      }
       if (!kase) {
         const ref = await nextCaseRef(sql)
         ;[kase] = await sql`
