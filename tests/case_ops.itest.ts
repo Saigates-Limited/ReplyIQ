@@ -3,7 +3,7 @@
 import postgres from 'postgres'
 import { statusAfterSend, mergeCases } from '../src/caseOps'
 
-const sql = process.env.DATABASE_URL ? postgres(process.env.DATABASE_URL) : postgres({ host: process.env.PGHOST, port: Number(process.env.PGPORT), user: 'postgres', database: process.env.PGDATABASE })
+const sql = process.env.DATABASE_URL ? postgres(process.env.DATABASE_URL, { prepare: false, fetch_types: false }) : postgres({ host: process.env.PGHOST, port: Number(process.env.PGPORT), user: 'postgres', database: process.env.PGDATABASE, prepare: false, fetch_types: false })  // same options as src/db.ts
 let fails = 0
 const eq = (name: string, got: unknown, want: unknown) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: got ${JSON.stringify(got)}${ok ? '' : `, want ${JSON.stringify(want)}`}`) }
 let n = 0

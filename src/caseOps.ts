@@ -1,3 +1,5 @@
+// Lists go to Postgres as 'a,b,c' + string_to_array: the live client runs with fetch_types:false (Hyperdrive), so a JS
+// array is sent as plain text and ::int[] fails with "malformed array literal".
 // Case-level operations shared by the send routes and the inbox: "resolve after sending" and manual merge of duplicates.
 import type { Sql } from './db'
 
@@ -55,7 +57,7 @@ export async function mergeCases(sql: Sql, intoId: number, ids: number[], user: 
   if (others.length > 20) return { ok: false, status: 400, error: 'Merge at most 20 cases at a time' }
   const all = [intoId, ...others]
   const rows = await sql`SELECT id, case_ref, order_id, lower(coalesce(customer_email, customer_reply_to, '')) AS who, archived_at, status
-                         FROM cases WHERE id = ANY(${all}::int[])`
+                         FROM cases WHERE id = ANY(string_to_array(${all.join(',')}, ',')::int[])`
   if (rows.length !== all.length) return { ok: false, status: 404, error: 'One of the selected cases was not found' }
   const byId = new Map(rows.map((r: any) => [r.id, r]))
   const into: any = byId.get(intoId)
@@ -65,7 +67,7 @@ export async function mergeCases(sql: Sql, intoId: number, ids: number[], user: 
   const whos = [...new Set(rows.map((r: any) => r.who).filter(Boolean))]
   const sameCustomer = orders.length === 1 || whos.length <= 1
   if (!sameCustomer && user.role !== 'manager') return { ok: false, status: 403, error: 'These cases look like different customers. Only a manager can merge them.' }
-  const [busy] = await sql`SELECT 1 FROM drafts WHERE case_id = ANY(${all}::int[]) AND status = 'sending' LIMIT 1`
+  const [busy] = await sql`SELECT 1 FROM drafts WHERE case_id = ANY(string_to_array(${all.join(',')}, ',')::int[]) AND status = 'sending' LIMIT 1`
   if (busy) return { ok: false, status: 409, error: 'A reply on one of these cases is being sent right now. Try again in a moment.' }
 
   const moved: Record<string, number> = {}
@@ -75,7 +77,7 @@ export async function mergeCases(sql: Sql, intoId: number, ids: number[], user: 
     const move = async (table: string) => {
       const [t] = await tx`SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ${table} AND column_name = 'case_id'`
       if (!t) return
-      const r = await tx.unsafe(`UPDATE public.${table} SET case_id = $1 WHERE case_id = ANY($2::int[])`, [intoId, others as any])
+      const r = await tx.unsafe(`UPDATE public.${table} SET case_id = $1 WHERE case_id = ANY(string_to_array($2, ',')::int[])`, [intoId, others.join(',')])
       moved[table] = r.count
     }
     for (const t of ['messages', 'drafts', 'attachments', 'amazon_events', 'carrier_cases', 'returns', 'review_requests']) await move(t)
@@ -112,7 +114,7 @@ export async function mergeCases(sql: Sql, intoId: number, ids: number[], user: 
                    bool_or(chargeback_open) AS chargeback_open, min(assigned_to) AS assigned_to,
                    max(last_customer_message_at) AS last_customer_message_at,
                    string_agg(NULLIF(internal_notes, ''), E'\n' ORDER BY id) AS notes
-            FROM cases WHERE id = ANY(${others}::int[])) o
+            FROM cases WHERE id = ANY(string_to_array(${others.join(',')}, ',')::int[])) o
       WHERE k.id = ${intoId}`
     const [last] = await tx`SELECT direction FROM messages WHERE case_id = ${intoId} AND kind IS DISTINCT FROM 'event' ORDER BY sent_at DESC, id DESC LIMIT 1`
     if (last?.direction === 'inbound' && into.status !== 'open') {
@@ -124,7 +126,7 @@ export async function mergeCases(sql: Sql, intoId: number, ids: number[], user: 
              VALUES (${intoId}, 'inbound', 'ReplyIQ', ${`Merged ${refs} into ${into.case_ref} (by ${user.name}).`}, 'event', now())`
     await tx`UPDATE cases SET archived_at = now(), archived_by = ${user.id}, status = 'resolved', updated_at = now(),
                internal_notes = concat_ws(E'\n', internal_notes, ${`Merged into ${into.case_ref} on ${new Date().toISOString().slice(0, 10)} by ${user.name}.`}::text)
-             WHERE id = ANY(${others}::int[])`
+             WHERE id = ANY(string_to_array(${others.join(',')}, ',')::int[])`
   })
   return { ok: true, into: { id: intoId, case_ref: into.case_ref }, merged: others.map((id) => ({ id, case_ref: (byId.get(id) as any).case_ref })), moved, duplicates_removed: duplicatesRemoved, status: finalStatus }
 }
