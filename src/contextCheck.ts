@@ -18,6 +18,8 @@ export const CONTEXT_RULES: Record<string, string> = {
     'Does the reply tell the customer they have no rights, no valid claim, or are not entitled to anything? Saying a specific request cannot be met while offering the normal options does NOT count.',
   price_unapproved:
     'Does the reply quote an amount the customer must PAY us (for example a repair price)? The order price, amounts the customer mentioned, refund amounts, or Amazon fees do NOT count.',
+  safety_stop_using:
+    'Should THIS reply tell the customer to stop using and charging the phone? It applies only if the phone is still with the customer and the conversation shows a current swelling, heat, smoke or lifting-screen risk. It does NOT apply if the phone has already been returned to or received by us, or the customer has said it was sent back.',
   price_mismatch:
     'Does the reply quote a price for the customer to PAY us that differs from the approved repair price? The order price or amounts the customer mentioned do NOT count.',
 }

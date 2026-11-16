@@ -68,3 +68,14 @@ test('a clearance only applies to the exact text it was made for', async () => {
   const edited = draft.replace('once the phone is checked.', 'once the phone is checked. Please leave us a review.')
   assert.ok(applyCleared(serverChecks(edited, kase), stored, edited).some((f) => f.rule === 'never_reviews'))
 })
+
+test('safety warning: cleared when the phone is already back with us, kept otherwise', async () => {
+  const k2: any = { ...kase, battery_flag: true }
+  const d3 = 'Dear Chris,\n\nWe understand you are asking for a further £30 reduction. We are unable to increase the refund amount further.\n\nKind regards,\nCustomer Support Team'
+  assert.ok(serverChecks(d3, k2).some((f) => f.rule === 'safety_stop_using' && f.severity === 'fail'))
+  stub({ safety_stop_using: { applies: false, why: 'customer said the device has arrived at your location' }, price_unapproved: { applies: false, why: 'the £30 is the customer request' } })
+  const out = await reviewInContext(env, k2, thread, [], d3, serverChecks(d3, k2))
+  assert.deepEqual(openFindings(out).map((f) => f.rule), [])
+  stub(new Error('down'))
+  assert.ok(openFindings(await reviewInContext(env, k2, thread, [], d3, serverChecks(d3, k2))).some((f) => f.rule === 'safety_stop_using'))
+})
