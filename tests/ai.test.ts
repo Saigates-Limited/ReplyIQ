@@ -74,3 +74,16 @@ test('the policy file, the seed and the decision tree no longer use or recommend
   assert.doesNotMatch(readFileSync('db/migrations/0014_templates_and_kb_seed.sql', 'utf8'), /statutory/i)
   assert.doesNotMatch(readFileSync('public/static/app.js', 'utf8').replace(/Mention statutory, consumer or legal rights[^']*/, '').replace(/\(statutory\|consumer rights\?\|legal rights\?\)/, ''), /statutory/i)
 })
+
+// RIQ-1225: "for review" (the verb) must not fail the reviews rule; real review/feedback wording still must.
+test('reviews rule: everyday "review" passes, review/feedback asks fail', () => {
+  const k: any = { ...kase, refund_issued: null }
+  const rule = (txt: string) => serverChecks(`Dear Sam,\n\n${txt}\n\nKind regards,\nCustomer Support Team`, k).some((f) => f.rule === 'never_reviews')
+  for (const ok of ['We will pass your request to the relevant team for review.', 'Our technician will review the photos you sent.',
+    'Your return is under review.', 'Once we have reviewed the device we will update you.', 'We are reviewing your case today.'])
+    assert.equal(rule(ok), false, ok)
+  for (const bad of ['Please leave us a review.', 'Would you consider updating your review?', 'We would appreciate a positive review.',
+    'Any feedback is welcome.', 'Please remove the 1-star rating.', 'Could you leave a 5-star review?', 'Please consider changing your review once resolved.',
+    'We would appreciate it if you could review us on Amazon.'])
+    assert.equal(rule(bad), true, bad)
+})

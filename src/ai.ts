@@ -358,7 +358,10 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
 
   // ── Never mention reviews/feedback in exchange for anything (any mention of reviews is flagged)
   // (In statements to Amazon, "we ask Amazon to review the evidence" is normal — only flag product-review/feedback wording there.)
-  if (toAmazon ? /\b(product review|seller feedback|leave (?:a |us )?(?:review|feedback)|star rating|5[- ]star|five[- ]star)\b/.test(d) : /\b(review|feedback|star rating|5[- ]star|five[- ]star)\b/.test(d))
+  // Customer replies: flag product-review / feedback wording, not the everyday verb ("pass your request to the team for
+  // review", "we will review the photos", "under review" are fine; RIQ-1225 was blocked by exactly that).
+  const REVIEW_ASK = /\b(?:feedback|star rating|(?:1|one|5|five)[- ]star|(?:leave|leaving|write|writing|post|posting|update|updating|change|changing|remove|removing|amend|amending|edit|editing|delete|deleting|withdraw|withdrawing)\s+(?:a |an |us |your |the |our |any )?(?:\w+\s+)?reviews?|(?:your|positive|negative|good|bad|honest|great|kind|product|seller|amazon|customer|online)\s+reviews?|reviews?\s+(?:us|of (?:the|your|our) (?:phone|product|item|device|order|purchase))|reviewing us)\b/
+  if (toAmazon ? /\b(product review|seller feedback|leave (?:a |us )?(?:review|feedback)|star rating|5[- ]star|five[- ]star)\b/.test(d) : REVIEW_ASK.test(d))
     add('never_reviews', 'fail', 'Mentions reviews or feedback')
 
   // ── Never mention statutory, consumer or legal rights (Saigates: not at all, even when the customer raises them).
