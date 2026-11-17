@@ -149,7 +149,7 @@ function isOurs(m: GmailMessage, ourEmails: string[]) {
   return ourEmails.some((e) => e.toLowerCase() === from) || (m.labelIds ?? []).includes('SENT')
 }
 
-async function nextCaseRef(sql: Sql) {
+export async function nextCaseRef(sql: Sql) {
   // Dedicated sequence; seeded above the highest existing RIQ-#### on first use.
   await sql`CREATE SEQUENCE IF NOT EXISTS case_ref_seq`
   const [{ n }] = await sql`SELECT nextval('case_ref_seq')::int AS n`

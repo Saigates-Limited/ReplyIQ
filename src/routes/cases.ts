@@ -4,6 +4,9 @@ import { requireManager, type Vars } from '../auth'
 import { TONES, TONE_META } from '../tone'
 import { hasStaffSendCols } from '../approval'
 import { mergeCases } from '../caseOps'
+import { addCaseFile, listCaseFiles, hasDraftFiles, MIGRATION_0024 } from '../draftFiles'
+import { nextCaseRef } from '../sync'
+import { serverChecks, MODEL } from '../ai'
 
 export const casesApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 
@@ -277,7 +280,8 @@ casesApi.get('/:id', async (c) => {
       LEFT JOIN users au ON au.id = d.approved_by
       LEFT JOIN users su ON su.id = d.sent_recorded_by
       WHERE d.case_id = ${id} ORDER BY d.created_at DESC`
-    return c.json({ case: kase, messages, events, drafts, staff, attachments, tone_meta: TONE_META, now: new Date().toISOString() })
+    const pending_files = await listCaseFiles(sql, id).catch(() => [] as any[])
+    return c.json({ case: kase, messages, events, drafts, staff, attachments, pending_files, tone_meta: TONE_META, now: new Date().toISOString() })
   } finally {
     await sql.end()
   }
@@ -411,4 +415,58 @@ casesApi.post('/:id/unarchive', requireManager, async (c) => {
   } finally {
     await sql.end()
   }
+})
+
+// ───────── Files attached to the reply (kept on the server until sent; migration 0024) ─────────
+casesApi.get('/:id/files', async (c) => {
+  const sql = getDb(c.env)
+  try { return c.json({ files: await listCaseFiles(sql, Number(c.req.param('id'))).catch(() => []), ready: await hasDraftFiles(sql).catch(() => false) }) }
+  finally { await sql.end() }
+})
+
+casesApi.post('/:id/files', async (c) => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id)) return c.json({ error: 'Invalid id' }, 400)
+  const sql = getDb(c.env)
+  try {
+    const [k] = await sql`SELECT id FROM cases WHERE id = ${id}`
+    if (!k) return c.json({ error: 'Case not found' }, 404)
+    const r = await addCaseFile(sql, id, c.get('user').id, await c.req.json().catch(() => ({})))
+    if (!r.ok) return c.json({ error: r.error, migration: r.status === 503 ? MIGRATION_0024 : undefined }, r.status as any)
+    return c.json({ ok: true, id: r.id, draft_id: r.draft_id, files: await listCaseFiles(sql, id) }, 201)
+  } finally { await sql.end() }
+})
+
+casesApi.delete('/:id/files/:fid', async (c) => {
+  const id = Number(c.req.param('id')), fid = Number(c.req.param('fid'))
+  const sql = getDb(c.env)
+  try {
+    if (!(await hasDraftFiles(sql))) return c.json({ error: 'Not found' }, 404)
+    await sql`DELETE FROM draft_files WHERE id = ${fid} AND case_id = ${id}`
+    return c.json({ ok: true, files: await listCaseFiles(sql, id) })
+  } finally { await sql.end() }
+})
+
+// ───────── New ticket: a manager starts an email to any address (not from Amazon) ─────────
+// The first send starts a new Gmail thread from the Amazon reply mailbox; replies to it are not synced (sync is Amazon-only).
+casesApi.post('/new', requireManager, async (c) => {
+  const b = (await c.req.json().catch(() => ({}))) as { to?: string; first_name?: string; subject?: string; body?: string }
+  const to = String(b.to ?? '').trim().toLowerCase()
+  if (!/^[^\s@<>"]+@[^\s@<>"]+\.[a-z]{2,}$/.test(to)) return c.json({ error: 'Enter a valid email address' }, 400)
+  const first = String(b.first_name ?? '').trim().slice(0, 80) || 'Customer'
+  const subject = String(b.subject ?? '').trim().slice(0, 200) || 'Message from Customer Support'
+  const text = String(b.body ?? '').trim().slice(0, 20000) || `Dear ${first},\n\n\n\nKind regards,\nCustomer Support Team`
+  const user = c.get('user')
+  const sql = getDb(c.env)
+  try {
+    const ref = await nextCaseRef(sql)
+    const [k] = await sql`INSERT INTO cases (case_ref, subject, status, customer_first_name, customer_email, customer_reply_to, source, last_customer_message_at)
+                          VALUES (${ref}, ${subject}, 'open', ${first}, ${to}, ${to}, 'manual', now()) RETURNING *`
+    const findings = serverChecks(text, k as any)
+    const fail = findings.some((f) => f.severity === 'fail')
+    const [d] = await sql`INSERT INTO drafts (case_id, tree, draft_text, original_text, staff_notes, check_result, check_findings, server_findings, needs_manager, needs_manager_reason, urgency, model, created_by, mode)
+                          VALUES (${k.id}, 'manual', ${text}, ${text}, '', ${fail ? 'FAIL' : 'PASS'}, ${sql.json([])}, ${sql.json(findings as any)}, FALSE, '', 'normal', 'manual', ${user.id}, 'customer') RETURNING id`
+    await sql`INSERT INTO messages (case_id, direction, sender, body, kind, sent_at) VALUES (${k.id}, 'inbound', 'ReplyIQ', ${`New ticket to ${to} opened by ${user.name}.`}, 'event', now())`
+    return c.json({ case: { id: k.id, case_ref: k.case_ref }, draft_id: d.id }, 201)
+  } finally { await sql.end() }
 })

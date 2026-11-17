@@ -6,6 +6,7 @@ import { loadActiveRules } from '../kb'
 import { loadCurrentPrompt } from '../systemPrompt'
 import { statusAfterSend } from '../caseOps'
 import { reviewInContext, openFindings, CONTEXT_RULES } from '../contextCheck'
+import { adoptFiles, hasDraftFiles } from '../draftFiles'
 import { decideManager, getApprovalSettings, saveApprovalSettings, hasStaffSendCols, staffRoutineVerdict } from '../approval'
 
 export const draftsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -92,6 +93,8 @@ async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: numb
             ${hasKb ? sql`, string_to_array(${kbRuleIds.join(',')}, ',')::int[]` : sql``} ${hasSpv ? sql`, ${promptVersion?.version ?? null}` : sql``}
             ${hasRev ? sql`, ${revision?.previousDraftId ?? null}, ${revision?.guidance ?? null}` : sql``})
     RETURNING id`
+  // Files already attached to this case (on an older unsent draft, or before any draft) carry over to the new draft.
+  await adoptFiles(sql, caseId, d.id).catch(() => {})
   const draft = await loadDraft(sql, d.id)
   return { draft, payload, kbRules, promptVersion }
 }
@@ -392,6 +395,7 @@ draftsApi.post('/drafts/:id/record-sent', async (c) => {
                    response_text = ${d.draft_text}, responded_by = ${user.id}, responded_at = now(), updated_at = now()
                  WHERE case_id = ${d.case_id} AND kind = ANY(string_to_array(${evKind.join(',')}, ',')) AND status IN ('open','requested','info_requested')`
       }
+      if (await hasDraftFiles(sql)) await tx`DELETE FROM draft_files WHERE draft_id = ${id}` // sent outside ReplyIQ: staff attached the file there
       after = await statusAfterSend(tx as any, d.case_id, resolve, id)
     })
     if (!toAmazon) await sql`UPDATE carrier_cases SET customer_update_due = FALSE WHERE case_id = ${d.case_id} AND customer_update_due`.catch(() => {})

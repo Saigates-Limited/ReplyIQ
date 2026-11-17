@@ -171,10 +171,9 @@
   const carrierUI = window.RiqCarrier ? window.RiqCarrier({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderCase: (id) => renderCase(id), renderError: (e) => renderError(e), refreshBadges: () => refreshBadges(), generate: (id, mode) => generate(id, mode) }) : null
 
   // Physical returns + refunds-without-return (public/static/returns.js)
-  // Files waiting to go on a case's next reply (e.g. an invoice made from the case). Picked up by the draft editor.
-  const queuedCaseFiles = new Map()
+  // Invoice "Attach to the reply" saves the PDF on the server against the case; the draft editor shows and sends it.
   const invoicesUI = window.RiqInvoices ? window.RiqInvoices({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderError: (e) => renderError(e),
-    queueCaseFile: (caseId, file) => queuedCaseFiles.set(caseId, [...(queuedCaseFiles.get(caseId) || []), file]) }) : null
+    queueCaseFile: (caseId, file) => axios.post(`/api/cases/${caseId}/files`, file) }) : null
   const returnsUI = window.RiqReturns ? window.RiqReturns({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderError: (e) => renderError(e), refreshBadges: () => refreshBadges(), renderTracker: (k) => renderTracker(k) }) : null
 
   // ---------- header clock ----------
@@ -739,7 +738,7 @@
     const seller = d.mode && d.mode !== 'customer'
     // Flow: edits are saved by whichever button you press. Routine reply → Send (5 s Undo). Needs a manager → Request approval;
     // a manager sees Approve & send. The server re-checks everything at send time.
-    const isGmailReply = !seller && kase.gmail_thread_id && kase.customer_reply_to
+    const isGmailReply = !seller && kase.customer_reply_to && (kase.gmail_thread_id || kase.source === 'manual')
     const pending = d.status === 'pending_approval'
     const canRequest = d.status === 'draft' && !fails.length
     const canApprove = isManager && ['draft', 'pending_approval'].includes(d.status) && !fails.length
@@ -807,7 +806,6 @@
       </div>`
   }
 
-  const pendingFiles = new Map() // draft id → files waiting to be sent with it
 
   function wireDraftEditor(caseId, kase, d) {
     const text = document.getElementById('draft-text')
@@ -830,34 +828,40 @@
     }
     // Send with a 5-second Undo instead of a confirmation dialog. Nothing leaves until the countdown ends.
     // Files to send with this reply. Kept per draft so they survive a re-render; read as base64 in the browser.
-    const files = pendingFiles.get(d.id) || []; pendingFiles.set(d.id, files)
-    if (queuedCaseFiles.has(caseId) && d.status !== 'sent' && document.getElementById('attach-btn')) {
-      const q = queuedCaseFiles.get(caseId); queuedCaseFiles.delete(caseId)
-      for (const f of q) if (!files.some((x) => x.filename === f.filename)) files.push(f)
-      setTimeout(() => toast(`Attached ${q.map((f) => f.filename).join(', ')} to this reply`), 300)
-    }
+    // Files on this reply are kept on the server (they survive reloads, approvals and regenerated drafts) and the server
+    // attaches them when the reply is sent. Only names/sizes come to the browser.
+    let files = []
     const fileSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'
     function renderFiles() {
       const box = document.getElementById('attach-list'); if (!box) return
-      box.innerHTML = files.map((f, i) => `<span class="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs"><i class="far fa-file-pdf text-red-600"></i>${esc(f.filename)} <span class="text-slate-400">${fileSize(f.size)}</span><button data-unattach="${i}" class="ml-1 text-slate-400 hover:text-red-700" title="Remove">&times;</button></span>`).join('')
-      box.querySelectorAll('[data-unattach]').forEach((b) => (b.onclick = () => { files.splice(Number(b.dataset.unattach), 1); renderFiles() }))
+      const locked = !document.getElementById('attach-btn')
+      box.innerHTML = files.map((f) => `<span class="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs"><i class="far ${/pdf/.test(f.mime_type) ? 'fa-file-pdf text-red-600' : 'fa-file-image text-sky-600'}"></i>${esc(f.filename)} <span class="text-slate-400">${fileSize(f.size_bytes)}</span>${locked ? '' : `<button data-unattach="${f.id}" class="ml-1 text-slate-400 hover:text-red-700" title="Remove">&times;</button>`}</span>`).join('')
+        + (files.length ? `<span class="text-[11px] text-slate-500 self-center">${files.length === 1 ? 'Goes' : 'Go'} with this reply when it is sent</span>`
+          : saysAttached(document.getElementById('draft-text')?.value ?? d.draft_text) && document.getElementById('attach-btn') ? '<span class="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded px-2 py-0.5"><i class="fas fa-paperclip mr-1"></i>The reply says a file is attached, but nothing is attached yet. It will not send until you attach it.</span>' : '')
+      box.querySelectorAll('[data-unattach]').forEach((b) => (b.onclick = async () => {
+        try { const { data } = await axios.delete(`/api/cases/${caseId}/files/${b.dataset.unattach}`); files = mine(data.files); renderFiles() } catch (e) { fail(e) }
+      }))
     }
+    // Same test as the server (src/draftFiles.ts saysFileAttached).
+    const saysAttached = (t) => { t = String(t || '').toLowerCase(); return /\b(?:is|are|has been|have been|been|we've|we have|i've|i have)\s+(?:also\s+)?attached\b/.test(t) || /\b(?:please\s+)?find\s+(?:the\s+)?attached\b/.test(t) || /\bhere (?:is|are) (?:the |your )?attached\b/.test(t) || /\battached (?:to this (?:message|email)|herewith|below|here)\b/.test(t) || /\b(?:i|we) (?:have |'ve )?(?:also )?attached\b/.test(t) || /\b(?:we )?(?:enclose|enclosed)\b/.test(t) }
+    document.getElementById('draft-text')?.addEventListener('input', () => { clearTimeout(renderFiles.t); renderFiles.t = setTimeout(renderFiles, 400) })
+    const mine = (list) => (list || []).filter((f) => f.draft_id === d.id || f.draft_id == null)
+    async function loadFiles() { try { const { data } = await axios.get(`/api/cases/${caseId}/files`); files = mine(data.files); renderFiles() } catch { /* list stays empty */ } }
     async function addFiles(list) {
       for (const file of list) {
         const ext = (file.name.split('.').pop() || '').toLowerCase()
         if (!['pdf', 'jpg', 'jpeg', 'png', 'xml'].includes(ext)) { toast(`${file.name}: Amazon accepts PDF, JPG, PNG or XML only`, 'err'); continue }
-        if (files.length >= 5) { toast('Amazon allows at most 5 files per message', 'err'); break }
-        const total = files.reduce((n, f) => n + f.size, 0) + file.size
-        if (total * 1.37 > 10 * 1048576) { toast('Amazon limits a message to 10 MB including files', 'err'); break }
         const base64 = await new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] || ''); r.onerror = bad; r.readAsDataURL(file) })
-        files.push({ filename: file.name, mime_type: file.type || (ext === 'pdf' ? 'application/pdf' : ext === 'png' ? 'image/png' : ext === 'xml' ? 'application/xml' : 'image/jpeg'), size: file.size, base64 })
+        const mime_type = file.type || (ext === 'pdf' ? 'application/pdf' : ext === 'png' ? 'image/png' : ext === 'xml' ? 'application/xml' : 'image/jpeg')
+        try { const { data } = await axios.post(`/api/cases/${caseId}/files`, { filename: file.name, mime_type, base64 }); files = mine(data.files) }
+        catch (e) { toast(e.response?.data?.error || e.message, 'err') }
       }
       renderFiles()
     }
     const attachInput = document.getElementById('attach-input')
     document.getElementById('attach-btn')?.addEventListener('click', () => attachInput?.click())
     attachInput?.addEventListener('change', () => { addFiles([...attachInput.files]); attachInput.value = '' })
-    renderFiles()
+    loadFiles()
 
     function sendWithUndo(prepare) {
       const area = document.getElementById('action-area'); const before = area.innerHTML
@@ -870,10 +874,9 @@
         area.innerHTML = '<span class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Sending…</span>'
         try {
           const saved = await prepare()
-          const attachments = files.map(({ filename, mime_type, base64 }) => ({ filename, mime_type, base64 }))
-          const { data: sr } = await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: saved.draft_text.trim(), resolve: resolveAfterSend, attachments }, { timeout: 90000 })
-          pendingFiles.delete(d.id)
-          toast(sentMessage(attachments.length ? `Reply sent with ${attachments.length} file${attachments.length > 1 ? 's' : ''}` : 'Reply sent to the customer', sr), sr?.resolve_blocked?.length ? 'err' : 'ok'); refresh()
+          const { data: sr } = await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: saved.draft_text.trim(), resolve: resolveAfterSend }, { timeout: 90000 })
+          const n = sr?.files_sent?.length || 0
+          toast(sentMessage(n ? `Reply sent with ${n} file${n > 1 ? 's' : ''}` : 'Reply sent to the customer', sr), sr?.resolve_blocked?.length ? 'err' : 'ok'); refresh()
         } catch (err) { fail(err); refresh() }
       }
     }
@@ -909,7 +912,7 @@
     // Agent + plain draft: if the server says this is a routine reply, offer Send next to Request approval.
     const slot = document.getElementById('routine-slot')
     if (slot && d.status === 'draft') {
-      const isGmail = (!d.mode || d.mode === 'customer') && kase.gmail_thread_id && kase.customer_reply_to
+      const isGmail = (!d.mode || d.mode === 'customer') && kase.customer_reply_to && (kase.gmail_thread_id || kase.source === 'manual')
       axios.get(`/api/drafts/${d.id}/routine-check`).then(({ data: rc }) => {
         if (!document.body.contains(slot) || !rc.eligible || (d.mode && d.mode !== 'customer')) return slot.remove()
         const req = document.getElementById('request-btn'); if (req) req.className = 'px-3 py-1.5 rounded-md text-sm text-violet-700 hover:bg-violet-50'
@@ -1251,6 +1254,31 @@
   // Paging: 50 or 100 per page (remembered); page resets when the folder / filter / search changes
   let pageSize = [50, 100].includes(Number(localStorage.getItem('riq.pageSize'))) ? Number(localStorage.getItem('riq.pageSize')) : 50
   let page = 1
+  // Manager: start an email to any address. Creates a case with a starter draft; sending it starts a new Gmail thread.
+  function openNewTicket() {
+    const dlg = document.createElement('div')
+    dlg.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4'
+    dlg.innerHTML = `<div class="bg-white rounded-xl shadow-xl w-full max-w-md p-5 space-y-3">
+        <h2 class="font-semibold"><i class="fas fa-pen-to-square mr-1 text-slate-400"></i>New ticket</h2>
+        <p class="text-xs text-slate-500">Sends from the Amazon reply mailbox to any address. Replies to it are not synced back, because the inbox only imports Amazon mail.</p>
+        <label class="block"><span class="field-label">To (email)</span><input id="nt-to" class="field-input" type="email" placeholder="name@example.com"></label>
+        <label class="block"><span class="field-label">First name</span><input id="nt-name" class="field-input" placeholder="Customer"></label>
+        <label class="block"><span class="field-label">Subject</span><input id="nt-subject" class="field-input" placeholder="Message from Customer Support"></label>
+        <div class="flex justify-end gap-2 pt-1"><button id="nt-cancel" class="px-3 py-1.5 rounded-md text-sm border border-slate-300">Cancel</button><button id="nt-create" class="px-3 py-1.5 rounded-md text-sm font-medium bg-slate-900 text-white">Create</button></div>
+      </div>`
+    document.body.appendChild(dlg)
+    const close = () => dlg.remove()
+    dlg.querySelector('#nt-cancel').onclick = close
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) close() })
+    dlg.querySelector('#nt-to').focus()
+    dlg.querySelector('#nt-create').onclick = async () => {
+      try {
+        const { data } = await axios.post('/api/cases/new', { to: dlg.querySelector('#nt-to').value, first_name: dlg.querySelector('#nt-name').value, subject: dlg.querySelector('#nt-subject').value })
+        close(); toast(`${data.case.case_ref} created: write the reply, attach any file, then send`); navigate(`/cases/${data.case.id}`)
+      } catch (e) { toast(e.response?.data?.error || e.message, 'err') }
+    }
+  }
+
   async function renderInbox(caseId) {
     const shell = document.getElementById('inbox-list')
     if (shell && inboxShellFilter !== listFilter) {
@@ -1267,6 +1295,7 @@
           <div class="pane pane-list">
             <div class="px-3 py-2 border-b border-slate-100 flex items-center justify-between gap-2">
               <h1 class="font-semibold text-sm"><i class="fas fa-inbox mr-1 text-slate-400"></i>Inbox <span class="text-slate-400 font-normal">/</span> <span id="inbox-folder-name"><i class="fas ${FOLDER_ICON[listFilter] || ''} mr-1 text-slate-400"></i>${esc((folderList().find(([v]) => v === listFilter) || ['', listFilter])[1])}</span></h1>
+              ${isManager ? '<button id="new-ticket-btn" class="tb-btn" title="Start an email to any address (manager)"><i class="fas fa-pen-to-square"></i> New</button>' : ''}
               <select id="inbox-filter" class="field-input py-1 text-xs mt-0" style="width:auto" title="Folder">
                 ${folderList().map(([v, l]) => `<option value="${v}" ${listFilter === v ? 'selected' : ''}>${l}</option>`).join('')}
               </select>
@@ -1296,6 +1325,7 @@
           </div></div>
         </section>`
       document.getElementById('inbox-filter').onchange = (e) => { navigate(`/inbox/${e.target.value}`) }
+      const ntb = document.getElementById('new-ticket-btn'); if (ntb) ntb.onclick = openNewTicket
       document.getElementById('tone-toggle').onclick = () => { toneOpen = !toneOpen; document.getElementById('tone-filter').classList.toggle('hidden', !toneOpen); document.getElementById('tone-filter').classList.toggle('flex', toneOpen); syncToneButton() }
       wireToneFilter()
       wireBulkBar()

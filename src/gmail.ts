@@ -280,7 +280,7 @@ const b64wrap = (s: string) => btoa(unescape(encodeURIComponent(s))).replace(/(.
  *  which keeps paragraphs and line breaks; plain-text-only mail is shown there as one unbroken block. */
 export async function sendReply(
   token: string,
-  args: { from: string; to: string; subject: string; body: string; inReplyTo?: string; references?: string; threadId: string; attachments?: OutgoingAttachment[] }
+  args: { from: string; to: string; subject: string; body: string; inReplyTo?: string; references?: string; threadId?: string; attachments?: OutgoingAttachment[] }
 ) {
   const boundary = `=_riq_${crypto.randomUUID().replace(/-/g, '')}`
   const files = args.attachments ?? []

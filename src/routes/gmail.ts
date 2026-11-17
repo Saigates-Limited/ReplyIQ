@@ -14,6 +14,7 @@ import { applyCleared } from '../contextCheck'
 import { classifyTone } from '../tone'
 import { getAttachment, getMessage, listAttachments } from '../gmail'
 import { AMAZON_ATTACHMENT_RULES, checkAttachments, parseOutgoingAttachments } from '../attachments'
+import { filesForSend, hasDraftFiles, saysFileAttached } from '../draftFiles'
 
 // Protected (mounted behind requireAuth)
 export const gmailApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -351,13 +352,23 @@ sendApi.post('/drafts/:id/send', async (c) => {
       return c.json({ error: 'The text on screen differs from the approved draft. Reload and try again.' }, 409)
 
     const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${d.case_id}`
-    if (!kase.gmail_thread_id || !kase.customer_reply_to) return c.json({ error: 'This case did not come from Gmail, so it cannot be sent from here. Use "Mark as sent" after sending in Amazon.' }, 400)
+    // A manager's New ticket has no thread until its first send; everything else must have come from Gmail.
+    const newThread = !kase.gmail_thread_id && (kase as any).source === 'manual' && !!kase.customer_reply_to
+    if ((!kase.gmail_thread_id && !newThread) || !kase.customer_reply_to) return c.json({ error: 'This case did not come from Gmail, so it cannot be sent from here. Use "Mark as sent" after sending in Amazon.' }, 400)
+    // Files: the ones saved on the server for this draft (migration 0024), plus any sent the old way in the request body.
+    const stored = await filesForSend(sql, kase.id, id)
+    const combined = [...stored, ...files.list.filter((f) => !stored.some((x) => x.filename === f.filename))]
+    const allFiles = parseOutgoingAttachments(combined.map((f) => ({ filename: f.filename, mime_type: f.mimeType, base64: f.base64 })))
+    if ('error' in allFiles) return c.json({ error: allFiles.error }, 400)
+    // The reply tells the customer a file is attached: refuse to send it without one (RIQ-1343 went out without its invoice).
+    if (!allFiles.list.length && saysFileAttached(d.draft_text))
+      return c.json({ error: 'The reply says a file is attached, but nothing is attached. Attach the file (Attach file, or Attach to the reply from the invoice screen), or remove that sentence, then send again.' }, 422)
     const fails = applyCleared(serverChecks(d.draft_text, kase), d.server_findings, d.draft_text).filter((f) => f.severity === 'fail')
     if (fails.length) return c.json({ error: 'Draft fails checks: ' + fails.map((f) => f.detail).join('; ') }, 422)
 
     const [lastInbound] = await sql`SELECT subject, rfc_message_id FROM messages WHERE case_id = ${kase.id} AND direction = 'inbound' ORDER BY sent_at DESC LIMIT 1`
     const refs = await sql`SELECT rfc_message_id FROM messages WHERE case_id = ${kase.id} AND rfc_message_id IS NOT NULL ORDER BY sent_at ASC`
-    const subject = lastInbound?.subject ? (/^re:/i.test(lastInbound.subject) ? lastInbound.subject : `Re: ${lastInbound.subject}`) : `Re: ${kase.subject}`
+    const subject = lastInbound?.subject ? (/^re:/i.test(lastInbound.subject) ? lastInbound.subject : `Re: ${lastInbound.subject}`) : newThread ? kase.subject : `Re: ${kase.subject}`
 
     // Atomically claim the send so two clicks cannot both go out
     const fromStatus = d.status as 'draft' | 'approved'
@@ -381,11 +392,11 @@ sendApi.post('/drafts/:id/send', async (c) => {
         body: d.draft_text,
         inReplyTo: lastInbound?.rfc_message_id || undefined,
         references: refs.map((r) => r.rfc_message_id).join(' ') || undefined,
-        threadId: kase.gmail_thread_id,
-        attachments: files.list,
+        threadId: kase.gmail_thread_id || undefined,
+        attachments: allFiles.list,
       })
       // Where Gmail stored the files we just sent, so they show on the thread and open like customer attachments.
-      const sentFiles = files.list.length ? await getMessage(token, sent.id).then(listAttachments).catch(() => []) : []
+      const sentFiles = allFiles.list.length ? await getMessage(token, sent.id).then(listAttachments).catch(() => []) : []
       let after: Awaited<ReturnType<typeof statusAfterSend>> | null = null
       await sql.begin(async (tx) => {
         await tx`UPDATE drafts SET status = 'sent', sent_via = 'gmail', sent_gmail_message_id = ${sent.id}, sent_recorded_by = ${user.id}, sent_recorded_at = now(), updated_at = now() WHERE id = ${id}`
@@ -393,7 +404,9 @@ sendApi.post('/drafts/:id/send', async (c) => {
         if (routine) await tx`UPDATE drafts SET sent_without_manager_approval = TRUE, routine_check = ${tx.json(routine as any)} WHERE id = ${id}`
         const [om] = await tx`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at)
                  VALUES (${kase.id}, 'outbound', ${'Saigates Support (' + user.name + ')'}, ${d.draft_text}, ${subject}, ${sent.id}, now()) RETURNING id`
-        for (const f of files.list) {
+        if (newThread) await tx`UPDATE cases SET gmail_thread_id = ${sent.threadId} WHERE id = ${kase.id} AND gmail_thread_id IS NULL`
+        if (await hasDraftFiles(tx as any)) await tx`DELETE FROM draft_files WHERE draft_id = ${id}`
+        for (const f of allFiles.list) {
           const g = sentFiles.find((x) => x.filename === f.filename)
           await tx`INSERT INTO attachments (message_id, case_id, filename, mime_type, size_bytes, source, gmail_message_id, gmail_attachment_id, uploaded_by)
                    VALUES (${om.id}, ${kase.id}, ${f.filename}, ${f.mimeType}, ${f.size}, 'gmail', ${sent.id}, ${g?.attachmentId ?? null}, ${user.id})`
@@ -402,7 +415,7 @@ sendApi.post('/drafts/:id/send', async (c) => {
       })
       // Carrier desk: the customer has now heard the latest carrier news
       await sql`UPDATE carrier_cases SET customer_update_due = FALSE WHERE case_id = ${kase.id} AND customer_update_due`.catch(() => {})
-      return c.json({ ok: true, gmail_message_id: sent.id, case_status: (after as any)?.status, resolve_blocked: (after as any)?.blocked ?? [] })
+      return c.json({ ok: true, gmail_message_id: sent.id, files_sent: allFiles.list.map((f) => f.filename), case_status: (after as any)?.status, resolve_blocked: (after as any)?.blocked ?? [] })
     } catch (e: any) {
       await sql`UPDATE drafts SET status = ${fromStatus}, updated_at = now() WHERE id = ${id} AND status = 'sending'`
       return c.json({ error: `Send failed: ${e.message}` }, 502)

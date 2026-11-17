@@ -248,7 +248,7 @@ window.RiqInvoices = function (h) {
       document.getElementById('inv-again').onclick = () => download(inv).catch(err)
       const at = document.getElementById('inv-attach')
       if (at) at.onclick = async () => {
-        try { h.queueCaseFile(f.case_id, await asAttachment(inv)); form = null; toast(`${inv.invoice_number} will be attached to the reply`); navigate(`/cases/${f.case_id}`) } catch (e) { err(e) }
+        try { await h.queueCaseFile(f.case_id, await asAttachment(inv)); form = null; toast(`${inv.invoice_number} is attached to the reply`); navigate(`/cases/${f.case_id}`) } catch (e) { err(e) }
       }
       form = { ...f, existing: [...(f.existing || []), inv] } // stay on the page; a second save needs a new number
     } catch (e) {
