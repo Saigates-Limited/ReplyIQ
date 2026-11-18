@@ -322,11 +322,16 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
         if (!ours && /\b(hot|heat|heating|overheat|burn|smok|swell|swollen|bulg)/i.test(body)) await sql`UPDATE cases SET battery_flag = TRUE WHERE id = ${kase.id}`
       }
 
-      // New customer message → reset the 24h clock and reopen if we were waiting on them
+      // New customer message → reset the 24h clock and reopen if we were waiting on them, or if staff had resolved it
+      // (RIQ-1300: "Is this an AI reply?" arrived on a resolved case and never reached the Open queue).
+      // Archived cases (incl. merged duplicates) are left as they are.
       if (latestInboundAt > new Date(kase.last_customer_message_at)) {
-        await sql`UPDATE cases SET last_customer_message_at = ${latestInboundAt},
-                    status = CASE WHEN status = 'awaiting_customer' THEN 'open' ELSE status END,
-                    updated_at = now() WHERE id = ${kase.id}`
+        const [r] = await sql`UPDATE cases SET last_customer_message_at = ${latestInboundAt},
+                    status = CASE WHEN status IN ('awaiting_customer', 'resolved') AND archived_at IS NULL THEN 'open' ELSE status END,
+                    updated_at = now() WHERE id = ${kase.id}
+                    RETURNING (status = 'open' AND ${kase.status ?? ''} = 'resolved') AS reopened`
+        if (r?.reopened) await sql`INSERT INTO messages (case_id, direction, sender, body, kind, sent_at)
+                    VALUES (${kase.id}, 'inbound', 'ReplyIQ', 'Reopened: the customer wrote again after the case was resolved.', 'event', now())`.catch(() => {})
       }
       if (product) await sql`UPDATE cases SET device_model = ${product} WHERE id = ${kase.id} AND device_model IS NULL`
       // Latest reply-to address may rotate; keep current
