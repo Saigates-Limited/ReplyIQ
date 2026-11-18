@@ -1,4 +1,5 @@
 // Gmail → cases sync. Read-only against Gmail. Runs from the cron trigger and from a manual button.
+import { markDraftsSentFromCopy } from './sendGuards'
 import type { Bindings, Sql } from './db'
 import { redactPii } from './ai'
 import { gmailBackoffUntil, setGmailBackoff, accessToken, listConnections, hasMultiMailbox, listThreadIds, getThread, header, messageBody, GmailQuotaError, type GmailMessage, type GmailConnection } from './gmail'
@@ -485,6 +486,10 @@ async function ingestNoticeInner(sql: Sql, m: GmailMessage, kind: NonNullable<Re
     if (same) return 'dup'
     await sql`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, rfc_message_id, sent_at, kind)
               VALUES (${k.id}, 'outbound', 'Saigates Support (via Seller Central)', ${r.text.slice(0, 20000)}, ${subject}, ${m.id}, ${header(m, 'Message-ID') || null}, ${at}, 'seller_central_copy')`
+    // A draft with this text is still waiting in ReplyIQ → it was sent from Seller Central: mark it sent so nobody sends it twice (RIQ-1300).
+    const marked = await markDraftsSentFromCopy(sql, k.id, r.text, at).catch(() => [] as number[])
+    if (marked.length) await sql`INSERT INTO messages (case_id, direction, sender, body, kind, sent_at)
+      VALUES (${k.id}, 'inbound', 'ReplyIQ', ${`Draft ${marked.map((x) => '#' + x).join(', ')} marked as sent: the same reply was sent from Seller Central.`}, 'event', ${at})`.catch(() => {})
     await sql`UPDATE cases SET status = CASE WHEN status = 'open' THEN 'awaiting_customer' ELSE status END, updated_at = now() WHERE id = ${k.id} AND last_customer_message_at < ${at}`
     return 'new'
   }

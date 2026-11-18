@@ -15,6 +15,7 @@ import { classifyTone } from '../tone'
 import { getAttachment, getMessage, listAttachments } from '../gmail'
 import { AMAZON_ATTACHMENT_RULES, checkAttachments, parseOutgoingAttachments } from '../attachments'
 import { filesForSend, hasDraftFiles, saysFileAttached } from '../draftFiles'
+import { findAlreadySent, customerWroteSince } from '../sendGuards'
 
 // Protected (mounted behind requireAuth)
 export const gmailApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -307,7 +308,7 @@ export const sendApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 sendApi.post('/drafts/:id/send', async (c) => {
   const id = Number(c.req.param('id'))
   const user = c.get('user')
-  const body = (await c.req.json().catch(() => ({}))) as { confirm_text?: string; final_text?: string; staff_notes?: string; resolve?: boolean; attachments?: unknown }
+  const body = (await c.req.json().catch(() => ({}))) as { confirm_text?: string; final_text?: string; staff_notes?: string; resolve?: boolean; attachments?: unknown; resend_confirmed?: boolean; seen_new_messages?: boolean }
   // Files to send with the reply (base64 from the browser). Same Amazon rules as the upload check: PDF/JPG/PNG/XML, ≤5 files, ≤10 MB.
   const files = parseOutgoingAttachments(body.attachments)
   if ('error' in files) return c.json({ error: files.error }, 400)
@@ -355,6 +356,18 @@ sendApi.post('/drafts/:id/send', async (c) => {
     // A manager's New ticket has no thread until its first send; everything else must have come from Gmail.
     const newThread = !kase.gmail_thread_id && (kase as any).source === 'manual' && !!kase.customer_reply_to
     if ((!kase.gmail_thread_id && !newThread) || !kase.customer_reply_to) return c.json({ error: 'This case did not come from Gmail, so it cannot be sent from here. Use "Mark as sent" after sending in Amazon.' }, 400)
+    // Already sent: the same text went out before (from ReplyIQ or pasted into Seller Central). Real resends are confirmed by staff.
+    if (!body.resend_confirmed) {
+      const prev = await findAlreadySent(sql, kase.id, d.draft_text)
+      if (prev) return c.json({ code: 'already_sent', error: `This reply was already sent on ${new Date(prev.sent_at).toLocaleString('en-GB', { timeZone: 'Europe/London', dateStyle: 'medium', timeStyle: 'short' })}${prev.kind === 'seller_central_copy' ? ' (from Seller Central)' : ''}. Sending it again looks automatic to the customer.`, sent_at: prev.sent_at }, 409)
+    }
+    // Customer wrote again after this draft was written or last edited: show them what is new before it goes.
+    if (!body.seen_new_messages) {
+      const since = [d.created_at, d.edited_at].filter(Boolean).map((x: any) => new Date(x).getTime()).reduce((a, b) => Math.max(a, b), 0)
+      const fresh = await customerWroteSince(sql, kase.id, new Date(since))
+      if (fresh.length) return c.json({ code: 'customer_wrote_since', error: `${kase.customer_first_name || 'The customer'} wrote ${fresh.length === 1 ? 'again' : fresh.length + ' more messages'} after this draft was written. Check it still answers them.`,
+        messages: (fresh as any[]).map((m) => ({ at: m.sent_at, text: String(m.body).slice(0, 400) })) }, 409)
+    }
     // Files: the ones saved on the server for this draft (migration 0024), plus any sent the old way in the request body.
     const stored = await filesForSend(sql, kase.id, id)
     const combined = [...stored, ...files.list.filter((f) => !stored.some((x) => x.filename === f.filename))]

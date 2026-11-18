@@ -7,6 +7,7 @@ import { loadCurrentPrompt } from '../systemPrompt'
 import { statusAfterSend } from '../caseOps'
 import { reviewInContext, openFindings, CONTEXT_RULES } from '../contextCheck'
 import { adoptFiles, hasDraftFiles } from '../draftFiles'
+import { repeatFinding } from '../sendGuards'
 import { decideManager, getApprovalSettings, saveApprovalSettings, hasStaffSendCols, staffRoutineVerdict } from '../approval'
 
 export const draftsApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -73,7 +74,8 @@ async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: numb
   const kbRules = await loadActiveRules(sql, mode)
   const promptVersion = await loadCurrentPrompt(sql)
   const { result, payload, kbRuleIds } = await generateDraft(env, kase, messages, { events, mode, kbRules, customPrompt: promptVersion?.body, revision })
-  const stored = await reviewInContext(env, kase, messages, events, result.draft, serverChecks(result.draft, kase, mode))
+  const rep = mode === 'customer' ? repeatFinding(result.draft, messages as any) : null
+  const stored = await reviewInContext(env, kase, messages, events, result.draft, [...serverChecks(result.draft, kase, mode), ...(rep ? [rep] : [])])
   const findings = openFindings(stored)
   const checkResult = findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS'
   const { needsManager, reasons, urgency } = decideManager(result, kase, messages, findings, mode)
@@ -186,9 +188,11 @@ draftsApi.patch('/drafts/:id', async (c) => {
     if (!text) return c.json({ error: 'Draft text cannot be empty' }, 400)
     const notes = typeof body.staff_notes === 'string' ? body.staff_notes : existing.staff_notes
     const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${existing.case_id}`
-    const raw = serverChecks(text, kase, (existing.mode as DraftMode) || 'customer')
+    const thread = await threadFor(sql, existing.case_id)
+    const rep = (existing.mode || 'customer') === 'customer' ? repeatFinding(text, thread as any) : null
+    const raw = [...serverChecks(text, kase, (existing.mode as DraftMode) || 'customer'), ...(rep ? [rep] : [])]
     // Context check only when a judgement rule fired (one extra model call); otherwise this stays instant.
-    const findings = raw.some((f) => CONTEXT_RULES[f.rule]) ? await reviewInContext(c.env, kase, await threadFor(sql, existing.case_id), [], text, raw) : raw
+    const findings = raw.some((f) => CONTEXT_RULES[f.rule]) ? await reviewInContext(c.env, kase, thread, [], text, raw) : raw
     const open = openFindings(findings)
     const serverFail = open.some((f) => f.severity === 'fail')
     // "Refund above £15" is the one manager reason that comes from these checks. If the edited text no longer offers one

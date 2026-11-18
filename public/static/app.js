@@ -863,7 +863,28 @@
     attachInput?.addEventListener('change', () => { addFiles([...attachInput.files]); attachInput.value = '' })
     loadFiles()
 
-    function sendWithUndo(prepare) {
+    // Server stopped the send for a reason staff must see (already sent / customer wrote again): explain and offer a choice.
+    function sendStopped(err, prepare, extra) {
+      const code = err?.response?.data?.code
+      if (!['already_sent', 'customer_wrote_since'].includes(code)) return false
+      const area = document.getElementById('action-area'); if (!area) return false
+      const data = err.response.data
+      const msgs = (data.messages || []).map((m) => `<div class="mt-1 rounded border border-amber-200 bg-white px-2 py-1 text-xs text-slate-700"><span class="text-slate-400">${fmtDateTime(m.at)}</span> ${esc(m.text)}</div>`).join('')
+      const flag = code === 'already_sent' ? 'resend_confirmed' : 'seen_new_messages'
+      const goLabel = code === 'already_sent' ? 'Send it again anyway' : 'I have read it — send anyway'
+      area.innerHTML = `<div class="w-full rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">
+          <div><i class="fas fa-hand mr-1"></i>${esc(data.error)}</div>${msgs}
+          <div class="mt-2 flex flex-wrap gap-2">
+            <button id="stop-cancel" class="px-3 py-1 rounded-md border border-slate-300 bg-white text-sm">Don't send</button>
+            <button id="stop-go" class="px-3 py-1 rounded-md text-sm" style="background:#b45309;color:#fff">${goLabel}</button>
+          </div>
+          ${code === 'customer_wrote_since' ? '<div class="mt-1 text-xs text-amber-800">Better: edit the reply, or use "Ask AI to change" to answer what they said.</div>' : ''}
+        </div>`
+      document.getElementById('stop-cancel').onclick = () => refresh()
+      document.getElementById('stop-go').onclick = () => sendWithUndo(prepare, { ...extra, [flag]: true })
+      return true
+    }
+    function sendWithUndo(prepare, extra = {}) {
       const area = document.getElementById('action-area'); const before = area.innerHTML
       let left = 5, cancelled = false
       area.innerHTML = `<span class="text-sm text-emerald-800"><i class="fas fa-paper-plane mr-1"></i>Sending in <b id="undo-left">5</b>s</span><button id="undo-send" class="px-4 py-1.5 rounded-md text-sm font-medium border border-slate-300 bg-white hover:bg-slate-50">Undo</button>`
@@ -874,10 +895,10 @@
         area.innerHTML = '<span class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Sending…</span>'
         try {
           const saved = await prepare()
-          const { data: sr } = await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: saved.draft_text.trim(), resolve: resolveAfterSend }, { timeout: 90000 })
+          const { data: sr } = await axios.post(`/api/drafts/${d.id}/send`, { confirm_text: saved.draft_text.trim(), resolve: resolveAfterSend, ...extra }, { timeout: 90000 })
           const n = sr?.files_sent?.length || 0
           toast(sentMessage(n ? `Reply sent with ${n} file${n > 1 ? 's' : ''}` : 'Reply sent to the customer', sr), sr?.resolve_blocked?.length ? 'err' : 'ok'); refresh()
-        } catch (err) { fail(err); refresh() }
+        } catch (err) { if (!sendStopped(err, prepare, extra)) { fail(err); refresh() } }
       }
     }
     function wireActions() {

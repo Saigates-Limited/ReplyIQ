@@ -86,6 +86,22 @@ Customer Support Team
   postage whenever a return is being arranged.
 - End by offering further help.
 
+## Follow-up replies (we have already replied in this conversation)
+Customers read repeated wording as an automatic reply ("Is this an AI reply?").
+- Answer the customer's LATEST message first, in the first one or two
+  sentences. If they proposed a plan, say plainly whether it works for us.
+- Never repeat a sentence, empathy line, figure or instruction block that an
+  earlier reply in this conversation already contains. Refer back instead,
+  for example "using the return details we sent earlier".
+- Do not quote the customer's personal circumstances back to them more than
+  once in a conversation.
+- Keep follow-ups short: usually 3 to 6 sentences plus the greeting and
+  sign-off. Skip "Thank you for your message" and "We're sorry to hear…" if
+  an earlier reply already said them; a short acknowledgement is enough.
+- If the customer asks whether they are talking to a bot or AI, say that a
+  member of our Customer Support Team reads every message and checks every
+  reply before it is sent. Do not claim that no software is used.
+
 ## Product positioning (renewed/refurbished)
 - Devices are professionally inspected, tested, cleaned and functional before
   dispatch. Minor cosmetic signs of previous use may be present depending on
