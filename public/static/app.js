@@ -292,6 +292,44 @@
   }
 
   // ---------- CASE SCREEN ----------
+  // Right-hand cards on the case page: collapsed by default, click the heading to expand. Some cards are redrawn by
+  // carrier.js / returns.js after load or after an action, so a MutationObserver re-applies this; the open/closed
+  // choice is remembered per card while you stay on the same case.
+  const COLLAPSIBLE_CARDS = ['carrier-panel', 'returns-panel', 'customer-panel', 'amazon-order-panel', 'case-fields']
+  const cardOpen = new Map() // `${caseId}:${panelId}` → true when expanded
+  function makeCollapsible(caseId) {
+    const enhance = (section) => {
+      const h2 = section?.querySelector('h2, h3'); if (!h2) return
+      let level = section
+      while (level.children.length === 1 && level.firstElementChild !== h2) level = level.firstElementChild
+      const head = [...level.children].find((c) => c.contains(h2)); if (!head || level.children.length < 2) return
+      const key = `${caseId}:${section.id}`
+      const apply = () => {
+        const open = !!cardOpen.get(key)
+        level.classList.toggle('riq-collapsed', !open)
+        const chev = h2.querySelector('.riq-chev'); if (chev) chev.className = `riq-chev fas ${open ? 'fa-chevron-up' : 'fa-chevron-down'} ml-2 text-xs text-slate-400`
+        head.setAttribute('aria-expanded', String(open))
+      }
+      if (!h2.querySelector('.riq-chev')) { const c = document.createElement('i'); c.className = 'riq-chev'; h2.appendChild(c) }
+      head.classList.add('riq-head')
+      if (!head.dataset.riqToggle) {
+        head.dataset.riqToggle = '1'
+        head.setAttribute('role', 'button'); head.tabIndex = 0
+        const toggle = (e) => { if (e.target.closest('a,button,select,input,textarea,label')) return; cardOpen.set(key, !cardOpen.get(key)); apply() }
+        head.addEventListener('click', toggle)
+        head.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(e) } })
+      }
+      apply()
+    }
+    const run = () => COLLAPSIBLE_CARDS.forEach((id) => enhance(document.getElementById(id)))
+    run()
+    const aside = document.getElementById('customer-panel')?.parentElement
+    if (aside && !aside.dataset.riqObserved) {
+      aside.dataset.riqObserved = '1'
+      let t; new MutationObserver(() => { clearTimeout(t); t = setTimeout(run, 30) }).observe(aside, { childList: true, subtree: true })
+    }
+  }
+
   // AI Overview: closed by default; the first open runs it (cached server-side until a new message arrives).
   function wireOverview(caseId) {
     const btn = document.getElementById('ovw-toggle'), body = document.getElementById('ovw-body'), chev = document.getElementById('ovw-chev'), meta = document.getElementById('ovw-meta')
@@ -501,6 +539,7 @@
     renderDraftWorkspace(id, k, data.drafts, data.events)
     const sc = document.getElementById('chat-scroll'); if (sc) sc.scrollTop = sc.scrollHeight
     wireOverview(id)
+    makeCollapsible(id)
     document.querySelectorAll('#inbox-list .ticket-item').forEach((el) => el.classList.toggle('active', Number(el.dataset.caseId) === id))
     document.querySelector('.inbox')?.classList.add('show-detail')
   }
@@ -844,11 +883,7 @@
           ${!locked && d.status !== 'sending' ? '<button id="discard-btn" class="px-2 py-1.5 text-sm text-slate-400 hover:text-red-700">Discard</button>' : ''}
           <span id="action-area" class="inline-flex flex-wrap items-center gap-2">${primary}</span>
         </div>
-        <details class="mt-3 text-xs text-slate-500" ${d.staff_notes ? 'open' : ''}>
-          <summary class="cursor-pointer">Staff notes${d.staff_notes ? '' : ' (none)'}</summary>
-          <textarea id="staff-notes" class="field-input text-xs mt-1" rows="3" placeholder="Internal, never sent" ${locked ? 'readonly' : ''}>${esc(d.staff_notes || '')}</textarea>
-          ${d.agent_guidance ? `<div class="mt-1"><i class="fas fa-clock-rotate-left mr-1"></i>Rewritten from: <em>“${esc(d.agent_guidance)}”</em></div>` : ''}
-        </details>
+
       </div>`
   }
 
@@ -861,7 +896,7 @@
     const HANDLED = '__handled'
     const fail = (err) => { if (err?.message !== HANDLED) toast(err.response?.data?.error || err.message, 'err') }
     async function act(fn, okMsg) { try { await fn(); if (okMsg) toast(okMsg); refresh() } catch (err) { fail(err) } }
-    const unsaved = () => text.value.trim() !== d.draft_text.trim() || (notes?.value || '') !== (d.staff_notes || '')
+    const unsaved = () => text.value.trim() !== d.draft_text.trim() || (notes ? notes.value !== (d.staff_notes || '') : false)
     // Every action button saves edits first (no separate Save & re-check). A failing check stops the action and shows why.
     async function ensureSaved() {
       if (!unsaved()) return d
@@ -1866,7 +1901,6 @@ House style: open with a one-line acknowledgement of the problem, then the next 
         out.innerHTML = `<div class="rounded-lg border border-violet-200 bg-violet-50 p-3">
           <div class="flex flex-wrap items-center gap-2 text-xs mb-2"><span class="pill bg-violet-100 text-violet-800"><i class="fas fa-flask mr-1"></i>TEST — not saved</span><span class="pill ${data.check_result === 'PASS' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}">${data.check_result}</span>${data.needs_manager ? `<span class="pill bg-amber-100 text-amber-800">needs manager: ${esc(data.needs_manager_reason)}</span>` : ''}<span class="pill pill-${data.urgency === 'high' ? 'high' : data.urgency === 'low' ? 'low' : 'medium'}">${esc(data.urgency)}</span><span class="text-slate-500 ml-auto">lane: ${esc(data.lane)} · ${esc(data.case.case_ref)}${data.compared_to_version ? ` · current is v${data.compared_to_version}` : ''}</span></div>
           <div class="message-body text-sm bg-white rounded-md p-3 border border-slate-200">${esc(data.draft_text)}</div>
-          ${data.staff_notes ? `<div class="text-xs text-slate-600 mt-2"><strong>Staff notes:</strong> ${esc(data.staff_notes)}</div>` : ''}
           ${data.server_findings.length ? `<ul class="text-xs mt-2 space-y-0.5">${data.server_findings.map((f) => `<li class="${f.severity === 'fail' ? 'text-red-700' : 'text-amber-700'}"><i class="fas ${f.severity === 'fail' ? 'fa-circle-xmark' : 'fa-triangle-exclamation'} mr-1"></i>${esc(f.rule)}: ${esc(f.detail)}</li>`).join('')}</ul>` : ''}
         </div>`
       } catch (err) { out.innerHTML = `<p class="text-sm text-red-700">${esc(err.response?.data?.problems?.[0] || err.response?.data?.error || err.message)}</p>` }

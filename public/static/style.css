@@ -247,3 +247,9 @@ html.dark #ai-overview { --ovw-bg:#131c2e; border-color:#24324a; }
 html.dark #ai-overview ol { border-color:#334155; }
 html.dark #ai-overview ol li > span.absolute { background:#0b1220; border-color:#64748b; }
 html.dark #ai-overview .text-slate-500 { color:#94a3b8; }
+
+/* Collapsible right-hand cards on the case page (collapsed by default) */
+.riq-head { cursor: pointer; user-select: none; }
+.riq-collapsed > :not(.riq-head) { display: none !important; }
+.riq-collapsed > .riq-head, .riq-collapsed > .riq-head h2, .riq-collapsed > .riq-head h3, .riq-collapsed > h2.riq-head { margin-bottom: 0 !important; }
+.riq-head:focus-visible { outline: 2px solid #3b82f6; outline-offset: 4px; border-radius: 4px; }
