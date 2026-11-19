@@ -308,7 +308,7 @@
           <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline · ${o.timeline.length} item${o.timeline.length === 1 ? '' : 's'}</summary>
           <ol class="mt-2 border-l border-slate-300 ml-1.5 space-y-1.5">
             ${o.timeline.map((t) => `<li class="relative pl-4 text-sm"><span class="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-white border border-slate-400"></span>
-              <span class="text-xs text-slate-500 tabular-nums">${dayjs(t.at).format('DD MMM, HH:mm')}</span>
+              <span class="text-xs text-slate-500 tabular-nums">${dayjs(t.at).format(dayjs(t.at).year() === dayjs().year() ? 'DD MMM, HH:mm' : 'DD MMM YYYY')}</span>
               <i class="fas ${ICON[t.type] || 'fa-circle'} text-xs mx-1"></i>${t.who ? `<span class="font-medium">${esc(t.who)}:</span> ` : ''}${esc(t.label)}${t.detail ? ` <span class="text-slate-500">· ${esc(t.detail)}</span>` : ''}</li>`).join('')}
           </ol>
         </details>
