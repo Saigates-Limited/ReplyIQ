@@ -4,6 +4,7 @@ import { requireManager, type Vars } from '../auth'
 import { TONES, TONE_META } from '../tone'
 import { hasStaffSendCols } from '../approval'
 import { mergeCases } from '../caseOps'
+import { getOverview } from '../overview'
 import { addCaseFile, listCaseFiles, hasDraftFiles, MIGRATION_0024 } from '../draftFiles'
 import { nextCaseRef } from '../sync'
 import { serverChecks, MODEL } from '../ai'
@@ -469,4 +470,16 @@ casesApi.post('/new', requireManager, async (c) => {
     await sql`INSERT INTO messages (case_id, direction, sender, body, kind, sent_at) VALUES (${k.id}, 'inbound', 'ReplyIQ', ${`New ticket to ${to} opened by ${user.name}.`}, 'event', now())`
     return c.json({ case: { id: k.id, case_ref: k.case_ref }, draft_id: d.id }, 201)
   } finally { await sql.end() }
+})
+
+// ───────── AI Overview (case page, generated only when staff open it; cached until a new message arrives) ─────────
+casesApi.post('/:id/overview', async (c) => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id)) return c.json({ error: 'Invalid id' }, 400)
+  const refresh = !!((await c.req.json().catch(() => ({}))) as { refresh?: boolean }).refresh
+  const sql = getDb(c.env)
+  try {
+    const o = await getOverview(c.env, sql, id, c.get('user').id, refresh)
+    return o ? c.json({ overview: o }) : c.json({ error: 'Case not found' }, 404)
+  } catch (e: any) { return c.json({ error: e.message }, 500) } finally { await sql.end() }
 })

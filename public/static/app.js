@@ -292,6 +292,44 @@
   }
 
   // ---------- CASE SCREEN ----------
+  // AI Overview: closed by default; the first open runs it (cached server-side until a new message arrives).
+  function wireOverview(caseId) {
+    const btn = document.getElementById('ovw-toggle'), body = document.getElementById('ovw-body'), chev = document.getElementById('ovw-chev'), meta = document.getElementById('ovw-meta')
+    if (!btn) return
+    let loaded = false
+    const ICON = { order: 'fa-box text-slate-500', amazon: 'fa-brands fa-amazon text-amber-600', customer: 'fa-user text-sky-600', amazon_cs: 'fa-headset text-amber-600', us: 'fa-reply text-emerald-600', note: 'fa-circle-info text-slate-400' }
+    const draw = (o) => {
+      meta.textContent = `${o.cached ? 'Saved' : 'Updated'} ${fmtDateTime(o.generated_at)}`
+      body.innerHTML = `
+        ${o.bullets?.length ? `<ul class="list-disc pl-5 space-y-1 text-sm">${o.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
+        ${o.pending ? `<p class="mt-2 text-sm"><span class="font-semibold">Next:</span> ${esc(o.pending)}</p>` : ''}
+        ${o.note ? `<p class="mt-2 text-xs text-slate-500">${esc(o.note)}</p>` : ''}
+        <details class="mt-3" ${o.timeline.length <= 12 ? 'open' : ''}>
+          <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline · ${o.timeline.length} item${o.timeline.length === 1 ? '' : 's'}</summary>
+          <ol class="mt-2 border-l border-slate-300 ml-1.5 space-y-1.5">
+            ${o.timeline.map((t) => `<li class="relative pl-4 text-sm"><span class="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-white border border-slate-400"></span>
+              <span class="text-xs text-slate-500 tabular-nums">${dayjs(t.at).format('DD MMM, HH:mm')}</span>
+              <i class="fas ${ICON[t.type] || 'fa-circle'} text-xs mx-1"></i>${t.who ? `<span class="font-medium">${esc(t.who)}:</span> ` : ''}${esc(t.label)}${t.detail ? ` <span class="text-slate-500">· ${esc(t.detail)}</span>` : ''}</li>`).join('')}
+          </ol>
+        </details>
+        <div class="mt-3 flex items-center justify-between text-xs text-slate-500">
+          <span>${o.ai ? 'By ReplyIQ AI; there may be mistakes. Dates come from ReplyIQ records.' : 'Built from ReplyIQ records.'}</span>
+          <button id="ovw-refresh" class="hover:text-slate-800"><i class="fas fa-rotate mr-1"></i>Refresh</button>
+        </div>`
+      document.getElementById('ovw-refresh').onclick = (e) => { e.stopPropagation(); run(true) }
+    }
+    const run = async (refresh = false) => {
+      body.innerHTML = '<p class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Reading the conversation…</p>'
+      try { const { data } = await axios.post(`/api/cases/${caseId}/overview`, { refresh }, { timeout: 60000 }); loaded = true; draw(data.overview) }
+      catch (e) { body.innerHTML = `<p class="text-sm text-red-700">${esc(e.response?.data?.error || e.message)}</p>` }
+    }
+    btn.onclick = () => {
+      const open = body.classList.toggle('hidden') === false
+      btn.setAttribute('aria-expanded', String(open)); chev.className = `fas ${open ? 'fa-chevron-up' : 'fa-chevron-down'}`
+      if (open && !loaded) run(false)
+    }
+  }
+
   async function renderCase(id) {
     if (renderCase.lastId !== id) resolveAfterSend = false  // the Resolve dot never carries over to another case
     renderCase.lastId = id
@@ -347,6 +385,13 @@
                 </select>
                 <span class="text-slate-400">${data.messages.length} item${data.messages.length === 1 ? '' : 's'}</span>
               </div>
+            </div>
+            <div id="ai-overview" class="mx-3 sm:mx-4 mt-3 rounded-xl border border-slate-200" style="background:var(--ovw-bg,#f1f4f9)">
+              <button id="ovw-toggle" class="w-full flex items-center justify-between gap-2 px-4 py-2.5 text-left" aria-expanded="false">
+                <span class="font-medium text-sm"><i class="fas fa-wand-magic-sparkles mr-2 text-slate-500"></i>AI Overview</span>
+                <span class="flex items-center gap-3 text-xs text-slate-500"><span id="ovw-meta"></span><i id="ovw-chev" class="fas fa-chevron-down"></i></span>
+              </button>
+              <div id="ovw-body" class="px-4 pb-3 hidden"></div>
             </div>
             <div class="chat p-3 sm:p-4 flex flex-col gap-2 max-h-[60vh] overflow-auto" id="chat-scroll">
               ${chatItems(data.messages, data.events, data.attachments || [])}
@@ -455,6 +500,7 @@
     returnsUI?.mountCasePanel(id, k)
     renderDraftWorkspace(id, k, data.drafts, data.events)
     const sc = document.getElementById('chat-scroll'); if (sc) sc.scrollTop = sc.scrollHeight
+    wireOverview(id)
     document.querySelectorAll('#inbox-list .ticket-item').forEach((el) => el.classList.toggle('active', Number(el.dataset.caseId) === id))
     document.querySelector('.inbox')?.classList.add('show-detail')
   }

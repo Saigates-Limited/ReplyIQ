@@ -241,3 +241,9 @@ html.dark .bg-rose-100 { background-color:#881337; } html.dark .text-rose-800 { 
 html.sb-collapsed .side-nav .nav-sub { margin-left:0; padding-left:0; border-left:0; }
 .nav-badge-red { background:#dc2626; color:#fff; }
 .nav-badge-violet { background:#7c3aed; color:#fff; }
+
+/* AI Overview panel (case page) */
+html.dark #ai-overview { --ovw-bg:#131c2e; border-color:#24324a; }
+html.dark #ai-overview ol { border-color:#334155; }
+html.dark #ai-overview ol li > span.absolute { background:#0b1220; border-color:#64748b; }
+html.dark #ai-overview .text-slate-500 { color:#94a3b8; }
