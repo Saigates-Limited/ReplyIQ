@@ -53,8 +53,10 @@ invoicesApi.put('/settings', requireManager, async (c) => {
   const sql = getDb(c.env)
   try {
     const keys = Object.keys(patch)
-    if (keys.length) await sql`UPDATE invoice_settings SET ${sql(patch, keys)}, updated_by = ${c.get('user').id}, updated_at = now() WHERE id = 1`
-    const [s] = await sql`SELECT * FROM invoice_settings WHERE id = 1`
+    // RETURNING, not a fresh SELECT: Hyperdrive caches reads for up to a minute, so a re-read can show the old values.
+    const [s] = keys.length
+      ? await sql`UPDATE invoice_settings SET ${sql(patch, keys)}, updated_by = ${c.get('user').id}, updated_at = now() WHERE id = 1 RETURNING *`
+      : await sql`SELECT * FROM invoice_settings WHERE id = 1`
     return c.json({ settings: s })
   } catch (e) { return fail(c, e) } finally { await sql.end() }
 })
