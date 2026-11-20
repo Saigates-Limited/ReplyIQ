@@ -39,6 +39,10 @@ authPublic.post('/login', async (c) => {
     const [user] = await sql<LoginRow[]>`SELECT id, email, name, role, password_hash, is_active, failed_logins, locked_until,
                                            totp_enabled_at, password_changed_at, password_must_change FROM users WHERE email = ${email}`
     if (!user) {
+      // Same lockout as a real account, so the answer never shows whether an email has an account (pen test 20 Nov 2026).
+      const [{ n }] = await sql`SELECT COUNT(*)::int AS n FROM security_log WHERE event = 'login_failed' AND email = ${email}
+                                AND at > now() - make_interval(mins => ${LOCK_MINUTES})`
+      if (n >= LOCK_AFTER_FAILS) return c.json({ error: LOCKED_MSG }, 429)
       await logSecurity(sql, { event: 'login_failed', email, ip: clientIp(c), detail: { reason: 'unknown_email' } })
       return c.json({ error: 'Invalid email or password' }, 401)
     }

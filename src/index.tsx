@@ -32,6 +32,20 @@ app.use('*', async (c, next) => {
   c.header('X-Frame-Options', 'DENY')
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('Referrer-Policy', 'same-origin')
+  c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()')
+  // Content-Security-Policy (pen test 20 Nov 2026): scripts only from us and the three CDNs we pin; no plugins, no framing,
+  // forms and API calls only to this site. Attachment downloads set their own stricter CSP.
+  if (!c.res.headers.has('Content-Security-Policy')) c.header('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.tailwindcss.com",
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.googleapis.com",
+    "font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    "frame-src 'self' blob: data:",
+    "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'",
+  ].join('; '))
   if (c.req.path.startsWith('/api/')) c.header('Cache-Control', 'no-store')
 })
 

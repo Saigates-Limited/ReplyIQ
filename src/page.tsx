@@ -173,8 +173,10 @@ export const loginPage = () => `${HEAD('Sign in · ReplyIQ')}
     const forms = { login: $('login-form'), mfa_verify: $('mfa-form'), mfa_setup: $('mfa-setup-form'), password_change: $('pw-form') }
     const fail = (ex, fallback) => { err.textContent = ex.response?.data?.error || fallback; err.classList.remove('hidden') }
     const done = () => {
-      const next = new URLSearchParams(location.search).get('next')
-      location.href = next && next.startsWith('/') && !next.startsWith('//') ? next : '/'
+      // Only ever go to a page on this site (pen test 20 Nov 2026: "/\\evil.com" and tab tricks used to leave it).
+      let dest = '/'
+      try { const u = new URL(new URLSearchParams(location.search).get('next') || '/', location.origin); if (u.origin === location.origin) dest = u.pathname + u.search + u.hash } catch {}
+      location.href = dest
     }
     async function show(stage) {
       if (stage === 'full') return done()
