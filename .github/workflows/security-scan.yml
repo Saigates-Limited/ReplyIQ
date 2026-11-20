@@ -1,0 +1,25 @@
+# Monthly vulnerability scan of all dependencies (Amazon SP-API security commitment: scans every 30 days).
+# Fails (and GitHub emails the repo owner) when a high or critical vulnerability is found.
+# Remediation deadlines: critical 7 days, high 30 days, others 90 days. Track each finding as a GitHub issue.
+name: Security scan
+
+on:
+  schedule:
+    - cron: '17 6 1 * *'   # 06:17 UTC on the 1st of every month
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Production dependencies (blocks on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+      - name: All dependencies (report)
+        run: npm audit || true
