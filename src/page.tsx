@@ -70,7 +70,8 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
         <div class="sb-user mt-6 px-3 pt-3 border-t border-slate-800 flex items-center gap-2">
           <span class="inline-flex items-center justify-center w-8 h-8 rounded-full flex-shrink-0 ${user.role === 'manager' ? 'bg-violet-500' : 'bg-sky-600'} text-white text-xs font-bold" title="${esc(user.name)} · ${esc(user.role)}">${esc(user.name.replace(/[^\p{L}\s]/gu, '').trim().split(/\s+/).map((p) => p[0] || '').join('').slice(0, 2).toUpperCase())}</span>
           <span class="sb-label min-w-0"><span class="block text-white text-sm truncate">${esc(user.name)}</span><span class="block text-[10px] text-emerald-400 uppercase">● ${esc(user.role)}</span></span>
-          <button id="logout-btn" class="sb-label ml-auto text-slate-400 hover:text-white" title="Sign out"><i class="fas fa-right-from-bracket"></i></button>
+          <button id="change-pw-btn" class="sb-label ml-auto text-slate-400 hover:text-white" title="Change password"><i class="fas fa-key"></i></button>
+          <button id="logout-btn" class="sb-label ml-2 text-slate-400 hover:text-white" title="Sign out"><i class="fas fa-right-from-bracket"></i></button>
         </div>
       </nav>
     </aside>
@@ -109,6 +110,7 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
 
 export const loginPage = () => `${HEAD('Sign in · ReplyIQ')}
 <body class="bg-slate-900 min-h-screen flex items-center justify-center p-4">
+  <style>#login-card .hidden{display:none}</style>
   <main id="login-card" class="w-full max-w-sm bg-white rounded-2xl shadow-xl p-8">
     <div class="flex items-center gap-3 mb-6">
       <span class="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-amber-400 text-slate-900 text-lg"><i class="fas fa-reply-all"></i></span>
@@ -126,29 +128,99 @@ export const loginPage = () => `${HEAD('Sign in · ReplyIQ')}
         <label for="password" class="field-label">Password</label>
         <input id="password" name="password" type="password" required autocomplete="current-password" class="field-input">
       </div>
-      <p id="login-error" class="hidden text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2"></p>
       <button id="login-btn" type="submit" class="w-full py-2.5 rounded-md bg-slate-900 text-white font-medium hover:bg-slate-800">
         Sign in
       </button>
     </form>
+
+    <form id="mfa-form" class="hidden space-y-4" autocomplete="off">
+      <h2 class="font-semibold">Enter your sign-in code</h2>
+      <p class="text-sm text-slate-600">Open your authenticator app and type the 6-digit code for <strong>ReplyIQ</strong>.</p>
+      <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required class="field-input text-center text-2xl tracking-widest font-mono" placeholder="000000">
+      <button type="submit" class="w-full py-2.5 rounded-md bg-slate-900 text-white font-medium hover:bg-slate-800">Continue</button>
+    </form>
+
+    <form id="mfa-setup-form" class="hidden space-y-3" autocomplete="off">
+      <h2 class="font-semibold">Set up two-step sign-in</h2>
+      <p class="text-sm text-slate-600">ReplyIQ now needs a code from an authenticator app each time you sign in. Install <strong>Google Authenticator</strong> or <strong>Microsoft Authenticator</strong> on your phone, tap <strong>+</strong> and scan this code.</p>
+      <div id="mfa-qr" class="flex justify-center py-2"></div>
+      <p class="text-xs text-slate-500">Can't scan? Choose "enter a setup key" and type: <span id="mfa-secret" class="font-mono text-slate-800 select-all break-all"></span></p>
+      <label class="field-label" for="setup-code">Then enter the 6-digit code the app shows</label>
+      <input id="setup-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required class="field-input text-center text-2xl tracking-widest font-mono" placeholder="000000">
+      <button type="submit" class="w-full py-2.5 rounded-md bg-slate-900 text-white font-medium hover:bg-slate-800">Turn on and continue</button>
+    </form>
+
+    <form id="pw-form" class="hidden space-y-3" autocomplete="on">
+      <h2 class="font-semibold">Choose a new password</h2>
+      <p id="pw-why" class="text-sm text-slate-600">Your password needs changing before you continue.</p>
+      <div><label class="field-label" for="pw-current">Current password</label><input id="pw-current" name="current" type="password" required autocomplete="current-password" class="field-input"></div>
+      <div><label class="field-label" for="pw-next">New password</label><input id="pw-next" name="next" type="password" required minlength="12" autocomplete="new-password" class="field-input"></div>
+      <div><label class="field-label" for="pw-confirm">Confirm new password</label><input id="pw-confirm" name="confirm" type="password" required autocomplete="new-password" class="field-input"></div>
+      <p class="text-xs text-slate-500">At least 12 characters, with upper and lower case letters, a number and a special character (for example ! or -). Passwords are changed every 12 months.</p>
+      <button type="submit" class="w-full py-2.5 rounded-md bg-slate-900 text-white font-medium hover:bg-slate-800">Save and continue</button>
+    </form>
+
+    <p id="login-error" class="hidden mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2"></p>
+    <p id="step-out" class="hidden mt-4 text-xs text-center"><a href="#" class="underline text-slate-500 hover:text-slate-700">Cancel and sign out</a></p>
     <p class="mt-6 text-xs text-slate-400 text-center"><i class="fas fa-lock mr-1"></i>Staff only. Access is logged.</p>
     <p class="mt-2 text-xs text-slate-400 text-center"><a href="/privacy" class="underline hover:text-slate-600">Privacy policy</a> · Saigates Ltd</p>
   </main>
   <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
   <script>
-    const form = document.getElementById('login-form'), err = document.getElementById('login-error'), btn = document.getElementById('login-btn');
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault(); err.classList.add('hidden'); btn.disabled = true; btn.textContent = 'Signing in…';
-      try {
-        await axios.post('/api/auth/login', { email: form.email.value, password: form.password.value });
-        const next = new URLSearchParams(location.search).get('next');
-        location.href = next && next.startsWith('/') && !next.startsWith('//') ? next : '/';
-      } catch (ex) {
-        err.textContent = ex.response?.data?.error || 'Sign in failed'; err.classList.remove('hidden');
-        btn.disabled = false; btn.textContent = 'Sign in';
+    const $ = (id) => document.getElementById(id)
+    const err = $('login-error')
+    const forms = { login: $('login-form'), mfa_verify: $('mfa-form'), mfa_setup: $('mfa-setup-form'), password_change: $('pw-form') }
+    const fail = (ex, fallback) => { err.textContent = ex.response?.data?.error || fallback; err.classList.remove('hidden') }
+    const done = () => {
+      const next = new URLSearchParams(location.search).get('next')
+      location.href = next && next.startsWith('/') && !next.startsWith('//') ? next : '/'
+    }
+    async function show(stage) {
+      if (stage === 'full') return done()
+      err.classList.add('hidden')
+      for (const [k, f] of Object.entries(forms)) f.classList.toggle('hidden', k !== stage)
+      $('step-out').classList.toggle('hidden', stage === 'login')
+      if (stage === 'mfa_setup') {
+        try {
+          const { data } = await axios.post('/api/auth/mfa/setup')
+          const qr = qrcode(0, 'M'); qr.addData(data.otpauth); qr.make()
+          $('mfa-qr').innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2 })
+          $('mfa-secret').textContent = data.secret.replace(/(.{4})/g, '$1 ').trim()
+        } catch (ex) { fail(ex, 'Could not start setup') }
       }
-    });
+      const first = forms[stage]?.querySelector('input'); if (first) first.focus()
+    }
+    const busy = (form, on) => { const b = form.querySelector('button[type=submit]'); b.disabled = on; b.classList.toggle('opacity-60', on) }
+    forms.login.addEventListener('submit', async (e) => {
+      e.preventDefault(); err.classList.add('hidden'); busy(forms.login, true)
+      try {
+        const { data } = await axios.post('/api/auth/login', { email: forms.login.email.value, password: forms.login.password.value })
+        forms.login.password.value = ''
+        show(data.next || 'full')
+      } catch (ex) { fail(ex, 'Sign in failed') } finally { busy(forms.login, false) }
+    })
+    for (const [stage, path] of [['mfa_verify', '/api/auth/mfa/verify'], ['mfa_setup', '/api/auth/mfa/enable']]) {
+      forms[stage].addEventListener('submit', async (e) => {
+        e.preventDefault(); err.classList.add('hidden'); busy(forms[stage], true)
+        try { const { data } = await axios.post(path, { code: forms[stage].code.value }); show(data.next) }
+        catch (ex) {
+          if (ex.response?.status === 401 && /Authentication required/.test(ex.response?.data?.error || '')) return show('login')
+          forms[stage].code.value = ''; fail(ex, 'That code did not work')
+        } finally { busy(forms[stage], false) }
+      })
+    }
+    forms.password_change.addEventListener('submit', async (e) => {
+      e.preventDefault(); err.classList.add('hidden')
+      const f = forms.password_change
+      if (f.next.value !== f.confirm.value) return fail({}, 'The new passwords do not match')
+      busy(f, true)
+      try { await axios.post('/api/auth/password', { current: f.current.value, next: f.next.value }); done() }
+      catch (ex) { fail(ex, 'Could not change the password') } finally { busy(f, false) }
+    })
+    $('step-out').querySelector('a').onclick = async (e) => { e.preventDefault(); await axios.post('/api/auth/logout').catch(() => {}); location.reload() }
+    // Part-way through signing in (e.g. after a reload)? Carry on from that step.
+    axios.get('/api/auth/me').then(({ data }) => { if (data.stage && data.stage !== 'full') show(data.stage) }).catch(() => {})
   </script>
 </body>
 </html>`
@@ -167,7 +239,7 @@ export const setupPage = () => `${HEAD('First-run setup · ReplyIQ')}
     <form id="setup-form" class="space-y-4" autocomplete="off">
       <div><label for="name" class="field-label">Your name</label><input id="name" name="name" required class="field-input"></div>
       <div><label for="email" class="field-label">Work email</label><input id="email" name="email" type="email" required class="field-input"></div>
-      <div><label for="password" class="field-label">Password (12+ characters)</label><input id="password" name="password" type="password" minlength="12" required autocomplete="new-password" class="field-input"></div>
+      <div><label for="password" class="field-label">Password (12+ characters, upper and lower case, a number and a special character)</label><input id="password" name="password" type="password" minlength="12" required autocomplete="new-password" class="field-input"></div>
       <div><label for="confirm" class="field-label">Confirm password</label><input id="confirm" name="confirm" type="password" required autocomplete="new-password" class="field-input"></div>
       <p id="setup-error" class="hidden text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2"></p>
       <button id="setup-btn" type="submit" class="w-full py-2.5 rounded-md bg-slate-900 text-white font-medium hover:bg-slate-800">Create manager account</button>
@@ -183,7 +255,7 @@ export const setupPage = () => `${HEAD('First-run setup · ReplyIQ')}
       btn.disabled = true; btn.textContent = 'Creating…';
       try {
         await axios.post('/api/auth/setup', { name: form.name.value, email: form.email.value, password: form.password.value });
-        location.href = '/';
+        location.href = '/login';
       } catch (ex) {
         err.textContent = ex.response?.data?.error || 'Setup failed'; err.classList.remove('hidden');
         btn.disabled = false; btn.textContent = 'Create manager account';
@@ -206,7 +278,7 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
     <article class="bg-white rounded-xl shadow-sm p-8 space-y-6 leading-relaxed">
       <header>
         <h1 class="text-2xl font-bold">Privacy Policy</h1>
-        <p class="text-sm text-slate-500 mt-1">ReplyIQ — an internal customer-service tool operated by Saigates Ltd. Last updated 11 November 2026.</p>
+        <p class="text-sm text-slate-500 mt-1">ReplyIQ — an internal customer-service tool operated by Saigates Ltd. Last updated 20 November 2026.</p>
       </header>
 
       <section>
@@ -218,7 +290,8 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
         <h2 class="font-semibold text-lg mb-2">What data we process and why</h2>
         <ul class="list-disc pl-5 space-y-1">
           <li><strong>Customer messages.</strong> ReplyIQ reads Amazon customer messages that arrive in our Amazon Seller Central Gmail inbox (Gmail read permission) so that our staff can see and reply to them in one place, and sends staff-approved replies from that same inbox (Gmail send permission).</li>
-          <li><strong>Order details</strong> that our staff enter about a case (order number, product, delivery date, tracking) so that replies are accurate.</li>
+          <li><strong>Order details</strong> for our own Amazon orders (order number, product, dates, tracking), read from Amazon's Selling Partner API or entered by staff, so that replies are accurate.</li>
+          <li><strong>Buyer name and billing address</strong>, read from Amazon for one order at a time, only when a member of staff creates a VAT invoice for that order. They appear on the invoice and are stored only with the saved invoice. Each lookup is logged.</li>
           <li><strong>Staff accounts</strong> (name, work email, hashed password) so that only authorised staff can use the tool.</li>
         </ul>
         <p class="mt-2">Every reply to a customer is written as a draft and reviewed by a member of staff. A reply is sent only when a member of staff approves it and presses <strong>Send</strong>; the send goes through our Gmail account using the Gmail send permission. Nothing is sent automatically.</p>
@@ -232,7 +305,7 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
 
       <section>
         <h2 class="font-semibold text-lg mb-2">Where data is stored</h2>
-        <p>Case data is stored in our Supabase (PostgreSQL) database hosted in London, United Kingdom, and accessed through Cloudflare. Access requires a staff login. The Google sign-in token for the connected mailbox is stored encrypted (AES-256) and is never shown in the browser. Only a manager can connect or disconnect the mailbox.</p>
+        <p>Case data is stored in our Supabase (PostgreSQL) database hosted in London, United Kingdom, encrypted at rest (AES-256), and accessed through Cloudflare over HTTPS. Access requires a named staff login with a password of at least 12 characters, changed every 12 months, and a code from an authenticator app (multi-factor authentication). Sign-ins, failed sign-ins and buyer-address lookups are recorded in a security log that cannot be edited. The Google sign-in token for the connected mailbox is stored encrypted (AES-256) and is never shown in the browser. Only a manager can connect or disconnect the mailbox.</p>
       </section>
 
       <section>
@@ -251,7 +324,12 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
 
       <section>
         <h2 class="font-semibold text-lg mb-2">Retention and your rights</h2>
-        <p>We keep case records for as long as needed to handle the customer's order and any follow-up, and to meet our obligations as an Amazon seller. Customers may ask us what we hold about them, or ask us to correct or delete it, by contacting us below.</p>
+        <p>When a case is closed and the customer has not written for 30 days (and no A-to-Z claim, chargeback or return is still open), ReplyIQ automatically removes the customer's name, email address, phone number and postal address from the case and from every stored message and draft. VAT invoices are kept for the six years UK VAT law requires and are then deleted. Customers may ask us what we hold about them, or ask us to correct or delete it, by contacting us below.</p>
+      </section>
+
+      <section>
+        <h2 class="font-semibold text-lg mb-2">Security incidents</h2>
+        <p>If we discover unauthorised access to customer data we revoke access, rotate credentials, work out what was affected, and notify Amazon (security@amazon.com) within 24 hours and the Information Commissioner's Office within 72 hours where required.</p>
       </section>
 
       <section>

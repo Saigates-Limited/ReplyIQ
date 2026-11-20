@@ -11,6 +11,7 @@
 import { Hono } from 'hono'
 import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
+import { logSecurity, clientIp } from '../security'
 import { fetchOrder, fetchOrderContact, spapiConfigured, type SpapiEnv } from '../spapi'
 
 export const invoicesApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -84,6 +85,7 @@ invoicesApi.get('/prefill', async (c) => {
     // Name + delivery address straight from Amazon (not stored anywhere except on the invoice the user saves).
     let contact: { name: string; buyerName: string; addressLines: string[]; fields: string[] } | null = null, contactError = ''
     if (live) {
+      await logSecurity(sql, { event: 'buyer_address_lookup', user_id: c.get('user').id, email: c.get('user').email, ip: clientIp(c), detail: { case_id: k.id, order_id: k.order_id } })
       try { contact = await fetchOrderContact(env, k.order_id) } catch (e: any) {
         contactError = e?.status === 403 ? 'Amazon refused the buyer name and address: the ReplyIQ app needs the personal-data (PII) role in Seller Central (Apps & Services > Develop apps). Paste the Order details page instead.' : `Amazon did not return the address (${e?.message || 'error'}). Paste the Order details page instead.`
       }
@@ -121,6 +123,7 @@ invoicesApi.get('/:id', async (c) => {
   const sql = getDb(c.env)
   try {
     const [r] = await sql`SELECT i.*, u.name AS created_by_name FROM invoices i LEFT JOIN users u ON u.id = i.created_by WHERE i.id = ${id}`
+    if (r) await logSecurity(sql, { event: 'invoice_opened', user_id: c.get('user').id, email: c.get('user').email, ip: clientIp(c), detail: { invoice_id: id, invoice_number: r.invoice_number, order_id: r.order_id } })
     return r ? c.json({ invoice: r }) : c.json({ error: 'Not found' }, 404)
   } catch (e) { return fail(c, e) } finally { await sql.end() }
 })
@@ -158,6 +161,10 @@ invoicesApi.post('/', async (c) => {
 
 invoicesApi.delete('/:id', requireManager, async (c) => {
   const sql = getDb(c.env)
-  try { await sql`DELETE FROM invoices WHERE id = ${Number(c.req.param('id'))}`; return c.json({ ok: true }) }
+  try {
+    const [r] = await sql`DELETE FROM invoices WHERE id = ${Number(c.req.param('id'))} RETURNING invoice_number, order_id`
+    if (r) await logSecurity(sql, { event: 'invoice_deleted', user_id: c.get('user').id, email: c.get('user').email, ip: clientIp(c), detail: r })
+    return c.json({ ok: true })
+  }
   catch (e) { return fail(c, e) } finally { await sql.end() }
 })

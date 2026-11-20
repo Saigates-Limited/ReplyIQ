@@ -20,6 +20,8 @@ import { syncCarrierMail, prepareDueDrafts } from './carrier/service'
 import { runSync } from './sync'
 import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
+import { purgeBuyerData } from './security'
+import { redactPii } from './ai'
 import { page, loginPage, setupPage, privacyPage } from './page'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -169,6 +171,9 @@ app.onError((err, c) => {
   return c.json({ error: err.message || 'Internal error' }, 500)
 })
 
+// Pattern pass for the clean-up: the same redaction used before text goes to OpenAI (emails, phones, postcodes, street lines).
+const purgePatterns = (t: string) => redactPii(t, { customer_first_name: '' } as any)
+
 // Worker entry: HTTP + cron. The scheduled handler is the ONLY automated path and it is read-only (sync).
 export default {
   fetch: app.fetch,
@@ -202,6 +207,13 @@ export default {
             }
           } catch (e) {
             if (!/column|relation/.test(String((e as Error)?.message))) console.error('refund check failed', e)
+          }
+          // Daily buyer-data clean-up (Amazon Data Protection Policy): closed cases quiet for 30 days lose the buyer's
+          // personal details; VAT invoices older than 6 years are deleted. Both daily crons run it; it is idempotent.
+          try {
+            if (_event.cron !== '*/15 * * * *') console.log('pii purge', JSON.stringify(await purgeBuyerData(sql, purgePatterns)))
+          } catch (e) {
+            console.error('pii purge failed', e)
           }
         } catch (e) {
           console.error('scheduled run failed', e)

@@ -164,6 +164,29 @@
     await axios.post('/api/auth/logout')
     location.href = '/login'
   })
+  document.getElementById('change-pw-btn')?.addEventListener('click', () => {
+    const d = document.createElement('div')
+    d.className = 'fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4'
+    d.innerHTML = `<form class="bg-white text-slate-800 rounded-xl shadow-xl p-5 w-full max-w-sm space-y-3">
+      <h2 class="font-semibold">Change password</h2>
+      <div><label class="field-label">Current password</label><input name="current" type="password" required autocomplete="current-password" class="field-input"></div>
+      <div><label class="field-label">New password</label><input name="next" type="password" required minlength="12" autocomplete="new-password" class="field-input"></div>
+      <div><label class="field-label">Confirm new password</label><input name="confirm" type="password" required autocomplete="new-password" class="field-input"></div>
+      <p class="text-xs text-slate-500">12+ characters with upper and lower case, a number and a special character. Your other devices will be signed out.</p>
+      <p data-err class="hidden text-sm text-red-700"></p>
+      <div class="flex gap-2 justify-end"><button type="button" data-cancel class="px-3 py-1.5 rounded-md border border-slate-300 text-sm">Cancel</button>
+        <button class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm">Save</button></div></form>`
+    document.body.appendChild(d)
+    const f = d.querySelector('form'), e = d.querySelector('[data-err]')
+    d.querySelector('[data-cancel]').onclick = () => d.remove()
+    f.current.focus()
+    f.onsubmit = async (ev) => {
+      ev.preventDefault()
+      if (f.next.value !== f.confirm.value) { e.textContent = 'The new passwords do not match'; e.classList.remove('hidden'); return }
+      try { await axios.post('/api/auth/password', { current: f.current.value, next: f.next.value }); d.remove(); toast('Password changed') }
+      catch (err) { e.textContent = err.response?.data?.error || err.message; e.classList.remove('hidden') }
+    }
+  })
   const ME = window.CURRENT_USER || { role: 'agent' }
   const isManager = ME.role === 'manager'
 
@@ -1101,7 +1124,7 @@
           <div class="lg:col-span-2 bg-white rounded-xl shadow-sm overflow-hidden">
             <table class="w-full text-sm">
               <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                <tr><th class="px-4 py-3">Name</th><th class="px-4 py-3">Email</th><th class="px-4 py-3">Role</th><th class="px-4 py-3">Last login</th><th class="px-4 py-3">Status</th></tr>
+                <tr><th class="px-4 py-3">Name</th><th class="px-4 py-3">Email</th><th class="px-4 py-3">Role</th><th class="px-4 py-3">Last login</th><th class="px-4 py-3">Sign-in security</th><th class="px-4 py-3">Status</th></tr>
               </thead>
               <tbody>
                 ${users.map((u) => `
@@ -1115,6 +1138,11 @@
                       </select>
                     </td>
                     <td class="px-4 py-3 text-slate-500">${u.last_login_at ? dayjs(u.last_login_at).fromNow() : 'never'}</td>
+                    <td class="px-4 py-3 text-xs">
+                      <span class="${u.mfa ? 'text-emerald-700' : 'text-amber-700'}"><i class="fas ${u.mfa ? 'fa-shield-halved' : 'fa-triangle-exclamation'} mr-1"></i>${u.mfa ? 'MFA on' : 'MFA at next sign-in'}</span>
+                      <span class="block text-slate-500">${u.password_changed_at ? 'password changed ' + dayjs(u.password_changed_at).fromNow() : ''}</span>
+                      ${u.mfa && u.id !== ME.id ? '<button data-reset-mfa class="mt-1 text-xs px-2 py-0.5 rounded-md border border-slate-300" title="Lost phone: they set up MFA again at next sign-in">reset MFA</button>' : ''}
+                    </td>
                     <td class="px-4 py-3">
                       <button data-toggle class="text-xs px-2 py-1 rounded-md ${u.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}" ${u.id === ME.id ? 'disabled' : ''}>${u.is_active ? 'active' : 'deactivated'}</button>
                       <button data-reset class="text-xs px-2 py-1 rounded-md border border-slate-300 ml-1" title="Set a new password">reset pw</button>
@@ -1128,7 +1156,8 @@
             <div><label class="field-label">Name</label><input name="name" required class="field-input"></div>
             <div><label class="field-label">Work email</label><input name="email" type="email" required class="field-input"></div>
             <div><label class="field-label">Role</label><select name="role" class="field-input"><option value="agent">agent</option><option value="manager">manager</option></select></div>
-            <div><label class="field-label">Initial password (10+ chars)</label><input name="password" type="text" minlength="10" required class="field-input font-mono"></div>
+            <div><label class="field-label">Temporary password</label><input name="password" type="text" minlength="12" required class="field-input font-mono">
+              <p class="text-xs text-slate-500 mt-1">12+ characters with upper and lower case, a number and a special character. At first sign-in they set up MFA and choose their own password.</p></div>
             <button class="w-full py-2 rounded-md bg-slate-900 text-white text-sm font-medium">Create</button>
           </form>
         </div>
@@ -1153,10 +1182,59 @@
       tr.querySelector('[data-role]').onchange = (e) => patch({ role: e.target.value }, 'Role updated')
       tr.querySelector('[data-toggle]').onclick = (e) => patch({ is_active: e.target.textContent.trim() !== 'active' }, 'Status updated')
       tr.querySelector('[data-reset]').onclick = () => {
-        const pw = prompt('New password (10+ characters). The user will be signed out.')
+        const pw = prompt('Temporary password (12+ characters with upper and lower case, a number and a special character). The user will be signed out and must choose a new one at next sign-in.')
         if (pw) patch({ password: pw }, 'Password reset')
       }
+      const rm = tr.querySelector('[data-reset-mfa]')
+      if (rm) rm.onclick = () => { if (confirm('Reset MFA for this person? They will be signed out and set it up again at next sign-in.')) patch({ reset_mfa: true }, 'MFA reset') }
     })
+    renderSecurityLog()
+  }
+
+  // Security log (managers): every sign-in, failed sign-in, MFA change, password change and buyer-address lookup.
+  const SEC_EVENTS = { login: 'Signed in', login_failed: 'Failed sign-in', login_locked: 'Account locked (10 min)', mfa_failed: 'Wrong MFA code', mfa_enabled: 'MFA turned on',
+    mfa_reset: 'MFA reset by manager', logout: 'Signed out', password_changed: 'Password changed', password_reset_by_manager: 'Password reset by manager',
+    user_created: 'User created', user_deactivated: 'User deactivated', user_reactivated: 'User reactivated', role_changed: 'Role changed',
+    buyer_address_lookup: 'Buyer address fetched from Amazon', invoice_opened: 'Invoice opened', invoice_deleted: 'Invoice deleted', pii_purge: 'Buyer data clean-up' }
+  async function renderSecurityLog(filter = '') {
+    let box = app.querySelector('#security-log')
+    if (!box) { box = document.createElement('section'); box.id = 'security-log'; box.className = 'mt-8'; app.querySelector('#staff-section')?.appendChild(box) }
+    let data
+    try { ({ data } = await axios.get('/api/auth/security-log', { params: { event: filter || undefined, limit: 200 } })) }
+    catch (err) { box.innerHTML = `<p class="text-sm text-red-700">Security log: ${esc(err.response?.data?.error || err.message)}</p>`; return }
+    const det = (r) => {
+      const d = typeof r.detail === 'string' ? JSON.parse(r.detail || '{}') : r.detail || {}
+      if (r.event === 'buyer_address_lookup') return `order ${esc(d.order_id || '')}${d.case_id ? ` · <a class="text-sky-700 underline" href="/cases/${d.case_id}" data-link>case</a>` : ''}`
+      if (r.event === 'invoice_opened' || r.event === 'invoice_deleted') return `${esc(d.invoice_number || '')} · order ${esc(d.order_id || '')}`
+      if (r.event === 'pii_purge') return `${d.cases} case(s) cleaned · ${d.invoices_deleted} old invoice(s) deleted`
+      if (r.event === 'login_failed' && d.reason === 'unknown_email') return 'unknown email'
+      if (r.event === 'role_changed') return `now ${esc(d.role || '')}`
+      return ''
+    }
+    const k = data.counts || {}
+    box.innerHTML = `
+      <div class="flex flex-wrap items-end gap-3 mb-3">
+        <div><h2 class="text-lg font-bold">Security log</h2>
+          <p class="text-sm text-slate-500">Review weekly. Last 7 days: <strong>${k.failed_7d ?? 0}</strong> failed sign-ins · <strong>${k.locked_7d ?? 0}</strong> lockouts · <strong>${k.address_7d ?? 0}</strong> buyer-address lookups · last buyer-data clean-up ${k.last_purge ? dayjs(k.last_purge).fromNow() : 'not run yet'}. Entries cannot be edited or deleted.</p></div>
+        <select id="sec-filter" class="field-input ml-auto" style="width:auto">
+          <option value="">All events</option>
+          ${Object.entries(SEC_EVENTS).map(([v, l]) => `<option value="${v}" ${v === filter ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div class="bg-white rounded-xl shadow-sm overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr><th class="px-4 py-2">When</th><th class="px-4 py-2">Event</th><th class="px-4 py-2">Who</th><th class="px-4 py-2">IP</th><th class="px-4 py-2">Detail</th></tr></thead>
+          <tbody>${data.rows.length ? data.rows.map((r) => `
+            <tr class="border-b border-slate-100 ${/failed|locked/.test(r.event) ? 'bg-red-50' : ''}">
+              <td class="px-4 py-2 whitespace-nowrap text-slate-500" title="${esc(dayjs(r.at).format('D MMM YYYY HH:mm:ss'))}">${dayjs(r.at).format('D MMM HH:mm')}</td>
+              <td class="px-4 py-2">${esc(SEC_EVENTS[r.event] || r.event)}</td>
+              <td class="px-4 py-2">${esc(r.user_name || r.email || (r.event === 'pii_purge' ? 'ReplyIQ (daily job)' : ''))}</td>
+              <td class="px-4 py-2 text-slate-500 font-mono text-xs">${esc(r.ip || '')}</td>
+              <td class="px-4 py-2 text-slate-600">${det(r)}</td>
+            </tr>`).join('') : '<tr><td colspan="5" class="px-4 py-6 text-center text-slate-500">Nothing logged yet.</td></tr>'}</tbody>
+        </table>
+      </div>`
+    box.querySelector('#sec-filter').onchange = (e) => renderSecurityLog(e.target.value)
   }
 
   // ---------- GMAIL (connection + sync status) ----------

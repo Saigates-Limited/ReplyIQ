@@ -1,0 +1,12 @@
+# Dependency vulnerability scanning (promised in the Amazon SP-API security review, Nov 2026).
+# Security alerts open pull requests straight away; routine version bumps weekly.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    labels: [dependencies, security]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }
