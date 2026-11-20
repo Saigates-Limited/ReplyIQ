@@ -25,6 +25,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Release gate (Amazon SP-API security review): no deploy while a production dependency has a high/critical vulnerability.
+      - name: Vulnerability scan (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
       - name: Unit tests
         run: npm run test:unit
       - name: Build
