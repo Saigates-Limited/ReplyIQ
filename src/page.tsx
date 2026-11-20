@@ -324,7 +324,7 @@ export const privacyPage = () => `${HEAD('Privacy Policy · ReplyIQ · Saigates 
 
       <section>
         <h2 class="font-semibold text-lg mb-2">Retention and your rights</h2>
-        <p>When a case is closed and the customer has not written for 30 days (and no A-to-Z claim, chargeback or return is still open), ReplyIQ automatically removes the customer's name, email address, phone number and postal address from the case and from every stored message and draft. VAT invoices are kept for the six years UK VAT law requires and are then deleted. Customers may ask us what we hold about them, or ask us to correct or delete it, by contacting us below.</p>
+        <p>When a case is closed and the customer has not written for 30 days (and no A-to-Z claim, chargeback or return is still open), ReplyIQ automatically removes the customer's name, email address, phone number and postal address from the case and from every stored message and draft. Whatever the case status, this happens no later than 90 days after the order shipped. VAT invoices are kept for the six years UK VAT law requires and are then deleted. Customers may ask us what we hold about them, or ask us to correct or delete it, by contacting us below.</p>
       </section>
 
       <section>

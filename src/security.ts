@@ -9,6 +9,8 @@ export const PASSWORD_MAX_AGE_DAYS = 365
 export const LOCK_AFTER_FAILS = 5
 export const LOCK_MINUTES = 10
 export const PII_RETENTION_DAYS = 30
+/** Hard cap answered to Amazon (20 Nov 2026: "31 to 90 days after order shipments"): cleared by 90 days after shipping, whatever the case status. */
+export const PII_MAX_DAYS_AFTER_SHIPPING = 90
 export const INVOICE_RETENTION_YEARS = 6
 
 /** null when the password meets the policy, otherwise what is wrong (shown to the user). */
@@ -120,22 +122,30 @@ export type PurgeResult = { cases: number; invoices_deleted: number; ids: number
 
 /**
  * Cases that are closed (resolved or archived), with nothing open (A-to-Z, chargeback, return) and no customer message
- * for 30 days: blank the buyer's name and contact details and scrub them from every stored text. Then delete VAT
+ * for 30 days, and every case 90 days after its order shipped: blank the buyer's name and contact details and scrub them from every stored text. Then delete VAT
  * invoices past the 6-year retention period. Idempotent; runs daily from the scheduled handler.
  */
 export async function purgeBuyerData(sql: Sql, patterns: (t: string) => string, opts: { now?: Date; limit?: number } = {}): Promise<PurgeResult> {
   const now = opts.now ?? new Date()
   const cutoff = new Date(now.getTime() - PII_RETENTION_DAYS * 86400_000)
+  const capCutoff = new Date(now.getTime() - PII_MAX_DAYS_AFTER_SHIPPING * 86400_000)
   const due = await sql`
     SELECT c.id, c.internal_notes, c.customer_first_name, c.customer_last_name, c.customer_email, c.customer_phone, c.customer_address
     FROM cases c
+    LEFT JOIN amazon_orders o ON o.order_id = c.order_id
     WHERE c.pii_purged_at IS NULL
-      AND (c.status = 'resolved' OR c.archived_at IS NOT NULL)
-      AND c.last_customer_message_at < ${cutoff}
-      AND NOT COALESCE(c.a_to_z_open, false) AND NOT COALESCE(c.chargeback_open, false)
-      AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.case_id = c.id AND m.sent_at >= ${cutoff})
-      AND NOT EXISTS (SELECT 1 FROM amazon_events e WHERE e.case_id = c.id AND e.status = 'open')
-      AND NOT EXISTS (SELECT 1 FROM returns r WHERE r.case_id = c.id AND r.status <> 'closed')
+      AND (
+        -- 1. Closed, nothing open, and the customer quiet for 30 days
+        ((c.status = 'resolved' OR c.archived_at IS NOT NULL)
+          AND c.last_customer_message_at < ${cutoff}
+          AND NOT COALESCE(c.a_to_z_open, false) AND NOT COALESCE(c.chargeback_open, false)
+          AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.case_id = c.id AND m.sent_at >= ${cutoff})
+          AND NOT EXISTS (SELECT 1 FROM amazon_events e WHERE e.case_id = c.id AND e.status = 'open')
+          AND NOT EXISTS (SELECT 1 FROM returns r WHERE r.case_id = c.id AND r.status <> 'closed'))
+        -- 2. Hard cap: 90 days after the order shipped (else delivery date, else when the case was opened), whatever the status
+        OR COALESCE(CASE WHEN o.payload->>'shipDate' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN (o.payload->>'shipDate')::timestamptz END,
+                    c.delivery_date::timestamptz, c.created_at) < ${capCutoff}
+      )
     ORDER BY c.id LIMIT ${opts.limit ?? 200}`
   const ids: number[] = []
   for (const c of due as any[]) {

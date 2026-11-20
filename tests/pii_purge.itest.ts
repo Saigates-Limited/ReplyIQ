@@ -24,7 +24,12 @@ const due = await mk('T-PG-A', 'resolved', old)
 const open = await mk('T-PG-B', 'open', old)
 const fresh = await mk('T-PG-C', 'resolved', recent)
 const atoz = await mk('T-PG-D', 'resolved', old, { atoz: true })
+const shipped = await mk('T-PG-E', 'open', recent)
+const oid = '202-' + String(Date.now()).slice(-7) + '-0000001'
+await sql`UPDATE cases SET order_id = ${oid} WHERE id = ${shipped}`
+await sql`INSERT INTO amazon_orders (order_id, payload) VALUES (${oid}, ${sql.json({ shipDate: new Date(Date.now() - 100 * 86400_000).toISOString() } as any)})`
 const r = await purgeBuyerData(sql, pat)
+eq('open case 100 days after shipping is cleaned too', r.ids.includes(shipped), true)
 eq('only the closed, quiet case is cleaned', r.ids.filter((i) => [due, open, fresh, atoz].includes(i)), [due])
 const [c] = await sql`SELECT customer_first_name, customer_last_name, customer_email, customer_address, internal_notes, pii_purged_at IS NOT NULL AS done FROM cases WHERE id = ${due}`
 eq('case fields blanked', [c.customer_first_name, c.customer_last_name, c.customer_email, c.customer_address, c.done], ['Customer', null, null, null, true])
