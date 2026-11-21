@@ -21,6 +21,8 @@ import { runSync } from './sync'
 import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
 import { purgeBuyerData } from './security'
+import { autoReplyApi } from './routes/autoReply'
+import { runAutoReplies } from './autoReply'
 import { redactPii } from './ai'
 import { page, loginPage, setupPage, privacyPage } from './page'
 
@@ -120,6 +122,7 @@ app.route('/api/kb', kbApi) // knowledge base rules for the drafting model
 app.route('/api/prompt', promptApi) // custom system prompt (manager only)
 app.route('/api/templates', templatesApi) // ready-to-use reply templates
 app.route('/api/invoices', invoicesApi) // invoice generator (migration 0023)
+app.route('/api/auto-reply', autoReplyApi) // replies while closed (weekends, UK bank holidays)
 app.route('/api/carrier', carrierApi) // carrier desk: Royal Mail / DPD / FedEx / Evri investigations and claims
 
 // SPA pages
@@ -188,7 +191,7 @@ app.onError((err, c) => {
 // Pattern pass for the clean-up: the same redaction used before text goes to OpenAI (emails, phones, postcodes, street lines).
 const purgePatterns = (t: string) => redactPii(t, { customer_first_name: '' } as any)
 
-// Worker entry: HTTP + cron. The scheduled handler is the ONLY automated path and it is read-only (sync).
+// Worker entry: HTTP + cron. The scheduled handler syncs mail; the only thing it sends is closed-day replies, and only when a manager has switched them on.
 export default {
   fetch: app.fetch,
   async scheduled(_event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
@@ -203,6 +206,14 @@ export default {
             console.log('gmail sync', JSON.stringify(r))
           } catch (e) {
             console.error('gmail sync failed', e)
+          }
+          // Weekends and UK bank holidays: answer customer messages that arrived since the office closed (Settings → Closed-day replies).
+          // Off unless a manager switched it on; routine replies go out in full, high-stakes ones get a holding reply with no decision.
+          try {
+            const ar = await runAutoReplies(env, sql)
+            if (ar.outcomes.length) console.log('closed-day replies', JSON.stringify(ar.outcomes.map(({ text, ...o }) => o)))
+          } catch (e) {
+            if (!/relation "auto_replies"/.test(String((e as Error)?.message))) console.error('closed-day replies failed', e)
           }
           // Carrier desk: read carrier mail, update parcel statuses, prepare (never send) due chases / claim packs.
           try {

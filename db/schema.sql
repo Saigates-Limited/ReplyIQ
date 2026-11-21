@@ -600,3 +600,19 @@ CREATE TRIGGER trg_security_log_no_delete BEFORE DELETE ON public.security_log F
 
 ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS pii_purged_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_cases_pii_due ON public.cases (last_customer_message_at) WHERE pii_purged_at IS NULL;
+
+-- ── 0027 Closed-day replies ──
+CREATE TABLE IF NOT EXISTS public.auto_replies (
+  id             BIGSERIAL PRIMARY KEY,
+  case_id        INTEGER NOT NULL REFERENCES public.cases(id) ON DELETE CASCADE,
+  message_id     INTEGER NOT NULL UNIQUE REFERENCES public.messages(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL DEFAULT 'pending' CHECK (kind IN ('pending','full','holding','skipped','failed')),
+  closed_reason  TEXT,
+  detail         TEXT,
+  draft_id       INTEGER REFERENCES public.drafts(id) ON DELETE SET NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_auto_replies_case ON public.auto_replies (case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_auto_replies_at   ON public.auto_replies (created_at DESC);
+-- Which drafts the closed-day run wrote: full = routine reply sent; holding = holding reply sent; held = full draft left for staff.
+ALTER TABLE public.drafts ADD COLUMN IF NOT EXISTS auto_reply TEXT CHECK (auto_reply IN ('full','holding','held'));

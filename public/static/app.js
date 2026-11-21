@@ -1802,6 +1802,10 @@
             <div id="prompt-summary" class="text-xs text-slate-500 mt-2">checking…</div>
             <a href="/settings/prompt" data-link class="inline-block mt-3 px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-pen mr-1"></i>Open editor</a>
           </div>` : ''}
+          <div class="bg-white rounded-xl shadow-sm p-5 lg:col-span-2" id="closed-card">
+            <h2 class="font-semibold mb-2"><i class="fas fa-moon mr-2 text-slate-400"></i>Weekend and bank holiday replies</h2>
+            <div id="closed-body" class="text-sm text-slate-500">checking…</div>
+          </div>
           <div class="bg-white rounded-xl shadow-sm p-5" id="approval-card">
             <h2 class="font-semibold mb-2"><i class="fas fa-user-check mr-2 text-slate-400"></i>Who can send a reply</h2>
             <div id="approval-body" class="text-sm text-slate-500">checking…</div>
@@ -1852,11 +1856,69 @@
         </div>
       </section>`
     loadApprovalCard()
+    loadClosedCard()
     if (isManager) axios.get('/api/prompt').then(({ data }) => { const el = document.getElementById('prompt-summary'); if (!el) return; el.innerHTML = data.migration_needed ? `<span class="text-amber-700"><i class="fas fa-database mr-1"></i>Run <code>db/migrations/${esc(data.migration_needed)}</code> first</span>` : data.current && data.current.body.trim() ? `<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>v${data.current.version} in force</span> · ${data.current.body.trim().length} chars · saved ${dayjs(data.current.created_at).fromNow()} by ${esc(data.current.created_by_name || '—')}` : '<span class="text-slate-500">No custom prompt yet — the model gets the policy file and knowledge base only.</span>' }).catch(() => {})
     axios.get('/api/spapi/status').then(({ data }) => { const el = document.getElementById('spapi-state'); if (el) el.innerHTML = data.configured ? '<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>Configured</span>' : '<span class="text-amber-700"><i class="fas fa-circle-exclamation mr-1"></i>Not configured</span>' }).catch(() => {})
     document.getElementById('spapi-test')?.addEventListener('click', async (e) => {
       const out = document.getElementById('spapi-test-result'); e.target.disabled = true; out.textContent = 'testing…'
       try { const { data } = await axios.post('/api/spapi/test'); out.innerHTML = data.ok ? `<span class="text-emerald-700">✓ ${esc(data.detail)}</span>` : `<span class="text-red-700">✗ ${esc(data.detail)}</span>` } catch (err) { out.innerHTML = `<span class="text-red-700">${esc(err.response?.data?.error || err.message)}</span>` }
+      e.target.disabled = false
+    })
+  }
+
+  // Weekend and bank holiday replies (closed-day replies). Off by default; manager switch, per channel.
+  async function loadClosedCard() {
+    const el = document.getElementById('closed-body'); if (!el) return
+    let d
+    try { ;({ data: d } = await axios.get('/api/auto-reply')) } catch (err) { el.innerHTML = `<span class="text-red-700">${esc(err.response?.data?.error || err.message)}</span>`; return }
+    const s = d.settings, cal = d.calendar
+    const CH = { amazon: 'Amazon', shopify: 'Shopify (Saisales)', refurbed: 'Refurbed', ebay: 'eBay' }
+    const KIND = { full: ['Full reply sent', 'bg-emerald-100 text-emerald-800'], holding: ['Holding reply sent', 'bg-sky-100 text-sky-800'], skipped: ['Not sent', 'bg-slate-200 text-slate-700'], failed: ['Failed', 'bg-red-100 text-red-800'], pending: ['In progress', 'bg-slate-100 text-slate-600'] }
+    el.innerHTML = `
+      ${d.migration_needed ? `<p class="mb-3 text-xs rounded-md bg-amber-50 border border-amber-200 text-amber-900 p-2"><i class="fas fa-database mr-1"></i>Run <code>db/migrations/${esc(d.migration_needed)}</code> first.</p>` : ''}
+      <label class="flex items-start gap-3 ${isManager ? 'cursor-pointer' : ''}">
+        <input type="checkbox" id="closed-toggle" class="mt-1 h-4 w-4" ${s.enabled ? 'checked' : ''} ${isManager ? '' : 'disabled'}>
+        <span class="text-slate-800"><strong>Reply to customers on Saturdays, Sundays and UK bank holidays</strong>
+          <span class="ml-1 pill ${s.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'}">${s.enabled ? 'ON' : 'OFF'}</span><br>
+          <span class="text-xs text-slate-500">Covers messages that arrive after 17:00 on the last working day. Routine (low and medium stakes) messages get the normal reply, sent only if every check passes with no warning. Anything a manager must decide gets a short personal reply that makes no decision and says the full answer follows on the next working day; the full draft waits for staff. Replies read like any other reply from the team.</span></span>
+      </label>
+      <div class="mt-3 text-xs text-slate-600">${cal.closed_now ? `<i class="fas fa-door-closed mr-1 text-sky-600"></i>Closed today (${esc(cal.reason)}). Reopens ${esc(cal.reopens)}.` : `<i class="fas fa-door-open mr-1 text-emerald-600"></i>Open today. Next working day after today: ${esc(cal.next_working_day)}.`}
+        ${cal.upcoming.length ? ` Bank holidays and extra closed days in the next 60 days: ${cal.upcoming.map((u) => `${esc(u.label)} (${esc(u.reason)})`).join(', ')}.` : ' No bank holidays in the next 60 days.'}</div>
+      <div class="mt-3 grid sm:grid-cols-2 gap-4">
+        <div><div class="field-label">Channels</div>
+          ${d.channels.map((ch) => `<label class="flex items-center gap-2 text-sm py-0.5"><input type="checkbox" data-ch="${ch.id}" class="h-4 w-4" ${s.channels[ch.id] ? 'checked' : ''} ${isManager && ch.connected ? '' : 'disabled'}> ${CH[ch.id]}${ch.connected ? '' : ' <span class="text-xs text-slate-400">(messages not in ReplyIQ yet)</span>'}</label>`).join('')}</div>
+        <div><label class="field-label" for="closed-note">Sentence added to every holding reply</label>
+          <textarea id="closed-note" rows="2" class="field-input text-sm" ${isManager ? '' : 'readonly'}>${esc(s.returns_note)}</textarea>
+          <label class="field-label mt-2" for="closed-extra">Extra closed days (one per line: YYYY-MM-DD note)</label>
+          <textarea id="closed-extra" rows="2" class="field-input text-sm font-mono" placeholder="2026-12-24 Christmas Eve" ${isManager ? '' : 'readonly'}>${esc(Object.entries(s.extra_closed || {}).map(([k, v]) => `${k} ${v}`).join('\n'))}</textarea></div>
+      </div>
+      ${isManager ? `<div class="mt-3 flex flex-wrap gap-2"><button id="closed-save" class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm">Save</button>
+        <button id="closed-preview" class="px-3 py-1.5 rounded-md border border-slate-300 text-sm" title="Writes the replies for messages waiting now; sends nothing"><i class="fas fa-eye mr-1"></i>Preview what would be sent now</button></div>` : '<p class="mt-2 text-[11px] text-slate-400">Only a manager can change this.</p>'}
+      <div id="closed-preview-out" class="mt-3"></div>
+      ${d.recent.length ? `<details class="mt-3"><summary class="cursor-pointer text-sm font-medium">Recent closed-day replies (${d.recent.length})</summary>
+        <div class="mt-2 divide-y divide-slate-100 text-sm">${d.recent.map((r) => `<div class="py-2"><span class="pill ${KIND[r.kind]?.[1] || ''}">${KIND[r.kind]?.[0] || esc(r.kind)}</span>
+          <a href="/cases/${r.case_id}" data-link class="ml-1 text-sky-700 underline">${esc(r.case_ref)}</a> <span class="text-xs text-slate-500">${fmtDateTime(r.created_at)} · ${esc(r.closed_reason || '')} · ${esc(r.detail || '')}</span></div>`).join('')}</div></details>` : ''}`
+    const save = async (patch, msg) => {
+      try { await axios.put('/api/auto-reply', patch); toast(msg); loadClosedCard() } catch (err) { toast(err.response?.data?.error || err.message, 'err') }
+    }
+    document.getElementById('closed-toggle')?.addEventListener('change', (e) => save({ enabled: e.target.checked }, `Weekend and bank holiday replies: ${e.target.checked ? 'ON' : 'OFF'}`))
+    document.getElementById('closed-save')?.addEventListener('click', () => {
+      const extra = {}
+      for (const line of document.getElementById('closed-extra').value.split('\n')) { const m = line.trim().match(/^(\d{4}-\d{2}-\d{2})\s*(.*)$/); if (m) extra[m[1]] = m[2] || 'Closed' }
+      const channels = {}; el.querySelectorAll('[data-ch]').forEach((b) => { channels[b.dataset.ch] = b.checked })
+      save({ returns_note: document.getElementById('closed-note').value, extra_closed: extra, channels }, 'Saved')
+    })
+    document.getElementById('closed-preview')?.addEventListener('click', async (e) => {
+      const out = document.getElementById('closed-preview-out'); e.target.disabled = true
+      out.innerHTML = '<p class="text-sm text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Writing the replies (nothing is sent)…</p>'
+      try {
+        const { data: p } = await axios.post('/api/auto-reply/preview', {}, { timeout: 300000 })
+        out.innerHTML = !p.closed ? '<p class="text-sm text-slate-500">Open today, so nothing would be sent.</p>'
+          : !p.outcomes.length ? `<p class="text-sm text-slate-500">Closed (${esc(p.reason)}), but no unanswered customer message is waiting.</p>`
+          : p.outcomes.map((o) => `<div class="rounded-md border border-slate-200 p-3 mb-2"><div class="text-xs mb-1"><span class="pill ${KIND[o.kind]?.[1] || ''}">${o.kind === 'full' ? 'Would send full reply' : o.kind === 'holding' ? 'Would send holding reply' : esc(KIND[o.kind]?.[0] || o.kind)}</span>
+            <a href="/cases/${o.case_id}" data-link class="ml-1 text-sky-700 underline">${esc(o.case_ref)}</a> <span class="text-slate-500">${esc(o.detail)}</span></div>
+            ${o.text ? `<pre class="message-body text-sm whitespace-pre-wrap font-sans bg-slate-50 rounded p-2">${esc(o.text)}</pre>` : ''}</div>`).join('')
+      } catch (err) { out.innerHTML = `<p class="text-sm text-red-700">${esc(err.response?.data?.error || err.message)}</p>` }
       e.target.disabled = false
     })
   }
