@@ -57,6 +57,8 @@
 .notice { align-self:center; max-width:90%; background:#fdf6e3; border:1px solid #f1d98a; color:#713f12; border-radius:.75rem; padding:.5rem .9rem; font-size:.78rem; text-align:center; }
 .notice-atoz { background:#f5f3ff; border-color:#c4b5fd; color:#4c1d95; }
 .notice-return { background:#ecfeff; border-color:#67e8f9; color:#155e75; }
+/* Order number next to "Conversation": same font as the heading, return-request colours so it stands out. */
+.order-chip { display:inline-block; margin-left:.5rem; padding:.05rem .55rem; border:1px solid #67e8f9; border-radius:.375rem; background:#ecfeff; color:#155e75; font-size:inherit; font-weight:600; letter-spacing:.01em; user-select:all; }
 .notice-chargeback { background:#fff1f2; border-color:#fda4af; color:#881337; }
 .day-sep { align-self:center; background:rgba(255,255,255,.85); color:#64748b; font-size:.65rem; padding:.15rem .6rem; border-radius:9999px; }
 .attachment-chip { display:inline-flex; align-items:center; gap:.3rem; background:#f1f5f9; border:1px solid #e2e8f0; border-radius:.4rem; padding:.2rem .5rem; font-size:.7rem; color:#334155; }
@@ -170,6 +172,7 @@ html.dark .day-sep { background:rgba(30,41,59,.9); }
 html.dark .notice { background:#1f2937; border-color:#374151; color:#fde68a; }
 html.dark .notice-atoz { background:#2e1065; border-color:#6d28d9; color:#ddd6fe; }
 html.dark .notice-return { background:#083344; border-color:#0e7490; color:#a5f3fc; }
+html.dark .order-chip { background:#083344; border-color:#0e7490; color:#a5f3fc; }
 html.dark .notice-chargeback { background:#4c0519; border-color:#be123c; color:#fecdd3; }
 html.dark .attachment-chip { background:#1e293b; border-color:#334155; color:#cbd5e1; }
 html.dark .tone-angry { background:#450a0a; color:#fca5a5; } html.dark .tone-dispute { background:#2e1065; color:#c4b5fd; }

@@ -437,7 +437,7 @@
           <div class="2xl:col-span-3 space-y-4 min-w-0">
           <article id="conversation" class="bg-white rounded-xl shadow-sm border border-slate-100">
             <div class="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
-              <h2 class="font-semibold"><i class="far fa-comments mr-2 text-slate-400"></i>Conversation <span class="text-xs font-normal text-slate-500">· order ${esc(k.order_id || '—')}</span></h2>
+              <h2 class="font-semibold"><i class="far fa-comments mr-2 text-slate-400"></i>Conversation ${k.order_id ? `<span class="order-chip" title="Amazon order number">order ${esc(k.order_id)}</span>` : ''}</h2>
               <div class="flex items-center gap-2 text-xs">
                 ${toneChip(k.tone)}
                 <select id="tone-select" class="field-input py-0.5 text-xs mt-0" style="width:auto" title="Override the AI tone label">
