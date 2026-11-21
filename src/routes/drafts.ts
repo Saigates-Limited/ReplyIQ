@@ -119,6 +119,35 @@ draftsApi.post('/cases/:id/drafts', async (c) => {
   }
 })
 
+// POST /api/cases/:id/drafts/manual {text?} → a reply written by a member of staff (no AI). Starts from the greeting and sign-off
+// when no text is given. Same server checks, manager rules and send gates as an AI draft; tree = 'staff written'.
+draftsApi.post('/cases/:id/drafts/manual', async (c) => {
+  const caseId = Number(c.req.param('id'))
+  if (!Number.isInteger(caseId)) return c.json({ error: 'Invalid id' }, 400)
+  const user = c.get('user')
+  const body = (await c.req.json().catch(() => ({}))) as { text?: string }
+  const sql = getDb(c.env)
+  try {
+    const [kase] = await sql<CaseRow[]>`SELECT * FROM cases WHERE id = ${caseId}`
+    if (!kase) return c.json({ error: 'Case not found' }, 404)
+    const first = kase.customer_first_name && kase.customer_first_name !== 'Customer' ? kase.customer_first_name : 'Customer'
+    const text = String(body.text ?? '').trim().slice(0, 20000) || `Dear ${first},\n\n\n\nKind regards,\nCustomer Support Team`
+    const thread = await threadFor(sql, caseId)
+    const findings = serverChecks(text, kase, 'customer')
+    const { needsManager, reasons, urgency } = decideManager({ needs_manager: false, urgency: 'normal' }, kase, thread as any, findings, 'customer')
+    const [d] = await sql`
+      INSERT INTO drafts (case_id, tree, draft_text, original_text, staff_notes, check_result, check_findings, server_findings,
+                          needs_manager, needs_manager_reason, urgency, model, created_by, mode)
+      VALUES (${caseId}, 'staff written', ${text}, ${text}, '', ${findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS'},
+              ${sql.json([])}, ${sql.json(findings as any)}, ${needsManager}, ${reasons.join('; ')}, ${urgency}, 'staff', ${user.id}, 'customer')
+      RETURNING id`
+    await adoptFiles(sql, caseId, d.id).catch(() => {})
+    return c.json({ draft: await loadDraft(sql, d.id) }, 201)
+  } finally {
+    await sql.end()
+  }
+})
+
 // POST /api/drafts/:id/revise {guidance} → the agent says what to change; the model rewrites; the old draft is superseded.
 // Guidance is an instruction to the model, never pasted into the reply, and the policy still overrides it.
 draftsApi.post('/drafts/:id/revise', async (c) => {

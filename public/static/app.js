@@ -787,6 +787,7 @@
             <button id="generate-btn" class="${current ? 'px-3 py-1.5 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50' : 'px-4 py-2 rounded-md bg-slate-900 text-white font-medium hover:bg-slate-800'} disabled:opacity-50" title="${current ? 'Write a fresh draft (the current one is kept in the history)' : ''}">
               <i class="fas fa-wand-magic-sparkles mr-1"></i>${current ? 'New draft' : 'Generate'}
             </button>
+            ${draftMode === 'customer' ? `<button id="write-own-btn" class="px-3 py-1.5 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50" title="Start a blank reply and write it yourself (no AI). Same checks and send rules."><i class="fas fa-pen mr-1"></i>Write my own reply</button>` : ''}
           </div>
         </div>
         ${mode.banner ? `<div class="mode-banner mx-5 mt-4 bg-amber-50 border border-amber-200 text-amber-900"><i class="fas fa-clipboard mr-1"></i>${esc(mode.banner)}</div>` : ''}
@@ -795,7 +796,7 @@
           ${current ? draftEditor(current, kase) : `
             <div class="text-center py-10 text-slate-500">
               <i class="fas fa-file-lines text-3xl mb-3 text-slate-300 block"></i>
-              No draft yet. Click <strong>Generate</strong>.
+              No draft yet. Click <strong>Generate</strong>, or <strong>Write my own reply</strong>.
               <div class="mt-2 text-xs">The AI receives the customer's first name, the thread text (with emails, phones and postcodes redacted) and the case fields — nothing else.</div>
             </div>`}
         </div>
@@ -816,6 +817,12 @@
       </div>`
 
     document.getElementById('generate-btn').onclick = () => generate(caseId, draftMode)
+    const wob = document.getElementById('write-own-btn')
+    if (wob) wob.onclick = async () => {
+      wob.disabled = true
+      try { await axios.post(`/api/cases/${caseId}/drafts/manual`, {}); await renderCase(caseId); const ta = document.querySelector('#draft-body textarea'); if (ta) { ta.focus(); const at = ta.value.indexOf('\n\n') + 2; ta.setSelectionRange(at, at) } }
+      catch (err) { toast(err.response?.data?.error || err.message, 'err'); wob.disabled = false }
+    }
     ws.querySelectorAll('[data-mode]').forEach((b) => (b.onclick = () => { draftMode = b.dataset.mode; renderDraftWorkspace(caseId, kase, drafts, events) }))
     if (current) wireDraftEditor(caseId, kase, current)
   }
