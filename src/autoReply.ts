@@ -283,7 +283,20 @@ export async function runAutoReplies(env: Bindings, sql: Sql, opts: { now?: Date
                                     send_after = ${extra.sendAfter ?? null}, deadline_at = ${extra.deadline ?? null} WHERE message_id = ${row.last_message_id}`
     }
     try {
-      const full = await fullReply(env, sql, t)
+      // If the AI can't write the full reply (outage, no credits), treat it as high stakes: the holding reply has standard wording that needs no AI.
+      const full = await fullReply(env, sql, t).catch((e: any) => ({ routine: false as const, unavailable: true as const, why: [`AI unavailable (${String(e?.message ?? e).slice(0, 80)})`] }))
+      if ('unavailable' in full) {
+        const plan = holdingPlan(new Date(row.last_message_at), now, holidays, settings.extra_closed)
+        const why = full.why.join(' · ')
+        if (!plan.needed) { await record({ case_id: row.id, case_ref: row.case_ref, kind: 'staff', detail: `${why} · staff back ${fmtLondon(plan.staffBack)}, before the 48-hour deadline ${fmtLondon(plan.deadline)}; nothing sent` }, { deadline: plan.deadline }); continue }
+        if (plan.sendAt!.getTime() > now.getTime()) {
+          await record({ case_id: row.id, case_ref: row.case_ref, kind: 'scheduled', detail: `holding reply scheduled for ${fmtLondon(plan.sendAt!)} (${why}), 48-hour deadline ${fmtLondon(plan.deadline)}`, send_at: plan.sendAt!.toISOString() }, { sendAfter: plan.sendAt, deadline: plan.deadline })
+          continue
+        }
+        if (!opts.dryRun) await sql`UPDATE auto_replies SET kind = 'scheduled', send_after = ${now}, deadline_at = ${plan.deadline} WHERE message_id = ${row.last_message_id}`
+        outcomes.push(await sendHolding({ id: row.id, case_ref: row.case_ref, message_id: row.last_message_id }, t, why, plan.deadline))
+        continue
+      }
       if (full.routine) {
         if (opts.dryRun) { await record({ case_id: row.id, case_ref: row.case_ref, kind: 'full', detail: 'routine reply, all checks passed', text: full.result.draft }); continue }
         const id = await insertDraft(sql, row.id, { lane: full.result.lane, text: full.result.draft, notes: [full.result.staff_notes, `Sent automatically on ${spell.reason} (routine reply, all checks passed).`].filter(Boolean).join('\n'),

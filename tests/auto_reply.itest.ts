@@ -15,11 +15,13 @@ const eq = (n: string, got: unknown, want: unknown) => { const ok = JSON.stringi
 const env: any = { OPENAI_API_KEY: 'test', GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'y', TOKEN_ENC_KEY: Buffer.alloc(32, 7).toString('base64') }
 const sentMail: string[] = []
 let holdingMode: 'good' | 'bad' = 'good'
+let aiDown = false
 const realFetch = globalThis.fetch
 globalThis.fetch = (async (url: any, init: any) => {
   const u = String(url)
   if (u.includes('oauth2.googleapis.com')) return new Response(JSON.stringify({ access_token: 'at', expires_in: 3600 }))
   if (u.includes('gmail.googleapis.com') && u.includes('/messages/send')) { sentMail.push(JSON.parse(init.body).raw); return new Response(JSON.stringify({ id: 'g' + Date.now() + '-' + sentMail.length, threadId: 't1' })) }
+  if (u.includes('/chat/completions') && aiDown) return new Response('{"error":{"message":"You have no credits remaining"}}', { status: 429 })
   if (u.includes('/chat/completions')) {
     const b = JSON.parse(init.body); const sys = b.messages[0].content as string; const user = b.messages[1].content as string
     if (sys.startsWith('You write one short email')) {
@@ -115,7 +117,15 @@ const bad = await mk('T-AR-G', 'Lee', 'lee7@marketplace.amazon.co.uk', 'My batte
 await runAutoReplies(env, sql, { now: new Date('2026-12-25T09:15:00Z') })
 const r6 = (await runAutoReplies(env, sql, { now: new Date('2026-12-26T16:45:00Z') })).outcomes.find((o) => o.case_id === bad)!
 eq('bad model wording: standard holding wording', r6?.kind === 'holding' && /standard wording/.test(r6.detail) && /Dear Lee/.test(r6.text!) && !/refund you/i.test(r6.text!), true)
-// 10. Monday: open, nothing sent.
+// 10. AI out of credits: the customer still gets a holding reply in standard wording, on time.
+aiDown = true
+const down = await mk('T-AR-I', 'Ana', 'ana3@marketplace.amazon.co.uk', 'Where is my phone?', new Date('2026-11-27T18:00:00Z')) // Friday 18:00
+const r7 = (await runAutoReplies(env, sql, { now: new Date('2026-11-28T10:00:00Z') })).outcomes.find((o) => o.case_id === down)!
+eq('AI down: holding scheduled for Sunday 16:45', [r7.kind, r7.send_at], ['scheduled', '2026-11-29T16:45:00.000Z'])
+const r8 = (await runAutoReplies(env, sql, { now: new Date('2026-11-29T16:45:00Z') })).outcomes.find((o) => o.case_id === down)!
+eq('AI down: standard holding wording sent', r8.kind === 'holding' && /standard wording/.test(r8.detail) && /Dear Ana/.test(r8.text!), true)
+aiDown = false
+// 11. Monday: open, nothing sent.
 eq('Monday: open', (await runAutoReplies(env, sql, { now: new Date('2026-11-23T10:00:00Z') })).closed, false)
 await sql`DELETE FROM gmail_connection`
 await sql.end()
