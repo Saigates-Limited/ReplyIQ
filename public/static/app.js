@@ -1804,7 +1804,7 @@
             <a href="/settings/prompt" data-link class="inline-block mt-3 px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-pen mr-1"></i>Open editor</a>
           </div>` : ''}
           ${isManager ? `<div class="bg-white rounded-xl shadow-sm p-5 lg:col-span-2" id="spend-card">
-            <h2 class="font-semibold mb-2"><i class="fas fa-sterling-sign mr-2 text-slate-400"></i>OpenAI spend by month</h2>
+            <h2 class="font-semibold mb-2"><i class="fas fa-sterling-sign mr-2 text-slate-400"></i>ReplyIQ OpenAI spend by month</h2>
             <div id="spend-body" class="text-sm text-slate-500">checking…</div>
           </div>` : ''}
           <div class="bg-white rounded-xl shadow-sm p-5 lg:col-span-2" id="closed-card">
@@ -1892,21 +1892,21 @@
     } else {
       const cur = { usd: '$', gbp: '£', eur: '€' }[String(d.currency).toLowerCase()] || ''
       const money = (v) => cur + Number(v || 0).toFixed(2)
+      // ReplyIQ's own OpenAI project only (the organisation also has other projects, e.g. Sazi.AI).
+      const PROJECT = Object.keys(Object.assign({}, ...d.months.map((m) => m.projects))).find((p) => /replyiq/i.test(p)) || 'ReplyIQ'
+      d.months = d.months.map((m) => ({ ...m, total: Math.round((m.projects[PROJECT] || 0) * 100) / 100 }))
       const max = Math.max(...d.months.map((m) => m.total), 0.01)
       const total12 = d.months.reduce((a, m) => a + m.total, 0)
       const last = d.months[d.months.length - 1], prev = d.months[d.months.length - 2]
       el.innerHTML = `
-        <p class="text-slate-700">This month so far: <strong>${money(last?.total)}</strong>${prev ? ` · last month ${money(prev.total)}` : ''} · last 12 months ${money(total12)} <span class="text-xs text-slate-400">(${esc(d.currency)}, whole OpenAI organisation, calendar months in UTC)</span></p>
+        <p class="text-slate-700">This month so far: <strong>${money(last?.total)}</strong>${prev ? ` · last month ${money(prev.total)}` : ''} · last 12 months ${money(total12)} <span class="text-xs text-slate-400">(${esc(d.currency)}, OpenAI project "${esc(PROJECT)}" only, calendar months in UTC)</span></p>
         <div class="mt-3 overflow-x-auto"><div class="flex items-end gap-2 h-40 min-w-[36rem]" role="img" aria-label="OpenAI spend by month">
           ${d.months.map((m) => `<div class="flex-1 flex flex-col items-center justify-end h-full" title="${esc(m.label)}: ${money(m.total)}">
             <span class="text-[10px] text-slate-600 mb-0.5">${m.total ? money(m.total) : ''}</span>
             <div class="w-full rounded-t bg-sky-600" style="height:${Math.max(m.total ? 2 : 0, Math.round((m.total / max) * 100))}%"></div>
             <span class="text-[10px] text-slate-500 mt-1 whitespace-nowrap">${esc(m.label.replace(' 20', ' ’'))}</span></div>`).join('')}
         </div></div>
-        <details class="mt-3"><summary class="cursor-pointer text-sm font-medium">By month and project</summary>
-          <div class="overflow-x-auto"><table class="w-full text-sm mt-2"><thead class="text-left text-xs uppercase tracking-wide text-slate-500"><tr><th class="py-1 pr-4">Month</th><th class="py-1 pr-4 text-right">Total</th><th class="py-1">By project</th></tr></thead>
-          <tbody>${[...d.months].reverse().map((m) => `<tr class="border-t border-slate-100"><td class="py-1 pr-4 whitespace-nowrap">${esc(m.label)}</td><td class="py-1 pr-4 text-right font-mono">${money(m.total)}</td>
-            <td class="py-1 text-xs text-slate-600">${Object.entries(m.projects).map(([p, v]) => `${esc(p)} ${money(v)}`).join(' · ') || '—'}</td></tr>`).join('')}</tbody></table></div></details>
+
         <p class="mt-2 text-[11px] text-slate-400">Updated ${fmtDateTime(d.fetched_at)} · key ending …${esc(d.last4 || '')} ${d.source === 'secret' ? '(Worker secret)' : ''}
           · <button id="spend-refresh" class="underline">Refresh</button>${d.source === 'settings' ? ' · <button id="spend-key-remove" class="underline">Remove key</button>' : ''}</p>`
     }
