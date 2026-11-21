@@ -80,6 +80,8 @@ export function channelOf(k: { source?: string | null; customer_reply_to?: strin
 const SAFETY = /\b(swollen|swelling|bulging|burning|smoke|smoking|very hot|too hot|overheat)/i
 // A holding reply must not decide anything. Anything that reads like a promise or an outcome falls back to the plain template.
 const DECISION = /\b(we(?: will|'ll| can| have| are going to)\s+(?:\w+\s+)?(refund|replace|issue|send you|arrange|approve|offer|cover|credit|repair|collect)|you(?: will|'ll) (?:receive|get) (?:a |your |the )?(refund|replacement|credit)|full refund|partial refund|approved|accepted your|compensation|goodwill|discount|voucher)\b/i
+// A full reply sent while closed must not promise an action nobody can take until the next working day.
+export const PROMISES_ACTION = /\bwe(?:'ll| will| shall| are going to)\s+(?:now\s+|also\s+|then\s+)?(check|look into|investigate|chase|contact|update you|get back to you|come back to you|arrange|book|send|raise|review|monitor|follow up)\b|\b(?:as soon as possible|shortly|later today|by the end of (?:the )?day)\b/i
 const AUTOMATIC = /\b(auto(?:mated|matic|-?reply|-?response)|out of (?:office|hours)|this (?:is an? )?(?:automated|automatic) (?:message|reply|email))\b/i
 
 export function holdingTemplate(k: CaseRow, reopens: string, returnsNote: string, safety: boolean, followUp = false) {
@@ -111,7 +113,7 @@ async function holdingReply(env: Bindings, k: CaseRow, messages: MessageRow[], e
   const fallback = (problems: string[]) => ({ text: holdingTemplate(k, reopens, returnsNote, safety, followUp), source: 'template' as const, problems })
   if (!env.OPENAI_API_KEY) return fallback(['no model key'])
   const payload = buildPayload(k, messages, { events }) // same redaction as drafting: no surname, email, phone or address
-  const system = `You write one short email for Saigates Customer Support to an Amazon UK buyer. Clear UK English, warm and personal, no em dashes.
+  const system = `You write one short email for Saigates Customer Support to an Amazon UK buyer. Clear UK English, warm and personal, no em dashes. Write as the team: "we", never "I".
 The buyer's message needs a decision from a member of the team, who will reply in full by ${longDate(reopens)}. Today is ${longDate(londonDate(new Date()))}.
 Write 50 to 110 words that:
 - start "Dear <first name>," (or "Dear Customer," if no first name);
@@ -174,6 +176,7 @@ async function fullReply(env: Bindings, sql: Sql, t: Thread) {
   if (needsManager) why.push('needs a manager: ' + (reasons.join(', ') || 'policy'))
   if (urgency === 'high') why.push('high urgency')
   if (saysFileAttached(result.draft)) why.push('says a file is attached')
+  if (PROMISES_ACTION.test(result.draft)) why.push('promises the team will do something, and nobody is in until the next working day')
   if (await findAlreadySent(sql, t.kase.id, result.draft)) why.push('same text already sent')
   return { result, stored, findings, needsManager, reasons, urgency, kbRuleIds, promptVersion, routine: why.length === 0, why }
 }

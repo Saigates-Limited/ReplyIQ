@@ -111,3 +111,11 @@ test('a second holding reply does not repeat the first', () => {
   assert.deepEqual(holdingProblems(again, [{ body: first, sent_at: '' }], note), [])
   assert.deepEqual(holdingProblems(first, [{ body: first, sent_at: '' }], note), ['repeats an earlier reply'])
 })
+
+const { PROMISES_ACTION } = await import('../src/autoReply')
+test('full replies that promise an action wait for staff', () => {
+  assert.equal(PROMISES_ACTION.test('We will check the dispatch status for your order and update you as soon as possible.'), true)
+  assert.equal(PROMISES_ACTION.test("We'll look into this and get back to you."), true)
+  assert.equal(PROMISES_ACTION.test('Your phone was dispatched on Friday with Royal Mail Tracked 24 and should arrive on Monday.'), false)
+  assert.equal(PROMISES_ACTION.test("You're very welcome. If you need any further help, please let us know."), false)
+})

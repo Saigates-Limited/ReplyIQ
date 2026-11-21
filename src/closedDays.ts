@@ -115,7 +115,8 @@ export function holdingPlan(msgAt: Date, now: Date, holidays: Holidays, extra: R
   for (let i = 0; i < 14 && d >= today; i++) {
     if (closedReason(d, holidays, extra)) {
       const start = londonInstant(d, WINDOW_START), end = londonInstant(d, WINDOW_END - 1, 45)
-      const cand = new Date(Math.min(end.getTime(), target.getTime()))
+      // Round down to the quarter hour: the cron runs at :00, :15, :30 and :45.
+      const cand = new Date(Math.floor(Math.min(end.getTime(), target.getTime()) / 900_000) * 900_000)
       if (cand >= start) return { needed: true, sendAt: cand < now ? now : cand, deadline, staffBack }
     }
     const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() - 1); d = x.toISOString().slice(0, 10)
