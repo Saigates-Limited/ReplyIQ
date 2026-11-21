@@ -68,3 +68,46 @@ test('only Amazon buyer messages are recognised for now', () => {
   assert.equal(channelOf({ customer_reply_to: 'someone@gmail.com' }), null)
   assert.equal(channelOf({ customer_reply_to: null }), null)
 })
+
+const { holdingPlan, inReplyWindow } = await import('../src/closedDays')
+const at = (s: string) => new Date(s)
+test('replies only 9am–5pm on closed days', () => {
+  assert.equal(inReplyWindow(at('2026-11-21T08:59:00Z'), H), false)
+  assert.equal(inReplyWindow(at('2026-11-21T09:00:00Z'), H), true)
+  assert.equal(inReplyWindow(at('2026-11-21T16:59:00Z'), H), true)
+  assert.equal(inReplyWindow(at('2026-11-21T17:00:00Z'), H), false)
+  assert.equal(inReplyWindow(at('2026-11-23T10:00:00Z'), H), false) // Monday: staff
+  assert.equal(inReplyWindow(at('2026-06-13T08:30:00Z'), H), true) // 09:30 BST
+})
+test('holding reply: as late as possible inside 48 hours, only if staff are not back in time', () => {
+  // Friday 18:00 message, normal weekend: deadline Sunday 18:00, staff back Monday 09:00 → send Sunday 16:45.
+  let p = holdingPlan(at('2026-11-20T18:00:00Z'), at('2026-11-21T09:15:00Z'), H)
+  assert.equal(p.needed, true); assert.equal(p.sendAt!.toISOString(), '2026-11-22T16:45:00.000Z')
+  // Saturday 10:00 message: deadline Monday 10:00 → staff back 09:00 with only 1 hour → still needs one, Sunday 16:45.
+  p = holdingPlan(at('2026-11-21T10:00:00Z'), at('2026-11-21T10:15:00Z'), H)
+  assert.equal(p.needed, true); assert.equal(p.sendAt!.toISOString(), '2026-11-22T16:45:00.000Z')
+  // Saturday 16:00 message: deadline Monday 16:00, staff back 09:00 with 7 hours → left for staff.
+  p = holdingPlan(at('2026-11-21T16:00:00Z'), at('2026-11-21T16:15:00Z'), H)
+  assert.equal(p.needed, false)
+  // Sunday 11:00 message: deadline Tuesday → staff.
+  assert.equal(holdingPlan(at('2026-11-22T11:00:00Z'), at('2026-11-22T11:15:00Z'), H).needed, false)
+  // Christmas: Thursday 24 Dec 18:00 message; closed Fri 25 – Mon 28; deadline Sat 26 18:00 → Sat 16:45.
+  p = holdingPlan(at('2026-12-24T18:00:00Z'), at('2026-12-25T09:15:00Z'), H)
+  assert.equal(p.sendAt!.toISOString(), '2026-12-26T16:45:00.000Z')
+  // Customer writes again Sat 26 Dec 17:30: deadline Mon 28 17:30, staff back Tue 29 → second holding reply Mon 28 16:30.
+  p = holdingPlan(at('2026-12-26T17:30:00Z'), at('2026-12-27T09:15:00Z'), H)
+  assert.equal(p.needed, true); assert.equal(p.sendAt!.toISOString(), '2026-12-28T16:30:00.000Z')
+  // Deadline before the next window (message Sat 06:00, deadline Mon 06:00, first slot Sunday): Sunday 16:45.
+  assert.equal(holdingPlan(at('2026-11-21T06:00:00Z'), at('2026-11-21T09:00:00Z'), H).sendAt!.toISOString(), '2026-11-22T16:45:00.000Z')
+  // BST: Friday 17:30 BST message, deadline Sunday 17:30 BST → Sunday 16:30 BST = 15:30Z.
+  p = holdingPlan(at('2026-06-12T16:30:00Z'), at('2026-06-13T08:15:00Z'), H)
+  assert.equal(p.sendAt!.toISOString(), '2026-06-14T15:30:00.000Z')
+})
+test('a second holding reply does not repeat the first', () => {
+  const first = 'Dear Anna,\n\nThank you for your message about your iPhone 13 128GB Blue. We have read it carefully, and a member of our team will come back to you with a full answer by Tuesday 29 December.\n\nOur returns team remains available over the weekend and on bank holidays.\n\nKind regards,\nCustomer Support Team'
+  const k = { customer_first_name: 'Anna', device_model: 'iPhone 13 128GB Blue' } as any
+  const note = 'Our returns team remains available over the weekend and on bank holidays.'
+  const again = holdingTemplate(k, '2026-12-29', note, false, true)
+  assert.deepEqual(holdingProblems(again, [{ body: first, sent_at: '' }], note), [])
+  assert.deepEqual(holdingProblems(first, [{ body: first, sent_at: '' }], note), ['repeats an earlier reply'])
+})

@@ -12,12 +12,12 @@ import { loadActiveRules } from './kb'
 import { loadCurrentPrompt } from './systemPrompt'
 import { reviewInContext, openFindings } from './contextCheck'
 import { decideManager } from './approval'
-import { repeatFinding, findAlreadySent } from './sendGuards'
+import { repeatFinding, findAlreadySent, repeatedFromEarlier } from './sendGuards'
 import { saysFileAttached } from './draftFiles'
 import { statusAfterSend } from './caseOps'
 import { listConnections, accessToken, sendReply } from './gmail'
 import { REFUND_MAILBOX } from './returns/refunds'
-import { loadHolidays, closedSpellStart, longDate, londonDate, nextWorkingDay, closedReason, type Holidays } from './closedDays'
+import { loadHolidays, closedSpellStart, longDate, londonDate, nextWorkingDay, closedReason, inReplyWindow, holdingPlan, type Holidays } from './closedDays'
 
 export const CHANNELS = ['amazon', 'shopify', 'refurbed', 'ebay'] as const
 export type Channel = (typeof CHANNELS)[number]
@@ -82,17 +82,21 @@ const SAFETY = /\b(swollen|swelling|bulging|burning|smoke|smoking|very hot|too h
 const DECISION = /\b(we(?: will|'ll| can| have| are going to)\s+(?:\w+\s+)?(refund|replace|issue|send you|arrange|approve|offer|cover|credit|repair|collect)|you(?: will|'ll) (?:receive|get) (?:a |your |the )?(refund|replacement|credit)|full refund|partial refund|approved|accepted your|compensation|goodwill|discount|voucher)\b/i
 const AUTOMATIC = /\b(auto(?:mated|matic|-?reply|-?response)|out of (?:office|hours)|this (?:is an? )?(?:automated|automatic) (?:message|reply|email))\b/i
 
-export function holdingTemplate(k: CaseRow, reopens: string, returnsNote: string, safety: boolean) {
+export function holdingTemplate(k: CaseRow, reopens: string, returnsNote: string, safety: boolean, followUp = false) {
   const first = k.customer_first_name && k.customer_first_name !== 'Customer' ? k.customer_first_name : null
   const about = k.device_model ? `your ${k.device_model}` : k.order_id ? `your order ${k.order_id}` : 'your order'
   return [`Dear ${first ?? 'Customer'},`, '',
-    `Thank you for your message about ${about}. We have read it carefully, and a member of our team will come back to you with a full answer by ${longDate(reopens)}.`,
+    followUp
+      ? `Thank you for your further message about ${about}. We have added it to your case, and the team member looking into it will reply with a full answer by ${longDate(reopens)}.`
+      : `Thank you for your message about ${about}. We have read it carefully, and a member of our team will come back to you with a full answer by ${longDate(reopens)}.`,
     ...(safety ? ['', 'In the meantime, please stop using and charging the phone and keep it away from anything flammable.'] : []),
     '', returnsNote, '', 'Kind regards,', 'Customer Support Team'].join('\n')
 }
 
-export function holdingProblems(text: string): string[] {
+export function holdingProblems(text: string, earlier: { body: string; sent_at: any }[] = [], returnsNote = ''): string[] {
   const p: string[] = []
+  const reps = repeatedFromEarlier(text, earlier).filter((r) => !returnsNote || !r.sentence.includes(returnsNote.slice(0, 40)))
+  if (reps.length) p.push('repeats an earlier reply')
   if (DECISION.test(text)) p.push('makes or hints at a decision')
   if (AUTOMATIC.test(text)) p.push('says it is automatic')
   if (text.length > 1200) p.push('too long')
@@ -102,7 +106,9 @@ export function holdingProblems(text: string): string[] {
 
 async function holdingReply(env: Bindings, k: CaseRow, messages: MessageRow[], events: EventRow[], reason: string, reopens: string, returnsNote: string): Promise<{ text: string; source: 'model' | 'template'; problems: string[] }> {
   const safety = messages.some((m) => m.direction === 'inbound' && SAFETY.test(m.body)) || k.battery_flag === true
-  const fallback = (problems: string[]) => ({ text: holdingTemplate(k, reopens, returnsNote, safety), source: 'template' as const, problems })
+  const earlier = messages.filter((m) => m.direction === 'outbound' && m.kind !== 'event')
+  const followUp = earlier.some((m) => /closed-day reply/.test(String(m.sender ?? '')))
+  const fallback = (problems: string[]) => ({ text: holdingTemplate(k, reopens, returnsNote, safety, followUp), source: 'template' as const, problems })
   if (!env.OPENAI_API_KEY) return fallback(['no model key'])
   const payload = buildPayload(k, messages, { events }) // same redaction as drafting: no surname, email, phone or address
   const system = `You write one short email for Saigates Customer Support to an Amazon UK buyer. Clear UK English, warm and personal, no em dashes.
@@ -115,7 +121,8 @@ Write 50 to 110 words that:
 - say a member of the team will reply with a full answer by ${longDate(reopens)};
 - include this sentence as written: "${returnsNote}";
 - if the phone may be unsafe (swollen, hot, burning battery), tell them to stop using and charging it;
-- never say or suggest the email is automatic, out of hours or an auto-reply;
+- never say or suggest the email is automatic, out of hours or an auto-reply;${followUp ? `
+- we have already replied once to say a full answer is coming: acknowledge their NEW message specifically and do not repeat any sentence from our earlier replies (except the returns sentence above);` : ''}
 - end exactly with:
 Kind regards,
 Customer Support Team
@@ -130,7 +137,7 @@ Return JSON: {"reply": "<the email>"}`
     if (!res.ok) return fallback([`model error ${res.status}`])
     const data: any = await res.json()
     const text = String(JSON.parse(data.choices?.[0]?.message?.content ?? '{}').reply ?? '').trim()
-    const problems = [...holdingProblems(text), ...serverChecks(text, k).filter((f) => f.severity === 'fail').map((f) => f.detail)]
+    const problems = [...holdingProblems(text, earlier, returnsNote), ...serverChecks(text, k).filter((f) => f.severity === 'fail').map((f) => f.detail)]
     if (!text || problems.length) return fallback(problems.length ? problems : ['empty reply'])
     return { text, source: 'model', problems: [] }
   } catch (e: any) {
@@ -208,13 +215,13 @@ async function sendDraft(env: Bindings, sql: Sql, kase: CaseRow, draftId: number
   }
 }
 
-export type AutoReplyOutcome = { case_id: number; case_ref: string; kind: 'full' | 'holding' | 'skipped' | 'failed'; detail: string; text?: string }
+export type AutoReplyOutcome = { case_id: number; case_ref: string; kind: 'full' | 'holding' | 'scheduled' | 'staff' | 'superseded' | 'skipped' | 'failed'; detail: string; text?: string; send_at?: string }
 
-/** Cases with an unanswered customer message that arrived since the office closed. */
+/** Cases whose latest message is a customer message, unanswered, that arrived since the office closed and has not been looked at yet. */
 export async function dueCases(sql: Sql, since: Date, now: Date, settings: AutoReplySettings) {
   const quiet = new Date(now.getTime() - QUIET_MINUTES * 60_000)
   const rows = await sql`
-    SELECT c.id, c.case_ref, c.source, c.customer_reply_to, lm.id AS last_message_id
+    SELECT c.id, c.case_ref, c.source, c.customer_reply_to, lm.id AS last_message_id, lm.sent_at AS last_message_at
     FROM cases c
     JOIN LATERAL (SELECT m.id, m.direction, m.kind, m.sent_at FROM messages m WHERE m.case_id = c.id AND m.kind IS DISTINCT FROM 'event'
                   ORDER BY m.sent_at DESC, m.id DESC LIMIT 1) lm ON TRUE
@@ -226,18 +233,42 @@ export async function dueCases(sql: Sql, since: Date, now: Date, settings: AutoR
   return (rows as any[]).filter((r) => { const ch = channelOf(r); return ch && settings.channels[ch] && CONNECTED_CHANNELS.includes(ch) }).slice(0, MAX_PER_RUN)
 }
 
+const fmtLondon = (d: Date) => d.toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+
 /**
- * One pass. dryRun: decide and write the replies but save and send nothing (Settings → Preview).
- * Each customer message is answered at most once (auto_replies.message_id is unique), and a case gets at most one holding reply per closed spell.
+ * One pass, from the 15-minute cron. Replies go out only between 09:00 and 17:00 on a closed day (dryRun ignores the hours).
+ * - New customer message, routine: the full reply is sent now.
+ * - New customer message, high stakes: the full draft is saved for staff. If staff are back with time to spare before the 48-hour
+ *   deadline, nothing is sent; otherwise a holding reply is scheduled for the latest 09:00–16:45 slot at least an hour before the deadline.
+ * - A scheduled holding reply whose time has come is sent, unless the customer wrote again (that message is handled on its own)
+ *   or someone already replied.
+ * Each customer message is handled once (auto_replies.message_id is unique).
  */
-export async function runAutoReplies(env: Bindings, sql: Sql, opts: { now?: Date; dryRun?: boolean; force?: boolean } = {}): Promise<{ closed: boolean; reason?: string; reopens?: string; outcomes: AutoReplyOutcome[] }> {
+export async function runAutoReplies(env: Bindings, sql: Sql, opts: { now?: Date; dryRun?: boolean } = {}): Promise<{ closed: boolean; reason?: string; reopens?: string; in_window?: boolean; outcomes: AutoReplyOutcome[] }> {
   const now = opts.now ?? new Date()
   const settings = await getAutoReplySettings(sql)
   if (!settings.enabled && !opts.dryRun) return { closed: false, outcomes: [] }
   const holidays = await loadHolidays(sql)
   const spell = closedSpellStart(now, holidays, settings.extra_closed)
   if (!spell) return { closed: false, outcomes: [] }
+  const inWindow = inReplyWindow(now, holidays, settings.extra_closed)
+  const base = { closed: true, reason: spell.reason, reopens: spell.reopens, in_window: inWindow }
+  if (!inWindow && !opts.dryRun) return { ...base, outcomes: [] }
   const outcomes: AutoReplyOutcome[] = []
+  const later = new Set<number>() // dry run: holding replies not due yet
+
+  const sendHolding = async (row: { id: number; case_ref: string; message_id: number }, t: Thread, why: string, deadline: Date) => {
+    const h = await holdingReply(env, t.kase, t.messages, t.events, spell.reason, spell.reopens, settings.returns_note)
+    const detail = `holding reply (${why}), 48-hour deadline ${fmtLondon(deadline)}${h.source === 'template' ? ` · standard wording used (${h.problems.join(', ')})` : ''}`
+    if (opts.dryRun) return { case_id: row.id, case_ref: row.case_ref, kind: 'holding' as const, detail, text: h.text }
+    const id = await insertDraft(sql, row.id, { lane: 'holding reply', text: h.text, notes: `Sent automatically on ${spell.reason}. No decision made; full reply due ${longDate(spell.reopens)}.`,
+      check: 'PASS', findings: [], needsManager: false, reason: '', urgency: 'normal', auto: 'holding' })
+    await sendDraft(env, sql, t.kase, id, h.text, { setAwaiting: false })
+    await sql`UPDATE auto_replies SET kind = 'holding', detail = ${detail.slice(0, 1000)}, draft_id = ${id} WHERE message_id = ${row.message_id}`
+    return { case_id: row.id, case_ref: row.case_ref, kind: 'holding' as const, detail, text: h.text }
+  }
+
+  // 1. New customer messages.
   for (const row of await dueCases(sql, spell.since, now, settings)) {
     const t = await loadThread(sql, row.id)
     if (!t) continue
@@ -246,9 +277,10 @@ export async function runAutoReplies(env: Bindings, sql: Sql, opts: { now?: Date
                               ON CONFLICT (message_id) DO NOTHING RETURNING id`
       if (!claim.length) continue
     }
-    const record = async (o: AutoReplyOutcome, draftId: number | null = null) => {
+    const record = async (o: AutoReplyOutcome, extra: { draftId?: number | null; sendAfter?: Date | null; deadline?: Date | null } = {}) => {
       outcomes.push(o)
-      if (!opts.dryRun) await sql`UPDATE auto_replies SET kind = ${o.kind}, detail = ${o.detail.slice(0, 1000)}, draft_id = ${draftId} WHERE message_id = ${row.last_message_id}`
+      if (!opts.dryRun) await sql`UPDATE auto_replies SET kind = ${o.kind}, detail = ${o.detail.slice(0, 1000)}, draft_id = ${extra.draftId ?? null},
+                                    send_after = ${extra.sendAfter ?? null}, deadline_at = ${extra.deadline ?? null} WHERE message_id = ${row.last_message_id}`
     }
     try {
       const full = await fullReply(env, sql, t)
@@ -257,30 +289,62 @@ export async function runAutoReplies(env: Bindings, sql: Sql, opts: { now?: Date
         const id = await insertDraft(sql, row.id, { lane: full.result.lane, text: full.result.draft, notes: [full.result.staff_notes, `Sent automatically on ${spell.reason} (routine reply, all checks passed).`].filter(Boolean).join('\n'),
           check: 'PASS', findings: full.stored, needsManager: false, reason: '', urgency: full.urgency, kbRuleIds: full.kbRuleIds, promptVersion: full.promptVersion?.version ?? null, auto: 'full' })
         await sendDraft(env, sql, t.kase, id, full.result.draft, { setAwaiting: true })
-        await record({ case_id: row.id, case_ref: row.case_ref, kind: 'full', detail: 'routine reply sent', text: full.result.draft }, id)
+        await record({ case_id: row.id, case_ref: row.case_ref, kind: 'full', detail: 'routine reply sent', text: full.result.draft }, { draftId: id })
         continue
       }
-      // High stakes: the full draft waits for staff; the customer gets one holding reply per closed spell.
-      const [held] = await sql`SELECT 1 FROM auto_replies WHERE case_id = ${row.id} AND kind = 'holding' AND created_at >= ${spell.since} LIMIT 1`
+      // High stakes: the full draft always waits for staff.
+      const plan = holdingPlan(new Date(row.last_message_at), now, holidays, settings.extra_closed)
+      const why = full.why.join(' · ')
       if (!opts.dryRun) {
         await insertDraft(sql, row.id, { lane: full.result.lane, text: full.result.draft,
-          notes: [full.result.staff_notes, `Written on ${spell.reason}, not sent: ${full.why.join(' · ')}.${held ? '' : ' The customer was sent a holding reply.'} Review and send on ${longDate(spell.reopens)}.`].filter(Boolean).join('\n'),
+          notes: [full.result.staff_notes, `Written on ${spell.reason}, not sent: ${why}. Amazon's 48-hour reply deadline: ${fmtLondon(plan.deadline)}.${plan.needed ? ` A holding reply is scheduled for ${fmtLondon(plan.sendAt!)}.` : ''}`].filter(Boolean).join('\n'),
           check: full.findings.some((f) => f.severity === 'fail') ? 'FAIL' : 'PASS', findings: full.stored, needsManager: full.needsManager, reason: full.reasons.join('; '),
           urgency: full.urgency, kbRuleIds: full.kbRuleIds, promptVersion: full.promptVersion?.version ?? null, auto: 'held' })
       }
-      if (held) { await record({ case_id: row.id, case_ref: row.case_ref, kind: 'skipped', detail: 'holding reply already sent this weekend / holiday; full draft saved for staff' }); continue }
-      const h = await holdingReply(env, t.kase, t.messages, t.events, spell.reason, spell.reopens, settings.returns_note)
-      const detail = `holding reply (${full.why.join(' · ')})${h.source === 'template' ? ` · standard wording used (${h.problems.join(', ')})` : ''}`
-      if (opts.dryRun) { await record({ case_id: row.id, case_ref: row.case_ref, kind: 'holding', detail, text: h.text }); continue }
-      const id = await insertDraft(sql, row.id, { lane: 'holding reply', text: h.text, notes: `Sent automatically on ${spell.reason}. No decision made; full reply due ${longDate(spell.reopens)}.`,
-        check: 'PASS', findings: [], needsManager: false, reason: '', urgency: full.urgency, auto: 'holding' })
-      await sendDraft(env, sql, t.kase, id, h.text, { setAwaiting: false })
-      await record({ case_id: row.id, case_ref: row.case_ref, kind: 'holding', detail, text: h.text }, id)
+      if (!plan.needed) {
+        await record({ case_id: row.id, case_ref: row.case_ref, kind: 'staff', detail: `${why} · staff back ${fmtLondon(plan.staffBack)}, before the 48-hour deadline ${fmtLondon(plan.deadline)}; full draft saved, nothing sent` }, { deadline: plan.deadline })
+        continue
+      }
+      if (plan.sendAt!.getTime() > now.getTime()) {
+        const o: AutoReplyOutcome = { case_id: row.id, case_ref: row.case_ref, kind: 'scheduled', detail: `holding reply scheduled for ${fmtLondon(plan.sendAt!)} (${why}), 48-hour deadline ${fmtLondon(plan.deadline)}`, send_at: plan.sendAt!.toISOString() }
+        if (opts.dryRun) { const h = await holdingReply(env, t.kase, t.messages, t.events, spell.reason, spell.reopens, settings.returns_note); o.text = h.text; later.add(row.id) }
+        await record(o, { sendAfter: plan.sendAt, deadline: plan.deadline })
+        continue
+      }
+      if (!opts.dryRun) await sql`UPDATE auto_replies SET kind = 'scheduled', send_after = ${now}, deadline_at = ${plan.deadline} WHERE message_id = ${row.last_message_id}`
+      outcomes.push(await sendHolding({ id: row.id, case_ref: row.case_ref, message_id: row.last_message_id }, t, why, plan.deadline))
     } catch (e: any) {
       await record({ case_id: row.id, case_ref: row.case_ref, kind: 'failed', detail: String(e?.message ?? e).slice(0, 300) })
     }
   }
-  return { closed: true, reason: spell.reason, reopens: spell.reopens, outcomes }
+
+  // 2. Holding replies whose time has come.
+  if (!opts.dryRun) {
+    const due = await sql`SELECT a.case_id, a.message_id, a.detail, a.deadline_at, c.case_ref FROM auto_replies a JOIN cases c ON c.id = a.case_id
+                          WHERE a.kind = 'scheduled' AND a.send_after <= ${now} ORDER BY a.send_after ASC LIMIT ${MAX_PER_RUN}`
+    for (const r of due as any[]) {
+      const [lm] = await sql`SELECT id, direction FROM messages WHERE case_id = ${r.case_id} AND kind IS DISTINCT FROM 'event' ORDER BY sent_at DESC, id DESC LIMIT 1`
+      if (!lm || lm.id !== r.message_id || lm.direction !== 'inbound') {
+        const detail = lm?.direction === 'outbound' ? 'not sent: someone already replied' : 'not sent: the customer wrote again (that message is handled on its own)'
+        await sql`UPDATE auto_replies SET kind = 'superseded', detail = ${detail} WHERE message_id = ${r.message_id} AND kind = 'scheduled'`
+        outcomes.push({ case_id: r.case_id, case_ref: r.case_ref, kind: 'superseded', detail })
+        continue
+      }
+      const claimed = await sql`UPDATE auto_replies SET kind = 'pending' WHERE message_id = ${r.message_id} AND kind = 'scheduled' RETURNING id`
+      if (!claimed.length) continue
+      try {
+        const t = await loadThread(sql, r.case_id)
+        if (!t) continue
+        const why = String(r.detail || '').match(/scheduled for [^(]+\((.*)\), 48-hour/)?.[1] ?? 'needs a decision from the team'
+        outcomes.push(await sendHolding({ id: r.case_id, case_ref: r.case_ref, message_id: r.message_id }, t, why, new Date(r.deadline_at ?? now)))
+      } catch (e: any) {
+        const detail = String(e?.message ?? e).slice(0, 300)
+        await sql`UPDATE auto_replies SET kind = 'failed', detail = ${detail} WHERE message_id = ${r.message_id}`
+        outcomes.push({ case_id: r.case_id, case_ref: r.case_ref, kind: 'failed', detail })
+      }
+    }
+  }
+  return { ...base, outcomes }
 }
 
 /** For the settings screen: today, and the closed days in the next 60 days. */

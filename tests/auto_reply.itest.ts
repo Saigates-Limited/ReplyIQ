@@ -40,6 +40,7 @@ globalThis.fetch = (async (url: any, init: any) => {
 
 // Setup: Amazon mailbox, settings ON, two waiting buyer messages from Saturday morning, one answered case, one non-Amazon case.
 const SAT = new Date('2026-11-21T12:00:00Z')
+await sql`UPDATE cases SET archived_at = now() WHERE case_ref LIKE 'T-AR-%' AND archived_at IS NULL` // earlier runs
 await sql`DELETE FROM gmail_connection`
 await sql`INSERT INTO gmail_connection (id, email_address, refresh_token_enc, scopes, enabled, is_default) VALUES (1, 'bijalshah.cc@gmail.com', ${await encryptToken(env, 'rt')}, 'gmail', true, true)`
 await sql`DELETE FROM app_settings WHERE key IN ('auto_reply','bank_holidays')`
@@ -59,48 +60,62 @@ const notAmazon = await mk('T-AR-D', 'Royal', 'claims@royalmail.com', 'Your clai
 const thursday = await mk('T-AR-E', 'Old', 'old1@marketplace.amazon.co.uk', 'Question from Thursday', new Date('2026-11-19T10:00:00Z'))
 const tooFresh = await mk('T-AR-F', 'Tom', 'fresh1@marketplace.amazon.co.uk', 'Just now', new Date('2026-11-21T11:55:00Z'))
 
-// 1. Off: nothing happens.
-eq('off: no outcomes', (await runAutoReplies(env, sql, { now: SAT })).outcomes.length, 0)
-// 2. Preview while off: writes, sends nothing.
-const pv = await runAutoReplies(env, sql, { now: SAT, dryRun: true })
-const mine = (o: any[]) => o.filter((x) => [routine, high, answered, notAmazon, thursday, tooFresh].includes(x.case_id))
-eq('preview picks only the two waiting Amazon messages', mine(pv.outcomes).map((o) => [o.case_id === routine ? 'routine' : 'high', o.kind]), [['routine', 'full'], ['high', 'holding']])
-eq('preview sent nothing', sentMail.length, 0)
-// 3. On: routine gets the full reply, high stakes gets the holding reply; the full draft waits for staff.
-await saveAutoReplySettings(sql, { enabled: true }, mgr.id)
-const r1 = await runAutoReplies(env, sql, { now: SAT })
-eq('sent: routine full + high holding', mine(r1.outcomes).map((o) => o.kind), ['full', 'holding'])
-eq('two emails sent', sentMail.length, 2)
 // The MIME message is base64url; inside it the text part is base64 again. Return headers + decoded plain text.
 const dec = (raw: string) => {
   const mime = Buffer.from(raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
   const part = mime.split(/Content-Type: text\/plain[^\n]*\n(?:[^\n]*\n)*?\r?\n/)[1]?.split(/\r?\n--/)[0] ?? ''
   return mime.split(/\r?\n\r?\n/)[0] + '\n' + Buffer.from(part.replace(/\s+/g, ''), 'base64').toString('utf8')
 }
+// 1. Off: nothing happens.
+eq('off: no outcomes', (await runAutoReplies(env, sql, { now: SAT })).outcomes.length, 0)
+// 2. Preview while off: writes, sends nothing.
+const pv = await runAutoReplies(env, sql, { now: SAT, dryRun: true })
+const mine = (o: any[]) => o.filter((x) => [routine, high, answered, notAmazon, thursday, tooFresh].includes(x.case_id))
+eq('preview: Tom full now, Priya holding scheduled', mine(pv.outcomes).map((o) => [o.case_id === routine ? 'routine' : 'high', o.kind]), [['routine', 'full'], ['high', 'scheduled']])
+eq('preview: Priya scheduled for Sunday 16:45 (as late as possible inside 48h)', mine(pv.outcomes).find((o) => o.case_id === high)?.send_at, '2026-11-22T16:45:00.000Z')
+eq('preview sent nothing', sentMail.length, 0)
+await saveAutoReplySettings(sql, { enabled: true }, mgr.id)
+// 3. Outside 9-5 nothing goes out, even when switched on.
+eq('Saturday 07:30: outside 9-5, nothing', (await runAutoReplies(env, sql, { now: new Date('2026-11-21T07:30:00Z') })).outcomes.length, 0)
+// 4. On, Saturday 12:00: routine sent; high stakes scheduled, full draft held.
+const r1 = await runAutoReplies(env, sql, { now: SAT })
+eq('Saturday: full sent, holding scheduled', mine(r1.outcomes).map((o) => o.kind), ['full', 'scheduled'])
+eq('one email sent', sentMail.length, 1)
 eq('full reply went to Tom', /To: tom123@marketplace.amazon.co.uk/.test(dec(sentMail[0])) && /dispatched on Friday/.test(dec(sentMail[0])), true)
-eq('holding reply has no decision and the returns sentence', /returns team remains available/.test(dec(sentMail[1])) && !/refund you/i.test(dec(sentMail[1])), true)
-eq('never says automatic', sentMail.some((m) => /automat|out of office/i.test(dec(m))), false)
 const [ks] = await sql`SELECT status FROM cases WHERE id = ${routine}`
 eq('routine case now awaiting customer', ks.status, 'awaiting_customer')
-const hd = await sql`SELECT status, auto_reply, needs_manager FROM drafts WHERE case_id = ${high} ORDER BY id`
-eq('high case: full draft held for staff + holding reply sent', hd.map((d: any) => [d.auto_reply, d.status]), [['held', 'draft'], ['holding', 'sent']])
-const [hm] = await sql`SELECT sender FROM messages WHERE case_id = ${high} AND direction = 'outbound'`
-eq('timeline shows it as a closed-day reply (internal label)', hm.sender, 'Saigates Support (closed-day reply)')
-// 4. Next run: nothing answered twice.
+eq('high case: full draft held for staff', (await sql`SELECT auto_reply, status FROM drafts WHERE case_id = ${high} ORDER BY id`).map((d: any) => [d.auto_reply, d.status]), [['held', 'draft']])
+// 5. Saturday 12:15: the message that was under 10 minutes old is now answered; nothing else.
 const r2 = mine((await runAutoReplies(env, sql, { now: new Date('2026-11-21T12:15:00Z') })).outcomes)
-eq('second run: only the message that had been waiting under 10 minutes', r2.map((o) => [o.case_id === tooFresh, o.kind]), [[true, 'full']])
-// 5. Priya writes again on Sunday: no second holding reply, the held draft is refreshed.
-await sql`INSERT INTO messages (case_id, direction, sender, body, sent_at, kind) VALUES (${high}, 'inbound', 'Priya', 'Hello? It is still hot.', '2026-11-22T09:00:00Z', 'message')`
-const r3 = await runAutoReplies(env, sql, { now: new Date('2026-11-22T10:00:00Z') })
-eq('Sunday follow-up: no second holding reply', mine(r3.outcomes).map((o) => o.kind), ['skipped'])
-eq('no new email for Priya', sentMail.length, 3)
-// 6. A model holding reply that decides something is replaced by the standard wording.
+eq('Saturday 12:15: only the newer message', r2.map((o) => [o.case_id === tooFresh, o.kind]), [[true, 'full']])
+// 6. Sunday 16:30: not yet. Sunday 16:45: the holding reply goes.
+eq('Sunday 16:30: holding not due yet', mine((await runAutoReplies(env, sql, { now: new Date('2026-11-22T16:30:00Z') })).outcomes).length, 0)
+const r3 = mine((await runAutoReplies(env, sql, { now: new Date('2026-11-22T16:45:00Z') })).outcomes)
+eq('Sunday 16:45: holding reply sent', r3.map((o) => o.kind), ['holding'])
+const hold = dec(sentMail[sentMail.length - 1])
+eq('holding reply: returns sentence, no decision, never says automatic', /returns team remains available/.test(hold) && !/refund you/i.test(hold) && !/automat|out of office/i.test(hold), true)
+const [hm] = await sql`SELECT sender FROM messages WHERE case_id = ${high} AND direction = 'outbound'`
+eq('timeline label (internal)', hm.sender, 'Saigates Support (closed-day reply)')
+eq('nothing sent twice', mine((await runAutoReplies(env, sql, { now: new Date('2026-11-22T16:59:00Z') })).outcomes).length, 0)
+// 7. Customer writes again Sunday 16:40: deadline Tue 16:40, staff back Mon 09:00, so left for staff, no second reply.
+await sql`INSERT INTO messages (case_id, direction, sender, body, sent_at, kind) VALUES (${high}, 'inbound', 'Priya', 'Hello? It is still hot.', '2026-11-22T16:40:00Z', 'message')`
+const n = sentMail.length
+const r4 = mine((await runAutoReplies(env, sql, { now: new Date('2026-11-22T16:55:00Z') })).outcomes)
+eq('Sunday follow-up: left for staff (back Monday before the deadline)', r4.map((o) => o.kind), ['staff'])
+eq('no new email', sentMail.length, n)
+// 8. A scheduled holding reply is dropped if someone replies first.
+const early = await mk('T-AR-H', 'Kim', 'kim2@marketplace.amazon.co.uk', 'My battery is getting very hot, I want a refund', new Date('2026-11-21T11:00:00Z'))
+await runAutoReplies(env, sql, { now: new Date('2026-11-21T12:30:00Z') })
+await sql`INSERT INTO messages (case_id, direction, sender, body, sent_at) VALUES (${early}, 'outbound', 'Saigates Support (Kuldeep)', 'We are on it', '2026-11-21T13:00:00Z')`
+const r5 = (await runAutoReplies(env, sql, { now: new Date('2026-11-22T16:45:00Z') })).outcomes.filter((o) => o.case_id === early)
+eq('staff replied first: scheduled holding reply not sent', r5.map((o) => [o.kind, o.detail]), [['superseded', 'not sent: someone already replied']])
+// 9. A model holding reply that decides something is replaced by the standard wording (Christmas).
 holdingMode = 'bad'
-const bad = await mk('T-AR-G', 'Lee', 'lee7@marketplace.amazon.co.uk', 'My battery is getting very hot, refund me', new Date('2026-11-22T09:30:00Z'))
-const r4 = await runAutoReplies(env, sql, { now: new Date('2026-11-22T10:00:00Z') })
-const o4 = r4.outcomes.find((o) => o.case_id === bad)!
-eq('bad model wording → standard holding wording', /standard wording/.test(o4.detail) && /Dear Lee/.test(o4.text!) && !/refund you/i.test(o4.text!), true)
-// 7. Monday: open, nothing sent.
+const bad = await mk('T-AR-G', 'Lee', 'lee7@marketplace.amazon.co.uk', 'My battery is getting very hot, refund me', new Date('2026-12-24T18:00:00Z'))
+await runAutoReplies(env, sql, { now: new Date('2026-12-25T09:15:00Z') })
+const r6 = (await runAutoReplies(env, sql, { now: new Date('2026-12-26T16:45:00Z') })).outcomes.find((o) => o.case_id === bad)!
+eq('bad model wording: standard holding wording', r6?.kind === 'holding' && /standard wording/.test(r6.detail) && /Dear Lee/.test(r6.text!) && !/refund you/i.test(r6.text!), true)
+// 10. Monday: open, nothing sent.
 eq('Monday: open', (await runAutoReplies(env, sql, { now: new Date('2026-11-23T10:00:00Z') })).closed, false)
 await sql`DELETE FROM gmail_connection`
 await sql.end()

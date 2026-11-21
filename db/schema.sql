@@ -616,3 +616,11 @@ CREATE INDEX IF NOT EXISTS idx_auto_replies_case ON public.auto_replies (case_id
 CREATE INDEX IF NOT EXISTS idx_auto_replies_at   ON public.auto_replies (created_at DESC);
 -- Which drafts the closed-day run wrote: full = routine reply sent; holding = holding reply sent; held = full draft left for staff.
 ALTER TABLE public.drafts ADD COLUMN IF NOT EXISTS auto_reply TEXT CHECK (auto_reply IN ('full','holding','held'));
+
+-- ── 0028 Closed-day reply timing ──
+ALTER TABLE public.auto_replies ADD COLUMN IF NOT EXISTS send_after TIMESTAMPTZ;
+ALTER TABLE public.auto_replies ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ;
+ALTER TABLE public.auto_replies DROP CONSTRAINT IF EXISTS auto_replies_kind_check;
+ALTER TABLE public.auto_replies ADD CONSTRAINT auto_replies_kind_check
+  CHECK (kind IN ('pending','full','holding','scheduled','staff','superseded','skipped','failed'));
+CREATE INDEX IF NOT EXISTS idx_auto_replies_scheduled ON public.auto_replies (send_after) WHERE kind = 'scheduled';

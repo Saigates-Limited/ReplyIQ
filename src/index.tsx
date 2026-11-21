@@ -153,6 +153,8 @@ app.get('/api/settings/migrations', async (c) => {
       ['0014_templates_and_kb_seed', 'table', 'reply_templates'], ['0015_carrier_desk', 'table', 'carrier_cases'], ['0016_draft_revisions', 'column', 'drafts', 'revision_of'],
       ['0017_returns_and_refunds', 'table', 'returns'], ['0018_returns_archive_guard', 'trigger', 'trg_returns_no_delete'],
       ['0019_draft_approval_requests', 'column', 'drafts', 'approval_requested_by'], ['0020_staff_routine_send', 'column', 'drafts', 'sent_without_manager_approval'], ['0021_template_columns_and_kb_cleanup', 'column', 'reply_templates', 'updated_by'],
+      ['0023_invoices', 'table', 'invoices'], ['0024_draft_files', 'table', 'draft_files'], ['0025_case_overviews', 'table', 'case_overviews'],
+      ['0026_security', 'table', 'security_log'], ['0027_auto_replies', 'table', 'auto_replies'], ['0028_auto_reply_timing', 'column', 'auto_replies', 'send_after'],
     ]
     const tables = new Set((await sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`).map((r: any) => r.table_name))
     const cols = new Set((await sql`SELECT table_name || '.' || column_name AS k FROM information_schema.columns WHERE table_schema = 'public'`).map((r: any) => r.k))

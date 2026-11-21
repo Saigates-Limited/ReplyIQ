@@ -74,3 +74,51 @@ export async function loadHolidays(sql: Sql, fetcher: typeof fetch = fetch): Pro
   } catch {}
   return { ...FALLBACK_BANK_HOLIDAYS }
 }
+
+// ───────── Reply timing (Sagar, 21 Nov 2026) ─────────
+// Amazon expects a reply within 48 hours, weekends and holidays included. Closed-day replies go out only between 09:00 and 17:00.
+// A holding reply (high stakes) is sent as LATE as possible inside the 48 hours, and only if staff would not be back in time.
+export const REPLY_DEADLINE_HOURS = 48
+export const WINDOW_START = 9, WINDOW_END = 17 // London hours; last send slot 16:45 (cron runs every 15 minutes)
+export const SAFETY_MINUTES = 60 // send at least an hour before the deadline
+export const STAFF_BUFFER_HOURS = 4 // staff need this long after opening to reach a message before its deadline
+
+/** The instant that is hh:mm on a London date (handles GMT and BST). */
+export function londonInstant(ymd: string, hh: number, mm = 0): Date {
+  for (const off of [0, 1]) {
+    const d = new Date(Date.UTC(+ymd.slice(0, 4), +ymd.slice(5, 7) - 1, +ymd.slice(8, 10), hh - off, mm))
+    if (londonDate(d) === ymd && londonHour(d) === hh) return d
+  }
+  return new Date(Date.UTC(+ymd.slice(0, 4), +ymd.slice(5, 7) - 1, +ymd.slice(8, 10), hh, mm))
+}
+
+/** True between 09:00 and 17:00 London on a closed day. */
+export function inReplyWindow(now: Date, holidays: Holidays, extra: Record<string, string> = {}) {
+  const h = londonHour(now)
+  return !!closedReason(londonDate(now), holidays, extra) && h >= WINDOW_START && h < WINDOW_END
+}
+
+/**
+ * When to send a holding reply for a customer message that arrived at `msgAt`:
+ * needed = false when staff are back (09:00 on the next working day) with STAFF_BUFFER_HOURS to spare before the 48-hour deadline;
+ * otherwise sendAt = the latest 09:00–16:45 slot on a closed day that is at least an hour before the deadline
+ * (or now, if that slot has already passed: late is better than never).
+ */
+export function holdingPlan(msgAt: Date, now: Date, holidays: Holidays, extra: Record<string, string> = {}) {
+  const deadline = new Date(msgAt.getTime() + REPLY_DEADLINE_HOURS * 3600_000)
+  const staffBack = londonInstant(nextWorkingDay(londonDate(now), holidays, extra), WINDOW_START)
+  if (closedReason(londonDate(now), holidays, extra) === null) return { needed: false, sendAt: null, deadline, staffBack }
+  if (deadline.getTime() >= staffBack.getTime() + STAFF_BUFFER_HOURS * 3600_000) return { needed: false, sendAt: null, deadline, staffBack }
+  const target = new Date(deadline.getTime() - SAFETY_MINUTES * 60_000)
+  let d = londonDate(target)
+  const today = londonDate(now)
+  for (let i = 0; i < 14 && d >= today; i++) {
+    if (closedReason(d, holidays, extra)) {
+      const start = londonInstant(d, WINDOW_START), end = londonInstant(d, WINDOW_END - 1, 45)
+      const cand = new Date(Math.min(end.getTime(), target.getTime()))
+      if (cand >= start) return { needed: true, sendAt: cand < now ? now : cand, deadline, staffBack }
+    }
+    const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() - 1); d = x.toISOString().slice(0, 10)
+  }
+  return { needed: true, sendAt: now, deadline, staffBack }
+}
