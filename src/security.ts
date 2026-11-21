@@ -81,7 +81,7 @@ export const otpauthUrl = (secret: string, email: string) =>
 export type SecurityEvent =
   | 'login' | 'login_failed' | 'login_locked' | 'mfa_failed' | 'mfa_enabled' | 'mfa_reset' | 'logout'
   | 'password_changed' | 'password_reset_by_manager' | 'user_created' | 'user_deactivated' | 'user_reactivated' | 'role_changed'
-  | 'buyer_address_lookup' | 'invoice_opened' | 'invoice_deleted' | 'pii_purge'
+  | 'setting_changed' | 'buyer_address_lookup' | 'invoice_opened' | 'invoice_deleted' | 'pii_purge'
 
 export async function logSecurity(sql: Sql, e: { event: SecurityEvent; user_id?: number | null; email?: string | null; ip?: string | null; detail?: Record<string, unknown> }) {
   try {

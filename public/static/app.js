@@ -1194,7 +1194,7 @@
   // Security log (managers): every sign-in, failed sign-in, MFA change, password change and buyer-address lookup.
   const SEC_EVENTS = { login: 'Signed in', login_failed: 'Failed sign-in', login_locked: 'Account locked (10 min)', mfa_failed: 'Wrong MFA code', mfa_enabled: 'MFA turned on',
     mfa_reset: 'MFA reset by manager', logout: 'Signed out', password_changed: 'Password changed', password_reset_by_manager: 'Password reset by manager',
-    user_created: 'User created', user_deactivated: 'User deactivated', user_reactivated: 'User reactivated', role_changed: 'Role changed',
+    user_created: 'User created', user_deactivated: 'User deactivated', user_reactivated: 'User reactivated', role_changed: 'Role changed', setting_changed: 'Setting changed',
     buyer_address_lookup: 'Buyer address fetched from Amazon', invoice_opened: 'Invoice opened', invoice_deleted: 'Invoice deleted', pii_purge: 'Buyer data clean-up' }
   async function renderSecurityLog(filter = '') {
     let box = app.querySelector('#security-log')
@@ -1209,6 +1209,7 @@
       if (r.event === 'pii_purge') return `${d.cases} case(s) cleaned · ${d.invoices_deleted} old invoice(s) deleted`
       if (r.event === 'login_failed' && d.reason === 'unknown_email') return 'unknown email'
       if (r.event === 'role_changed') return `now ${esc(d.role || '')}`
+      if (r.event === 'setting_changed') return `${esc(d.setting || '')} ${esc(d.action || '')}`
       return ''
     }
     const k = data.counts || {}
@@ -1802,6 +1803,10 @@
             <div id="prompt-summary" class="text-xs text-slate-500 mt-2">checking…</div>
             <a href="/settings/prompt" data-link class="inline-block mt-3 px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm"><i class="fas fa-pen mr-1"></i>Open editor</a>
           </div>` : ''}
+          ${isManager ? `<div class="bg-white rounded-xl shadow-sm p-5 lg:col-span-2" id="spend-card">
+            <h2 class="font-semibold mb-2"><i class="fas fa-sterling-sign mr-2 text-slate-400"></i>OpenAI spend by month</h2>
+            <div id="spend-body" class="text-sm text-slate-500">checking…</div>
+          </div>` : ''}
           <div class="bg-white rounded-xl shadow-sm p-5 lg:col-span-2" id="closed-card">
             <h2 class="font-semibold mb-2"><i class="fas fa-moon mr-2 text-slate-400"></i>Weekend and bank holiday replies</h2>
             <div id="closed-body" class="text-sm text-slate-500">checking…</div>
@@ -1857,12 +1862,60 @@
       </section>`
     loadApprovalCard()
     loadClosedCard()
+    if (isManager) loadSpendCard()
     if (isManager) axios.get('/api/prompt').then(({ data }) => { const el = document.getElementById('prompt-summary'); if (!el) return; el.innerHTML = data.migration_needed ? `<span class="text-amber-700"><i class="fas fa-database mr-1"></i>Run <code>db/migrations/${esc(data.migration_needed)}</code> first</span>` : data.current && data.current.body.trim() ? `<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>v${data.current.version} in force</span> · ${data.current.body.trim().length} chars · saved ${dayjs(data.current.created_at).fromNow()} by ${esc(data.current.created_by_name || '—')}` : '<span class="text-slate-500">No custom prompt yet — the model gets the policy file and knowledge base only.</span>' }).catch(() => {})
     axios.get('/api/spapi/status').then(({ data }) => { const el = document.getElementById('spapi-state'); if (el) el.innerHTML = data.configured ? '<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>Configured</span>' : '<span class="text-amber-700"><i class="fas fa-circle-exclamation mr-1"></i>Not configured</span>' }).catch(() => {})
     document.getElementById('spapi-test')?.addEventListener('click', async (e) => {
       const out = document.getElementById('spapi-test-result'); e.target.disabled = true; out.textContent = 'testing…'
       try { const { data } = await axios.post('/api/spapi/test'); out.innerHTML = data.ok ? `<span class="text-emerald-700">✓ ${esc(data.detail)}</span>` : `<span class="text-red-700">✗ ${esc(data.detail)}</span>` } catch (err) { out.innerHTML = `<span class="text-red-700">${esc(err.response?.data?.error || err.message)}</span>` }
       e.target.disabled = false
+    })
+  }
+
+  // OpenAI spend by month (managers). Figures come from OpenAI's Costs API with an admin key, cached for an hour.
+  async function loadSpendCard(refresh = false) {
+    const el = document.getElementById('spend-body'); if (!el) return
+    if (refresh) el.innerHTML = '<span class="text-slate-500"><i class="fas fa-spinner fa-spin mr-1"></i>Fetching from OpenAI…</span>'
+    let d
+    try { ;({ data: d } = await axios.get('/api/openai-spend', { params: refresh ? { refresh: 1 } : {} })) } catch (err) { d = err.response?.data || { error: err.message } }
+    const keyForm = (label) => `
+      <div class="mt-3 flex flex-wrap items-end gap-2">
+        <div class="flex-1 min-w-[16rem]"><label class="field-label" for="spend-key">${label}</label>
+          <input id="spend-key" type="password" autocomplete="off" class="field-input font-mono text-xs" placeholder="sk-admin-…"></div>
+        <button id="spend-key-save" class="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm">Save key</button>
+      </div>
+      <p class="text-xs text-slate-500 mt-1">Create it in OpenAI: Settings → Organization → Admin keys → Create (read-only is enough). It is checked with OpenAI, stored encrypted, and never shown again.</p>`
+    if (!d.configured) {
+      el.innerHTML = `<p>Monthly spend needs an OpenAI <strong>admin key</strong>. The key ReplyIQ uses for drafting can't read billing.</p>${keyForm('OpenAI admin key')}`
+    } else if (d.error) {
+      el.innerHTML = `<p class="text-red-700">${esc(d.error)}</p>${keyForm('Replace the admin key')}`
+    } else {
+      const cur = { usd: '$', gbp: '£', eur: '€' }[String(d.currency).toLowerCase()] || ''
+      const money = (v) => cur + Number(v || 0).toFixed(2)
+      const max = Math.max(...d.months.map((m) => m.total), 0.01)
+      const total12 = d.months.reduce((a, m) => a + m.total, 0)
+      const last = d.months[d.months.length - 1], prev = d.months[d.months.length - 2]
+      el.innerHTML = `
+        <p class="text-slate-700">This month so far: <strong>${money(last?.total)}</strong>${prev ? ` · last month ${money(prev.total)}` : ''} · last 12 months ${money(total12)} <span class="text-xs text-slate-400">(${esc(d.currency)}, whole OpenAI organisation, calendar months in UTC)</span></p>
+        <div class="mt-3 overflow-x-auto"><div class="flex items-end gap-2 h-40 min-w-[36rem]" role="img" aria-label="OpenAI spend by month">
+          ${d.months.map((m) => `<div class="flex-1 flex flex-col items-center justify-end h-full" title="${esc(m.label)}: ${money(m.total)}">
+            <span class="text-[10px] text-slate-600 mb-0.5">${m.total ? money(m.total) : ''}</span>
+            <div class="w-full rounded-t bg-sky-600" style="height:${Math.max(m.total ? 2 : 0, Math.round((m.total / max) * 100))}%"></div>
+            <span class="text-[10px] text-slate-500 mt-1 whitespace-nowrap">${esc(m.label.replace(' 20', ' ’'))}</span></div>`).join('')}
+        </div></div>
+        <details class="mt-3"><summary class="cursor-pointer text-sm font-medium">By month and project</summary>
+          <div class="overflow-x-auto"><table class="w-full text-sm mt-2"><thead class="text-left text-xs uppercase tracking-wide text-slate-500"><tr><th class="py-1 pr-4">Month</th><th class="py-1 pr-4 text-right">Total</th><th class="py-1">By project</th></tr></thead>
+          <tbody>${[...d.months].reverse().map((m) => `<tr class="border-t border-slate-100"><td class="py-1 pr-4 whitespace-nowrap">${esc(m.label)}</td><td class="py-1 pr-4 text-right font-mono">${money(m.total)}</td>
+            <td class="py-1 text-xs text-slate-600">${Object.entries(m.projects).map(([p, v]) => `${esc(p)} ${money(v)}`).join(' · ') || '—'}</td></tr>`).join('')}</tbody></table></div></details>
+        <p class="mt-2 text-[11px] text-slate-400">Updated ${fmtDateTime(d.fetched_at)} · key ending …${esc(d.last4 || '')} ${d.source === 'secret' ? '(Worker secret)' : ''}
+          · <button id="spend-refresh" class="underline">Refresh</button>${d.source === 'settings' ? ' · <button id="spend-key-remove" class="underline">Remove key</button>' : ''}</p>`
+    }
+    document.getElementById('spend-refresh')?.addEventListener('click', () => loadSpendCard(true))
+    document.getElementById('spend-key-remove')?.addEventListener('click', async () => { try { await axios.put('/api/openai-spend/key', { key: '' }); toast('Admin key removed'); loadSpendCard() } catch (err) { toast(err.response?.data?.error || err.message, 'err') } })
+    document.getElementById('spend-key-save')?.addEventListener('click', async (e) => {
+      const key = document.getElementById('spend-key').value.trim(); if (!key) return
+      e.target.disabled = true
+      try { await axios.put('/api/openai-spend/key', { key }); toast('Admin key saved'); loadSpendCard(true) } catch (err) { toast(err.response?.data?.error || err.message, 'err'); e.target.disabled = false }
     })
   }
 

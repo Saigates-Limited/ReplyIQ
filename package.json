@@ -12,7 +12,7 @@
     "db:seed": "psql \"$DATABASE_URL\" -f db/seed.sql",
     "db:reset": "npm run db:schema && npm run db:seed",
     "test": "curl -s http://localhost:3000/api/health",
-    "test:unit": "tsx --test tests/carrier.test.ts tests/returns.test.ts tests/ai.test.ts tests/approval.test.ts tests/context.test.ts tests/send_attach.test.ts tests/order_contact.test.ts tests/draft_files.test.ts tests/send_guards.test.ts tests/overview.test.ts tests/security.test.ts tests/closed_days.test.ts",
+    "test:unit": "tsx --test tests/carrier.test.ts tests/returns.test.ts tests/ai.test.ts tests/approval.test.ts tests/context.test.ts tests/send_attach.test.ts tests/order_contact.test.ts tests/draft_files.test.ts tests/send_guards.test.ts tests/overview.test.ts tests/security.test.ts tests/closed_days.test.ts tests/openai_spend.test.ts",
     "test:e2e": "node tests/run-e2e.mjs"
   },
   "dependencies": {

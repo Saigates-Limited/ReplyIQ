@@ -22,6 +22,7 @@ import { getDb, dbConfigured, type Bindings } from './db'
 import { requireAuth, getSessionUser, type Vars } from './auth'
 import { purgeBuyerData } from './security'
 import { autoReplyApi } from './routes/autoReply'
+import { spendApi } from './routes/spend'
 import { runAutoReplies } from './autoReply'
 import { redactPii } from './ai'
 import { page, loginPage, setupPage, privacyPage } from './page'
@@ -122,6 +123,7 @@ app.route('/api/kb', kbApi) // knowledge base rules for the drafting model
 app.route('/api/prompt', promptApi) // custom system prompt (manager only)
 app.route('/api/templates', templatesApi) // ready-to-use reply templates
 app.route('/api/invoices', invoicesApi) // invoice generator (migration 0023)
+app.route('/api/openai-spend', spendApi) // OpenAI cost per month (manager)
 app.route('/api/auto-reply', autoReplyApi) // replies while closed (weekends, UK bank holidays)
 app.route('/api/carrier', carrierApi) // carrier desk: Royal Mail / DPD / FedEx / Evri investigations and claims
 
