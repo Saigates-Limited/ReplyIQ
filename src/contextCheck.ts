@@ -3,6 +3,7 @@
 // request for a £50 refund" is not offering £50). When one of those fires, ask the model once, with the conversation,
 // whether the reply really does that. If it says no, the finding is cleared (kept in server_findings as severity
 // 'cleared' with the reason, so staff can see why). If the model cannot be reached, the finding stays: fail-safe.
+import { chat } from './openai'
 import type { Bindings } from './db'
 import { buildPayload, MODEL, type ServerFinding, type CaseRow, type MessageRow, type EventRow } from './ai'
 
@@ -47,19 +48,13 @@ async function askModel(env: Bindings, kase: CaseRow, messages: MessageRow[], ev
     const user = `CONVERSATION (oldest first, most recent last):\n${thread}\n\nREPLY WE ARE ABOUT TO SEND:\n${draft.slice(0, 8000)}\n\nQUESTIONS (judge the reply's meaning in this conversation, not single words):\n${rules.map((r) => `- ${r}: ${CONTEXT_RULES[r]}`).join('\n')}\n\nReturn JSON: {${rules.map((r) => `"${r}": {"applies": true|false, "why": "<one short sentence quoting the words that decide it>"}`).join(', ')}}`
     // Same privacy guards as drafting: no returns-desk or refund-email data.
     if (/SPC-[A-Za-z]+-\d{6,}/.test(user) || /refund_initiated/.test(user)) return null
-    const res = await fetch(`${base}/chat/completions`, {
-      method: 'POST', signal: ctl.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-      body: JSON.stringify({
-        model: MODEL, store: false, response_format: { type: 'json_object' },
+    const { data } = await chat(env, {
+        response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: 'You check a customer-service reply from a UK seller of renewed phones on Amazon for specific policy problems. Answer each question about what the reply actually says and commits to, in the context of the conversation. When unsure, answer applies: true.' },
           { role: 'user', content: user },
         ],
-      }),
-    })
-    if (!res.ok) return null
-    const data: any = await res.json()
+      }, { timeoutMs: 25000 })
     const parsed = JSON.parse(String(data.choices?.[0]?.message?.content ?? '{}'))
     const out: Record<string, Verdict> = {}
     for (const r of rules) {

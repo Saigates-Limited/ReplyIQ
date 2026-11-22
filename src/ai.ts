@@ -6,7 +6,8 @@ import { customPromptBlock } from './systemPrompt'
 import type { Bindings } from './db'
 import { assertNoAttachmentContent, attachmentSummaryForModel, type AttachmentMeta } from './attachments'
 
-export const MODEL = 'gpt-5.5'
+import { chat, PRIMARY_MODEL } from './openai'
+export const MODEL = PRIMARY_MODEL // label for drafts; the model actually used is in AiResult.model
 
 export type CaseRow = {
   id: number
@@ -76,6 +77,7 @@ Where a fact is missing write [MISSING: <field>] — never guess. Sign off as "S
 }
 
 export type AiResult = {
+  model?: string // the model that wrote it (fallback if the primary was unavailable)
   lane: string
   draft: string
   staff_notes: string
@@ -225,24 +227,14 @@ export async function generateDraft(
   // IMEIs are deliberately NOT blocked: they are allowed in the thread and in replies (Saigates decision 2026-11-11).
   if (/SPC-[A-Za-z]+-\d{6,}/.test(userMsg) || /refund_initiated/.test(userMsg)) throw new Error('Privacy guard: returns/refund data found in the model payload')
 
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      store: false, // never retain prompts/completions on OpenAI's side
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemMsg },
-        { role: 'user', content: userMsg },
-      ],
-    }),
+  // store:false (never retained on OpenAI's side) is set in chat(); GPT-5.5 first, gpt-6.1-sol if it is unavailable.
+  const { data, model: modelUsed } = await chat(env, {
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: systemMsg },
+      { role: 'user', content: userMsg },
+    ],
   })
-  if (!res.ok) {
-    const txt = await res.text()
-    throw new Error(`OpenAI error ${res.status}: ${txt.slice(0, 300)}`)
-  }
-  const data: any = await res.json()
   const content: string = data.choices?.[0]?.message?.content ?? ''
   let parsed: any
   try {
@@ -257,6 +249,7 @@ export async function generateDraft(
   }
   const urgency = ['high', 'normal', 'low'].includes(parsed.urgency) ? parsed.urgency : 'normal'
   const result: AiResult = {
+    model: modelUsed,
     lane: String(parsed.lane ?? 'unspecified').slice(0, 120),
     draft: String(parsed.reply ?? parsed.draft ?? '').trim(),
     staff_notes: String(parsed.staff_notes ?? '').trim(),

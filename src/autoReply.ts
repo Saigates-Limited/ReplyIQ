@@ -9,6 +9,7 @@
 import type { Bindings, Sql } from './db'
 import { generateDraft, serverChecks, buildPayload, MODEL, type CaseRow, type MessageRow, type EventRow } from './ai'
 import { loadActiveRules } from './kb'
+import { chat } from './openai'
 import { loadCurrentPrompt } from './systemPrompt'
 import { reviewInContext, openFindings } from './contextCheck'
 import { decideManager } from './approval'
@@ -131,13 +132,7 @@ Customer Support Team
 Return JSON: {"reply": "<the email>"}`
   const user = `CASE INPUT:\n${JSON.stringify(payload.caseInput, null, 2)}\n\nORDER TIMELINE (oldest first):\n${payload.thread.map((m) => `[${m.from} @ ${m.sent_at}]\n${m.text}`).join('\n\n')}`
   try {
-    const base = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
-    const res = await fetch(`${base}/chat/completions`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-      body: JSON.stringify({ model: MODEL, store: false, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
-    })
-    if (!res.ok) return fallback([`model error ${res.status}`])
-    const data: any = await res.json()
+    const { data } = await chat(env, { response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] })
     const text = String(JSON.parse(data.choices?.[0]?.message?.content ?? '{}').reply ?? '').trim()
     const problems = [...holdingProblems(text, earlier, returnsNote), ...serverChecks(text, k).filter((f) => f.severity === 'fail').map((f) => f.detail)]
     if (!text || problems.length) return fallback(problems.length ? problems : ['empty reply'])
@@ -337,7 +332,7 @@ export async function runAutoReplies(env: Bindings, sql: Sql, opts: { now?: Date
   // 2. Holding replies whose time has come.
   if (!opts.dryRun) {
     const due = await sql`SELECT a.case_id, a.message_id, a.detail, a.deadline_at, c.case_ref FROM auto_replies a JOIN cases c ON c.id = a.case_id
-                          WHERE a.kind = 'scheduled' AND a.send_after <= ${now} ORDER BY a.send_after ASC LIMIT ${MAX_PER_RUN}`
+                          WHERE a.kind = 'scheduled' AND a.send_after <= ${now} AND a.send_after >= ${spell.since} ORDER BY a.send_after ASC LIMIT ${MAX_PER_RUN}`
     for (const r of due as any[]) {
       const [lm] = await sql`SELECT id, direction FROM messages WHERE case_id = ${r.case_id} AND kind IS DISTINCT FROM 'event' ORDER BY sent_at DESC, id DESC LIMIT 1`
       if (!lm || lm.id !== r.message_id || lm.direction !== 'inbound') {

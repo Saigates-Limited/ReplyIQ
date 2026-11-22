@@ -23,23 +23,17 @@ const SYSTEM = `Classify the tone of a customer message to an Amazon UK seller. 
 If both angry and dispute apply, choose dispute.`
 
 import { assertNoAttachmentContent } from './attachments'
+import { chat } from './openai'
 
 export async function classifyTone(env: Bindings, redactedText: string): Promise<{ label: Tone; model: string } | null> {
   if (!env.OPENAI_API_KEY || !redactedText.trim()) return null
   assertNoAttachmentContent(redactedText) // attachments never reach the model, even for tone
   const base = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-    body: JSON.stringify({
-      model: TONE_MODEL,
-      store: false,
-      response_format: { type: 'json_object' },
-      messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: redactedText.slice(0, 3000) }],
-    }),
-  })
-  if (!res.ok) throw new Error(`tone model ${res.status}`)
-  const data: any = await res.json()
+  // Tone uses its own small model; if that is unavailable it falls back like everything else.
+  const { data } = await chat(env, {
+    response_format: { type: 'json_object' },
+    messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: redactedText.slice(0, 3000) }],
+  }, { model: TONE_MODEL })
   try {
     const t = String(JSON.parse(data.choices?.[0]?.message?.content ?? '{}').tone ?? '').toLowerCase()
     return (TONES as readonly string[]).includes(t) ? { label: t as Tone, model: TONE_MODEL } : null

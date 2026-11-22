@@ -4,6 +4,7 @@
 //    supplies a one-line gist per message; dates and facts never come from the model.
 // Same privacy guard as drafting: if the payload would contain returns-desk refs or refund data, no model call is made
 // and the timeline is shown with plain excerpts.
+import { chat } from './openai'
 import type { Bindings, Sql } from './db'
 import { buildPayload, MODEL, type CaseRow, type MessageRow, type EventRow } from './ai'
 
@@ -51,19 +52,13 @@ async function askModel(env: Bindings, kase: CaseRow, messages: MessageRow[], ev
   const base = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 30000)
   try {
-    const res = await fetch(`${base}/chat/completions`, {
-      method: 'POST', signal: ctl.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-      body: JSON.stringify({
-        model: MODEL, store: false, response_format: { type: 'json_object' },
+    const { data } = await chat(env, {
+        response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: 'You summarise a customer-support case for staff at a UK seller of renewed phones on Amazon. Be factual and brief, plain British English, no speculation. Only use what is in the data. Never invent dates, amounts or names.' },
           { role: 'user', content: `CASE DATA (JSON):\n${body}\n\nReturn JSON: {"bullets": [2 to 4 short sentences: what the customer wants, what has happened, what we have done], "pending": "<one sentence: what is outstanding and who has the next move (us, the customer or Amazon)>", "gists": [{"i": <thread index>, "line": "<max 14 words: the gist of that message>"}]} with one gist for every thread item whose from is customer, amazon_cs_on_behalf_of_customer or saigates.` },
         ],
-      }),
-    })
-    if (!res.ok) return null
-    const data: any = await res.json()
+      }, { timeoutMs: 30000 })
     const p = JSON.parse(String(data.choices?.[0]?.message?.content ?? '{}'))
     return {
       bullets: (Array.isArray(p.bullets) ? p.bullets : []).map((b: unknown) => short(String(b), 300)).filter(Boolean).slice(0, 4),

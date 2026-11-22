@@ -91,7 +91,7 @@ async function createDraft(env: Bindings, sql: Sql, caseId: number, userId: numb
                         ${hasKb ? sql`, kb_rule_ids` : sql``} ${hasSpv ? sql`, system_prompt_version` : sql``} ${hasRev ? sql`, revision_of, agent_guidance` : sql``})
     VALUES (${caseId}, ${result.lane}, ${result.draft}, ${result.draft}, ${result.staff_notes}, ${checkResult},
             ${sql.json([])}, ${sql.json(stored as any)},
-            ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${MODEL}, ${userId}, ${mode}
+            ${needsManager}, ${reasons.join('; ')}, ${urgency}, ${result.model ?? MODEL}, ${userId}, ${mode}
             ${hasKb ? sql`, string_to_array(${kbRuleIds.join(',')}, ',')::int[]` : sql``} ${hasSpv ? sql`, ${promptVersion?.version ?? null}` : sql``}
             ${hasRev ? sql`, ${revision?.previousDraftId ?? null}, ${revision?.guidance ?? null}` : sql``})
     RETURNING id`
