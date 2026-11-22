@@ -142,9 +142,10 @@ export async function purgeBuyerData(sql: Sql, patterns: (t: string) => string, 
           AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.case_id = c.id AND m.sent_at >= ${cutoff})
           AND NOT EXISTS (SELECT 1 FROM amazon_events e WHERE e.case_id = c.id AND e.status = 'open')
           AND NOT EXISTS (SELECT 1 FROM returns r WHERE r.case_id = c.id AND r.status <> 'closed'))
-        -- 2. Hard cap: 90 days after the order shipped (else delivery date, else when the case was opened), whatever the status
-        OR COALESCE(CASE WHEN o.payload->>'shipDate' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN (o.payload->>'shipDate')::timestamptz END,
-                    c.delivery_date::timestamptz, c.created_at) < ${capCutoff}
+        -- 2. Hard cap: 90 days after the order shipped (else delivery date, else when the case was opened), whatever the status,
+        --    counted from the customer's latest message when they are still writing (warranty cases run for months; 22 Nov 2026)
+        OR GREATEST(COALESCE(CASE WHEN o.payload->>'shipDate' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN (o.payload->>'shipDate')::timestamptz END,
+                    c.delivery_date::timestamptz, c.created_at), c.last_customer_message_at) < ${capCutoff}
       )
     ORDER BY c.id LIMIT ${opts.limit ?? 200}`
   const ids: number[] = []

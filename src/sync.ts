@@ -298,6 +298,12 @@ async function syncMailbox(env: Bindings, sql: Sql, conn: GmailConnection, ourEm
       } else if (multi) {
         await sql`UPDATE cases SET mailbox_id = ${mb} WHERE id = ${kase.id} AND mailbox_id IS NULL`
       }
+      // The customer wrote again on a case whose details were cleared (30/90-day clean-up): take the name and reply address
+      // from this message so staff can reply, and let the clean-up count again from now (22 Nov 2026, RIQ-1376 "Dear [removed]").
+      await sql`UPDATE cases SET customer_first_name = CASE WHEN customer_first_name IS NULL OR customer_first_name = 'Customer' THEN ${firstName} ELSE customer_first_name END,
+                  customer_reply_to = COALESCE(customer_reply_to, ${fromParsed.address}), customer_email = COALESCE(customer_email, ${fromParsed.address}),
+                  pii_purged_at = NULL
+                WHERE id = ${kase.id} AND pii_purged_at IS NOT NULL`.catch(() => {})
 
       // Insert any messages we have not seen
       for (const m of msgs) {

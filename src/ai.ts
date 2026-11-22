@@ -289,6 +289,9 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
   const add = (rule: string, severity: 'fail' | 'warn', detail: string) => f.push({ rule, severity, detail })
   const toAmazon = mode !== 'customer'
 
+  // ── A placeholder from redaction or the clean-up must never reach a customer ("Dear [removed]")
+  if (/\[(removed|redacted|[a-z ]+ redacted)\]/i.test(draft)) add('placeholder_in_reply', 'fail', 'Contains a placeholder such as [removed] or [redacted]. Replace it with the real detail, or reword.')
+
   // ── PII must never appear in a reply
   if (kase.customer_last_name && d.includes(kase.customer_last_name.toLowerCase())) add('pii', 'fail', 'Contains the customer surname')
   if (kase.customer_email && d.includes(kase.customer_email.toLowerCase())) add('pii', 'fail', 'Contains the customer email address')
