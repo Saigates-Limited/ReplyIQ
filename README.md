@@ -530,3 +530,17 @@ value (no DB change — the column has no CHECK). Bulk "Set status…" and the c
 **Files:** `src/shopify.ts` (client, order facts, refund/return calls), `src/saisales.ts` (mail → cases), `src/routes/shopify.ts` (`/api/shopify/*`), `public/static/shopify.js` (case panel, settings card), `saisales_instructions.md`.
 **Tests:** `npm run test:unit` includes `tests/shopify.test.ts` (order references, non-PII facts, refund split and £15 rule, returnable lines, contact-form parsing, automated mail, payload/prompt/check behaviour, closed-day channel).
 **Not in this phase:** Pack & Go IMEI for Saisales orders; the sales credit note record (to-do item 4); carrier-desk detection on Saisales messages.
+## Carrier KPIs + order-ID task (Nov 2026)
+**Migration:** `db/migrations/0030_carrier_kpis.sql` — run it in the Supabase SQL editor (additive, safe to re-run). Until it runs, the carrier desk works as before; the KPI page shows a "run 0030" banner and the order-ID tab is empty.
+- **Order ID on every carrier case.** Carrier desk → **Missing order ID** tab (and tile): one row per parcel without an order ID, each with its own deadline; type the order ID and press Save, or **No order** for parcels with no customer order (postage refunds, deliveries to us). Saving records who and when, and links the parcel to the customer case with that order ID. Parcels already on the desk when 0030 runs get **2 working days** (the one-off backlog); new parcels **1**. Overdue ones add to the Carrier desk badge.
+- **Owner per case.** Settings (gear) → *Owner of new carrier cases*; managers can change a parcel's owner on its page. KPIs are reported per owner.
+- **KPI report** (`/carriers/kpis`, `GET /api/carrier/kpis?from&to`): five clocks, each must finish within the target (default **1 working day**, England & Wales working days, Europe/London; Settings → *KPI target* / *KPIs count from*):
+  1. customer reported a delivery problem → investigation sent (`carrier_cases.reported_at` → first outbound email);
+  2. carrier said "submit a claim" (`decision_lost` email, or status set to *Claim to submit*) → claim lodged (*Mark claim submitted*);
+  3. carrier asked for information → our next email;
+  4. parcel on the desk without an order ID → order ID added / *No order*;
+  5. carrier news for the customer → customer told (`customer_update_due` cleared).
+  Shows on-time % (on time ÷ finished + overdue), average working days, a per-person table, every missed/overdue item (slowest first) and what is due next. A claim the carrier asked for that was never lodged counts as missed even if the case was later closed.
+- Status changes on the parcel page are now logged as `carrier_messages.kind = 'status_change'` (with `extracted.to`) so the report can time them.
+- **Fix:** "Add parcel" sent `royal_mail`, which `normaliseCarrier` read as *Other carrier* (no Royal Mail address on the investigation email). Now Royal Mail.
+- **Tests:** `npm run test:unit` (incl. `tests/carrier_kpis.test.ts`); `node tests/run-e2e.mjs tests/carrier_kpis.e2e.ts` against a throwaway DB with schema + all migrations.

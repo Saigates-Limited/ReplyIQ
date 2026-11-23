@@ -160,6 +160,7 @@ app.get('/api/settings/migrations', async (c) => {
       ['0023_invoices', 'table', 'invoices'], ['0024_draft_files', 'table', 'draft_files'], ['0025_case_overviews', 'table', 'case_overviews'],
       ['0026_security', 'table', 'security_log'], ['0027_auto_replies', 'table', 'auto_replies'], ['0028_auto_reply_timing', 'column', 'auto_replies', 'send_after'],
       ['0029_shopify', 'table', 'shopify_actions'],
+      ['0030_carrier_kpis', 'column', 'carrier_cases', 'order_id_requested_at'],
     ]
     const tables = new Set((await sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`).map((r: any) => r.table_name))
     const cols = new Set((await sql`SELECT table_name || '.' || column_name AS k FROM information_schema.columns WHERE table_schema = 'public'`).map((r: any) => r.k))
