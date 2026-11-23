@@ -624,3 +624,34 @@ ALTER TABLE public.auto_replies DROP CONSTRAINT IF EXISTS auto_replies_kind_chec
 ALTER TABLE public.auto_replies ADD CONSTRAINT auto_replies_kind_check
   CHECK (kind IN ('pending','full','holding','scheduled','staff','superseded','skipped','failed'));
 CREATE INDEX IF NOT EXISTS idx_auto_replies_scheduled ON public.auto_replies (send_after) WHERE kind = 'scheduled';
+
+-- ── 0029 Shopify (Saisales.co.uk) ──
+ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'amazon';
+ALTER TABLE public.cases DROP CONSTRAINT IF EXISTS cases_channel_check;
+ALTER TABLE public.cases ADD CONSTRAINT cases_channel_check CHECK (channel IN ('amazon', 'shopify'));
+ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS shopify_order_gid TEXT;
+ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS shopify_order JSONB;
+ALTER TABLE public.cases ADD COLUMN IF NOT EXISTS shopify_synced_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_cases_channel ON public.cases (channel);
+CREATE INDEX IF NOT EXISTS idx_cases_shopify_order ON public.cases (shopify_order_gid) WHERE shopify_order_gid IS NOT NULL;
+
+ALTER TABLE public.gmail_connection ADD COLUMN IF NOT EXISTS saisales_mail BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS public.shopify_actions (
+  id            BIGSERIAL PRIMARY KEY,
+  case_id       INTEGER REFERENCES public.cases(id) ON DELETE SET NULL,
+  order_gid     TEXT NOT NULL,
+  order_name    TEXT,
+  kind          TEXT NOT NULL CHECK (kind IN ('refund', 'return_open', 'return_label', 'return_process', 'return_cancel')),
+  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'failed')),
+  amount        NUMERIC(10, 2),
+  currency      TEXT,
+  reason        TEXT,
+  detail        JSONB,                 -- request summary + Shopify ids returned (refund id, return id, reverse delivery id)
+  error         TEXT,
+  created_by    INTEGER REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_shopify_actions_case ON public.shopify_actions (case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shopify_actions_order ON public.shopify_actions (order_gid, created_at DESC);

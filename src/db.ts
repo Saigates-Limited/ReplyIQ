@@ -8,6 +8,9 @@ export type Bindings = {
   GOOGLE_CLIENT_ID?: string  // Gmail integration (future phase)
   GOOGLE_CLIENT_SECRET?: string
   TOKEN_ENC_KEY?: string     // base64 32-byte key for encrypting the Gmail refresh token at rest
+  SHOPIFY_SHOP?: string          // Saisales store, e.g. "a6fdb4" (the *.myshopify.com name)
+  SHOPIFY_CLIENT_ID?: string     // Dev Dashboard app installed on that store (client credentials grant)
+  SHOPIFY_CLIENT_SECRET?: string
   ASSETS: Fetcher            // Workers static assets binding (public/)
 }
 

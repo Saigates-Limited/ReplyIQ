@@ -12,6 +12,7 @@ import { kbApi } from './routes/kb'
 import { promptApi } from './routes/prompt'
 import { templatesApi } from './routes/templates'
 import { carrierApi } from './routes/carrier'
+import { shopifyApi } from './routes/shopify'
 import { invoicesApi } from './routes/invoices'
 import { returnsApi } from './routes/returns'
 import { refundsApi } from './routes/refunds'
@@ -125,6 +126,7 @@ app.route('/api/templates', templatesApi) // ready-to-use reply templates
 app.route('/api/invoices', invoicesApi) // invoice generator (migration 0023)
 app.route('/api/openai-spend', spendApi) // OpenAI cost per month (manager)
 app.route('/api/auto-reply', autoReplyApi) // replies while closed (weekends, UK bank holidays)
+app.route('/api/shopify', shopifyApi) // Saisales.co.uk: order on a case, refunds, returns, labels (migration 0029)
 app.route('/api/carrier', carrierApi) // carrier desk: Royal Mail / DPD / FedEx / Evri investigations and claims
 
 // SPA pages
@@ -157,6 +159,7 @@ app.get('/api/settings/migrations', async (c) => {
       ['0019_draft_approval_requests', 'column', 'drafts', 'approval_requested_by'], ['0020_staff_routine_send', 'column', 'drafts', 'sent_without_manager_approval'], ['0021_template_columns_and_kb_cleanup', 'column', 'reply_templates', 'updated_by'],
       ['0023_invoices', 'table', 'invoices'], ['0024_draft_files', 'table', 'draft_files'], ['0025_case_overviews', 'table', 'case_overviews'],
       ['0026_security', 'table', 'security_log'], ['0027_auto_replies', 'table', 'auto_replies'], ['0028_auto_reply_timing', 'column', 'auto_replies', 'send_after'],
+      ['0029_shopify', 'table', 'shopify_actions'],
     ]
     const tables = new Set((await sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`).map((r: any) => r.table_name))
     const cols = new Set((await sql`SELECT table_name || '.' || column_name AS k FROM information_schema.columns WHERE table_schema = 'public'`).map((r: any) => r.k))

@@ -18,12 +18,14 @@ import { saysFileAttached } from './draftFiles'
 import { statusAfterSend } from './caseOps'
 import { listConnections, accessToken, sendReply } from './gmail'
 import { REFUND_MAILBOX } from './returns/refunds'
+import { getSaisalesSettings } from './saisales'
 import { loadHolidays, closedSpellStart, longDate, londonDate, nextWorkingDay, closedReason, inReplyWindow, holdingPlan, type Holidays } from './closedDays'
 
 export const CHANNELS = ['amazon', 'shopify', 'refurbed', 'ebay'] as const
 export type Channel = (typeof CHANNELS)[number]
 // Channels whose customer messages reach ReplyIQ today. The others can be switched on once their integration is built.
-export const CONNECTED_CHANNELS: Channel[] = ['amazon']
+// Shopify = Saisales.co.uk customer mail (migration 0029); it stays off until a manager ticks it under Closed-day replies.
+export const CONNECTED_CHANNELS: Channel[] = ['amazon', 'shopify']
 
 export type AutoReplySettings = {
   enabled: boolean
@@ -71,8 +73,9 @@ export async function saveAutoReplySettings(sql: Sql, patch: Partial<AutoReplySe
   return next
 }
 
-/** Which channel a case belongs to. Only Amazon buyer messages (the marketplace relay address) are recognised today. */
-export function channelOf(k: { source?: string | null; customer_reply_to?: string | null }): Channel | null {
+/** Which channel a case belongs to: Amazon buyer messages (the marketplace relay address) or Saisales.co.uk (cases.channel). */
+export function channelOf(k: { source?: string | null; customer_reply_to?: string | null; channel?: string | null }): Channel | null {
+  if (k.channel === 'shopify') return 'shopify'
   if (/@marketplace\.amazon\./i.test(String(k.customer_reply_to ?? ''))) return 'amazon'
   return null
 }
@@ -114,7 +117,7 @@ async function holdingReply(env: Bindings, k: CaseRow, messages: MessageRow[], e
   const fallback = (problems: string[]) => ({ text: holdingTemplate(k, reopens, returnsNote, safety, followUp), source: 'template' as const, problems })
   if (!env.OPENAI_API_KEY) return fallback(['no model key'])
   const payload = buildPayload(k, messages, { events }) // same redaction as drafting: no surname, email, phone or address
-  const system = `You write one short email for Saigates Customer Support to an Amazon UK buyer. Clear UK English, warm and personal, no em dashes. Write as the team: "we", never "I".
+  const system = `You write one short email for ${k.channel === 'shopify' ? 'Saisales.co.uk Customer Support to a customer of our own website (never mention Amazon)' : 'Saigates Customer Support to an Amazon UK buyer'}. Clear UK English, warm and personal, no em dashes. Write as the team: "we", never "I".
 The buyer's message needs a decision from a member of the team, who will reply in full by ${longDate(reopens)}. Today is ${longDate(londonDate(new Date()))}.
 Write 50 to 110 words that:
 - start "Dear <first name>," (or "Dear Customer," if no first name);
@@ -186,11 +189,16 @@ async function insertDraft(sql: Sql, caseId: number, f: { lane: string; text: st
   return d.id as number
 }
 
-/** Send a saved draft through the Amazon-registered mailbox, threaded on the customer's conversation. */
+/** Send a saved draft threaded on the customer's conversation: Amazon cases through the Amazon-registered mailbox,
+ *  Saisales cases through the mailbox the email arrived in, as the Saisales address. */
 async function sendDraft(env: Bindings, sql: Sql, kase: CaseRow, draftId: number, text: string, opts: { setAwaiting: boolean }) {
   const conns = await listConnections(sql)
-  const amazonConn = conns.find((x) => x.email_address.toLowerCase() === REFUND_MAILBOX && x.enabled)
-  if (!amazonConn) throw new Error(`${REFUND_MAILBOX} is not connected or is paused`)
+  const saisales = kase.channel === 'shopify'
+  const ss = saisales ? await getSaisalesSettings(sql) : null
+  const amazonConn = saisales
+    ? conns.find((x) => x.id === (kase as any).mailbox_id && x.enabled && x.saisales_mail)
+    : conns.find((x) => x.email_address.toLowerCase() === REFUND_MAILBOX && x.enabled)
+  if (!amazonConn) throw new Error(saisales ? 'the Saisales mailbox for this case is not connected, paused, or not reading Saisales mail' : `${REFUND_MAILBOX} is not connected or is paused`)
   const claimed = await sql`UPDATE drafts SET status = 'sending', updated_at = now() WHERE id = ${draftId} AND status = 'draft' RETURNING id`
   if (!claimed.length) throw new Error('draft already being sent')
   try {
@@ -198,12 +206,12 @@ async function sendDraft(env: Bindings, sql: Sql, kase: CaseRow, draftId: number
     const refs = await sql`SELECT rfc_message_id FROM messages WHERE case_id = ${kase.id} AND rfc_message_id IS NOT NULL ORDER BY sent_at ASC`
     const subject = lastInbound?.subject ? (/^re:/i.test(lastInbound.subject) ? lastInbound.subject : `Re: ${lastInbound.subject}`) : `Re: ${kase.subject}`
     const { token, conn } = await accessToken(env, sql, amazonConn.id)
-    const sent = await sendReply(token, { from: conn.email_address, to: kase.customer_reply_to!, subject, body: text,
+    const sent = await sendReply(token, { from: ss ? ss.from_address : conn.email_address, fromName: ss?.from_name, to: kase.customer_reply_to!, subject, body: text,
       inReplyTo: lastInbound?.rfc_message_id || undefined, references: refs.map((r: any) => r.rfc_message_id).join(' ') || undefined, threadId: kase.gmail_thread_id || undefined })
     await sql.begin(async (tx: any) => {
       await tx`UPDATE drafts SET status = 'sent', sent_via = 'gmail', sent_gmail_message_id = ${sent.id}, sent_recorded_at = now(), updated_at = now() WHERE id = ${draftId}`
       await tx`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at)
-               VALUES (${kase.id}, 'outbound', 'Saigates Support (closed-day reply)', ${text}, ${subject}, ${sent.id}, now())`
+               VALUES (${kase.id}, 'outbound', ${saisales ? 'Saisales Support (closed-day reply)' : 'Saigates Support (closed-day reply)'}, ${text}, ${subject}, ${sent.id}, now())`
       if (opts.setAwaiting) await statusAfterSend(tx, kase.id, false, draftId)
     })
     return sent.id
@@ -219,7 +227,7 @@ export type AutoReplyOutcome = { case_id: number; case_ref: string; kind: 'full'
 export async function dueCases(sql: Sql, since: Date, now: Date, settings: AutoReplySettings) {
   const quiet = new Date(now.getTime() - QUIET_MINUTES * 60_000)
   const rows = await sql`
-    SELECT c.id, c.case_ref, c.source, c.customer_reply_to, lm.id AS last_message_id, lm.sent_at AS last_message_at
+    SELECT c.id, c.case_ref, c.source, c.customer_reply_to, to_jsonb(c)->>'channel' AS channel, lm.id AS last_message_id, lm.sent_at AS last_message_at
     FROM cases c
     JOIN LATERAL (SELECT m.id, m.direction, m.kind, m.sent_at FROM messages m WHERE m.case_id = c.id AND m.kind IS DISTINCT FROM 'event'
                   ORDER BY m.sent_at DESC, m.id DESC LIMIT 1) lm ON TRUE

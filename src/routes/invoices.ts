@@ -13,6 +13,7 @@ import { getDb, type Bindings } from '../db'
 import { requireManager, type Vars } from '../auth'
 import { logSecurity, clientIp } from '../security'
 import { fetchOrder, fetchOrderContact, spapiConfigured, type SpapiEnv } from '../spapi'
+import { shopifyConfigured, getOrder, addressLines } from '../shopify'
 
 export const invoicesApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
 const MIGRATION = 'db/migrations/0023_invoices.sql'
@@ -70,6 +71,31 @@ invoicesApi.get('/prefill', async (c) => {
   try {
     const [k] = await sql`SELECT id, case_ref, order_id, customer_first_name, customer_last_name, customer_address FROM cases WHERE id = ${caseId}`
     if (!k) return c.json({ error: 'Case not found' }, 404)
+    // Saisales.co.uk (Shopify) order: Shopify has the full billing address, so nothing needs pasting.
+    const [ch] = await sql`SELECT to_jsonb(cases)->>'channel' AS channel, to_jsonb(cases)->>'shopify_order_gid' AS gid FROM cases WHERE id = ${caseId}`
+    if (ch?.channel === 'shopify') {
+      let o: any = null, contactError = ''
+      if (ch.gid && shopifyConfigured(c.env)) {
+        try { o = await getOrder(c.env, sql, ch.gid) } catch (e: any) { contactError = `Shopify did not return the order (${e?.message || 'error'}). Fill the invoice in by hand.` }
+        if (o) await logSecurity(sql, { event: 'buyer_address_lookup', user_id: c.get('user').id, email: c.get('user').email, ip: clientIp(c), detail: { case_id: k.id, order_id: o.name, source: 'shopify' } })
+      } else contactError = ch.gid ? 'Shopify is not connected yet (Settings → Shopify).' : 'No Shopify order is linked to this case yet. Link it on the case page first.'
+      const addr = o ? addressLines(o.billingAddress ?? o.shippingAddress) : []
+      const shipped = o ? (o.fulfillments ?? []).map((f: any) => f.createdAt).filter(Boolean).sort()[0] ?? null : null
+      const existing = (o?.name || k.order_id) ? await sql`SELECT id, invoice_number, created_at FROM invoices WHERE order_id = ${o?.name || k.order_id} ORDER BY id DESC` : []
+      return c.json({
+        case: { id: k.id, case_ref: k.case_ref },
+        order_id: o?.name ?? k.order_id ?? '',
+        sales_channel: 'Saisales.co.uk',
+        buyer_name: addr[0] || [k.customer_first_name, k.customer_last_name].filter(Boolean).join(' '),
+        buyer_address: addr.length ? addr.slice(1).join('\n') : k.customer_address ?? '',
+        contact_source: addr.length ? 'shopify' : 'case',
+        contact_error: contactError,
+        address_fields: [],
+        order: o ? { orderDate: o.processedAt ?? o.createdAt, shipDate: shipped, currency: o.currencyCode ?? 'GBP', grandTotal: o.currentTotalPriceSet?.shopMoney?.amount ?? null,
+          items: (o.lineItems?.nodes ?? []).map((li: any) => ({ title: [li.title, li.variantTitle].filter(Boolean).join(' - '), sku: li.sku ?? '', quantity: li.quantity, unitPrice: li.originalUnitPriceSet?.shopMoney?.amount ?? 0 })) } : null,
+        existing,
+      })
+    }
     const env = c.env as SpapiEnv
     const live = !!k.order_id && spapiConfigured(env)
     // Order (items, prices, dates): the cached copy, or fetch it now if the case was never fetched.

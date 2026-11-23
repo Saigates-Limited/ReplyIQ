@@ -1,6 +1,7 @@
 // Draft generation: builds a PII-minimised payload, calls OpenAI server-side,
 // and runs deterministic guardrail checks on the result.
 import instructions from '../reply_instructions.md?raw'
+import saisalesInstructions from '../saisales_instructions.md?raw'
 import { kbPromptBlock, type KbRule } from './kb'
 import { customPromptBlock } from './systemPrompt'
 import type { Bindings } from './db'
@@ -32,8 +33,13 @@ export type CaseRow = {
   chargeback_open?: boolean | null
   battery_flag?: boolean | null
   internal_notes?: string | null // NEVER included in the payload
-  delivery_date_source?: string | null // staff | amazon_actual | amazon_estimated
+  delivery_date_source?: string | null // staff | amazon_actual | amazon_estimated | shopify_delivered
+  // Saisales.co.uk (Shopify) — migration 0029. shopify_order is the NON-PII summary from shopify.ts → orderFacts().
+  channel?: 'amazon' | 'shopify' | string | null
+  shopify_order?: Record<string, unknown> | null
 }
+
+export const isSaisales = (k: Pick<CaseRow, 'channel'> | null | undefined) => k?.channel === 'shopify'
 export type MessageRow = {
   direction: 'inbound' | 'outbound'
   body: string
@@ -153,7 +159,7 @@ export function buildPayload(kase: CaseRow, messages: MessageRow[], opts: { even
     device_model: kase.device_model ?? 'unknown',
     delivery_date: kase.delivery_date ? new Date(kase.delivery_date).toISOString().slice(0, 10) : 'unknown',
     // staff-entered dates are authoritative for warranty/return lanes; Amazon "estimated" = promised window, not confirmed delivery
-    delivery_date_basis: !kase.delivery_date ? 'none' : kase.delivery_date_source === 'amazon_estimated' ? 'ESTIMATED (Amazon promised window, not confirmed) — if the lane depends on days since delivery, ask staff to confirm' : kase.delivery_date_source === 'amazon_actual' ? 'confirmed by Amazon tracking' : 'entered by staff',
+    delivery_date_basis: !kase.delivery_date ? 'none' : kase.delivery_date_source === 'amazon_estimated' ? 'ESTIMATED (Amazon promised window, not confirmed) — if the lane depends on days since delivery, ask staff to confirm' : kase.delivery_date_source === 'amazon_actual' ? 'confirmed by Amazon tracking' : kase.delivery_date_source === 'shopify_delivered' ? 'confirmed by courier tracking (Shopify)' : 'entered by staff',
     days_since_delivery: daysSinceDelivery ?? 'unknown',
     refund_issued: yn(kase.refund_issued),
     atoz_open: yn(kase.a_to_z_open),
@@ -164,6 +170,7 @@ export function buildPayload(kase: CaseRow, messages: MessageRow[], opts: { even
     carrier: kase.carrier ?? 'unknown',
     chargeback_open: yn(kase.chargeback_open ?? null),
     battery_flag: yn(kase.battery_flag ?? null),
+    sales_channel: isSaisales(kase) ? 'Saisales.co.uk (our own website)' : 'Amazon UK',
   }
   const stamp = (v: string | null | undefined) => (v ? new Date(v).toISOString().slice(0, 16).replace('T', ' ') : 'unknown')
   const fromOf = (m: MessageRow) => {
@@ -192,7 +199,10 @@ export function buildPayload(kase: CaseRow, messages: MessageRow[], opts: { even
     policy_check: e.policy_check ?? undefined,
     item: e.item_description ? redactPii(e.item_description, kase).slice(0, 200) : undefined,
   }))
-  return { caseInput, thread, events }
+  // Saisales: the Shopify order summary (no names, emails, phones or addresses by construction; redacted again to be sure).
+  const safeFacts = (f: unknown) => { try { return JSON.parse(redactPii(JSON.stringify(f), kase)) } catch { return f } }
+  const shopifyOrder = isSaisales(kase) ? (kase.shopify_order ? safeFacts(kase.shopify_order) : 'none matched') : undefined
+  return { caseInput, thread, events, ...(shopifyOrder !== undefined ? { shopifyOrder } : {}) }
 }
 
 export async function generateDraft(
@@ -208,17 +218,18 @@ export async function generateDraft(
 
   const modeBlock = mode === 'customer' ? '' : `${MODE_INSTRUCTIONS[mode]}\nIn this mode the "reply" field holds the text to paste, not an email to the customer.\n\n`
   const eventsBlock = payload.events.length ? `AMAZON EVENTS ON THIS ORDER:\n${JSON.stringify(payload.events, null, 2)}\n\n` : ''
+  const shopifyBlock = 'shopifyOrder' in payload ? `SHOPIFY ORDER (Saisales.co.uk):\n${JSON.stringify((payload as any).shopifyOrder, null, 2)}\n\n` : ''
   // Revision: the agent read the previous draft and asked for specific changes. The policy still wins over the guidance.
   const revisionBlock = opts.revision?.guidance?.trim()
     ? `\n\nPREVIOUS DRAFT (rejected by the agent):\n${opts.revision.previousDraft.slice(0, 6000)}\n\nCHANGES THE AGENT WANTS:\n${opts.revision.guidance.trim().slice(0, 2000)}\n\nRewrite the reply applying these changes. Keep everything else that was correct. If a requested change would break the policy above, do NOT apply it; say why under staff_notes instead.`
     : ''
-  const userMsg = `${modeBlock}CASE INPUT:\n${JSON.stringify(payload.caseInput, null, 2)}\n\n${eventsBlock}ORDER TIMELINE (oldest first):\n${payload.thread
+  const userMsg = `${modeBlock}CASE INPUT:\n${JSON.stringify(payload.caseInput, null, 2)}\n\n${shopifyBlock}${eventsBlock}ORDER TIMELINE (oldest first):\n${payload.thread
     .map((m) => `[${m.from} @ ${m.sent_at}]\n${m.text}`)
     .join('\n\n')}${revisionBlock}\n\nReturn the JSON object described under "## Output" and nothing else.`
 
   // Knowledge base (staff-added rules) is appended AFTER the policy file; the file itself is never changed.
   const kbRules = opts.kbRules ?? []
-  const systemMsg = assembleSystemPrompt(opts.customPrompt, kbRules)
+  const systemMsg = assembleSystemPrompt(opts.customPrompt, kbRules, isSaisales(kase) ? 'shopify' : 'amazon')
 
   // Hard guard: attachments are summarised as counts only. If any file content ever reaches this point, abort.
   assertNoAttachmentContent(userMsg)
@@ -265,9 +276,9 @@ export async function generateDraft(
   return { result, payload, mode, kbRuleIds: kbRules.map((r) => r.id), systemPrompt: systemMsg }
 }
 
-/** Order is fixed: policy file → manager's custom prompt → knowledge-base rules. The policy always comes first. */
-export function assembleSystemPrompt(customPrompt: string | null | undefined, kbRules: KbRule[]): string {
-  return instructions + customPromptBlock(customPrompt) + kbPromptBlock(kbRules)
+/** Order is fixed: policy file → (Saisales channel overlay) → manager's custom prompt → knowledge-base rules. The policy always comes first. */
+export function assembleSystemPrompt(customPrompt: string | null | undefined, kbRules: KbRule[], channel: 'amazon' | 'shopify' = 'amazon'): string {
+  return instructions + (channel === 'shopify' ? '\n\n' + saisalesInstructions : '') + customPromptBlock(customPrompt) + kbPromptBlock(kbRules)
 }
 
 export type ServerFinding = { rule: string; severity: 'fail' | 'warn'; detail: string }
@@ -343,8 +354,11 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
   if (!toAmazon && /\b(we (?:will|'ll|shall) (?:issue|process|send|give|provide) (?:you )?(?:a |the |your )?(?:full |partial )?(?:refund|replacement|compensation)\b)(?![^.]{0,80}\b(?:once|after|if|when|subject to|provided|following)\b)/.test(d) && !/\b(once|after|if|when|subject to|provided|following)\b[^.]{0,120}\b(?:received|inspect|checked|confirmed|eligib)/.test(d) && kase.refund_issued !== true)
     add('no_unconditional_promise', 'warn', 'Promises a refund/replacement without making it conditional on receipt and inspection')
 
-  // ── Never mention refurbed to Amazon customers
-  if (!toAmazon && /\brefurbed\b/.test(d)) add('never_refurbed', 'fail', 'Mentions "refurbed" to an Amazon customer')
+  const saisales = isSaisales(kase)
+  // ── Never mention refurbed to Amazon customers (Saisales: never point our own customers at a rival marketplace either)
+  if (!toAmazon && /\brefurbed\b/.test(d)) add('never_refurbed', 'fail', saisales ? 'Mentions "refurbed" (another marketplace) to a Saisales customer' : 'Mentions "refurbed" to an Amazon customer')
+  // ── Saisales replies are about our own website: no Amazon processes
+  if (saisales && !toAmazon && /\b(amazon|a-to-z|a to z claim|seller central)\b/.test(d)) add('saisales_amazon', 'fail', 'Mentions Amazon in a reply to a Saisales.co.uk customer')
 
   // ── Never say "waterproof"
   if (/\bwaterproof\b/.test(d)) add('never_waterproof', 'fail', 'Says "waterproof"')
@@ -418,15 +432,15 @@ export function serverChecks(draft: string, kase: CaseRow, mode: DraftMode = 'cu
   if (arrangesReturn && !hypotheticalOnly && !/\b(sign out of icloud|find my|factory reset|remove (?:the|your) sim)\b/.test(d))
     add('return_checklist', 'warn', 'Arranges a return but omits the return checklist (sign out of iCloud/Find My, factory reset, remove SIM, pack securely)')
 
-  // ── Off-platform (bank transfer for accepted repair handled above)
-  if (/\b(paypal|outside (?:of )?amazon|off[- ]amazon|our website|direct(?:ly)? (?:from|with) us\b)/.test(d)) add('off_platform', 'fail', 'References off-platform dealings')
+  // ── Off-platform (bank transfer for accepted repair handled above). Saisales: our website IS the platform.
+  if (!saisales && /\b(paypal|outside (?:of )?amazon|off[- ]amazon|our website|direct(?:ly)? (?:from|with) us\b)/.test(d)) add('off_platform', 'fail', 'References off-platform dealings')
 
   // ── Format (customer emails only)
   if (!toAmazon) {
     if (!new RegExp(`\\b${escapeReLocal(kase.customer_first_name)}\\b`, 'i').test(draft)) add('greeting', 'warn', 'Does not address the customer by first name')
     if (!/customer support team/i.test(draft)) add('signoff', 'warn', 'Missing the "Kind regards, Customer Support Team" sign-off')
     if (/\u2014/.test(draft)) add('style_em_dash', 'warn', 'Contains an em dash (seller prefers none)')
-    if (draft.length > 4000) add('length', 'warn', `Over 4,000 characters (${draft.length}); Amazon Messages may truncate`)
+    if (draft.length > 4000 && !saisales) add('length', 'warn', `Over 4,000 characters (${draft.length}); Amazon Messages may truncate`)
     if (/\b(?:i will|i'll|i have|i've|i am|i'm|i can|i would)\b/i.test(draft)) add('style_we', 'warn', 'Uses "I" instead of "we"')
   } else {
     // Seller Central / Amazon statements: placeholders must be filled before use

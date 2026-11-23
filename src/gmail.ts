@@ -95,6 +95,7 @@ export type GmailConnection = {
   enabled: boolean
   is_default: boolean
   carrier_mail?: boolean // migration 0015: also poll this mailbox for carrier mail
+  saisales_mail?: boolean // migration 0029: also read Saisales.co.uk customer mail (Shopify store) in this mailbox
   email_address: string
   refresh_token_enc: string
   scopes: string
@@ -115,9 +116,10 @@ export async function hasMultiMailbox(sql: Sql) {
   multiKnown = !!r
   return multiKnown
 }
-const CONN_COLS = (multi: boolean, carrier: boolean) =>
+const CONN_COLS = (multi: boolean, carrier: boolean, saisales = false) =>
   (multi ? `g.id, g.label, g.enabled, g.is_default` : `g.id, 'Mailbox'::text AS label, TRUE AS enabled, TRUE AS is_default`) +
-  (carrier ? `, g.carrier_mail` : `, FALSE AS carrier_mail`)
+  (carrier ? `, g.carrier_mail` : `, FALSE AS carrier_mail`) +
+  (saisales ? `, g.saisales_mail` : `, FALSE AS saisales_mail`)
 let carrierColKnown: boolean | null = null
 async function hasCarrierMailCol(sql: Sql) {
   if (carrierColKnown !== null) return carrierColKnown
@@ -126,12 +128,21 @@ async function hasCarrierMailCol(sql: Sql) {
   return carrierColKnown
 }
 
+let saisalesColKnown: boolean | null = null
+export async function hasSaisalesMailCol(sql: Sql) {
+  if (saisalesColKnown) return true
+  const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'gmail_connection' AND column_name = 'saisales_mail'`
+  saisalesColKnown = !!r // only a positive answer is cached, so applying migration 0029 takes effect without a redeploy
+  return saisalesColKnown
+}
+
 /** All connected mailboxes, default first. */
 export async function listConnections(sql: Sql): Promise<GmailConnection[]> {
   const multi = await hasMultiMailbox(sql)
   const carrier = await hasCarrierMailCol(sql)
+  const saisales = await hasSaisalesMailCol(sql)
   return sql.unsafe(`
-    SELECT ${CONN_COLS(multi, carrier)}, g.email_address, g.refresh_token_enc, g.scopes, g.connected_at, g.last_sync_at, g.last_sync_status, g.last_sync_error, g.last_sync_new_msgs,
+    SELECT ${CONN_COLS(multi, carrier, saisales)}, g.email_address, g.refresh_token_enc, g.scopes, g.connected_at, g.last_sync_at, g.last_sync_status, g.last_sync_error, g.last_sync_new_msgs,
            u.name AS connected_by_name
     FROM gmail_connection g LEFT JOIN users u ON u.id = g.connected_by
     ORDER BY ${multi ? 'g.is_default DESC,' : ''} g.id ASC`) as unknown as Promise<GmailConnection[]>
@@ -280,13 +291,14 @@ const b64wrap = (s: string) => btoa(unescape(encodeURIComponent(s))).replace(/(.
  *  which keeps paragraphs and line breaks; plain-text-only mail is shown there as one unbroken block. */
 export async function sendReply(
   token: string,
-  args: { from: string; to: string; subject: string; body: string; inReplyTo?: string; references?: string; threadId?: string; attachments?: OutgoingAttachment[] }
+  args: { from: string; fromName?: string; to: string; subject: string; body: string; inReplyTo?: string; references?: string; threadId?: string; attachments?: OutgoingAttachment[] }
 ) {
   const boundary = `=_riq_${crypto.randomUUID().replace(/-/g, '')}`
   const files = args.attachments ?? []
   const outer = files.length ? `=_riqm_${crypto.randomUUID().replace(/-/g, '')}` : ''
+  const oneLine = (v: string) => v.replace(/[\r\n<>"]+/g, ' ').trim() // no header injection
   const headers = [
-    `From: Customer Support Team <${args.from}>`,
+    `From: ${encodeHeaderUtf8(oneLine(args.fromName || 'Customer Support Team'))} <${oneLine(args.from)}>`,
     `To: ${args.to}`,
     `Subject: ${encodeHeaderUtf8(args.subject)}`,
     'MIME-Version: 1.0',

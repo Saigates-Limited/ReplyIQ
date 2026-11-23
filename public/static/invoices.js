@@ -108,10 +108,10 @@ window.RiqInvoices = function (h) {
     } catch (e) { app.innerHTML = header('new') + (notReady(e) || ''); if (!notReady(e)) h.renderError(e); return }
     if (!form || form.case_id !== caseId) {
       form = { case_id: caseId, case_ref: pre?.case?.case_ref || '', invoice_number: '', invoice_date: pre?.order?.orderDate ? dayjs(pre.order.orderDate).format('DD MMM YYYY') : today(), contact_source: pre?.contact_source, contact_error: pre?.contact_error || '', order_id: pre?.order_id || '', seller_order_id: '',
-        purchase_date: isoDay(pre?.order?.orderDate), ship_date: isoDay(pre?.order?.shipDate), sales_channel: 'Amazon.co.uk',
+        purchase_date: isoDay(pre?.order?.orderDate), ship_date: isoDay(pre?.order?.shipDate), sales_channel: pre?.sales_channel || 'Amazon.co.uk',
         buyer_name: pre?.buyer_name || '', buyer_address: pre?.buyer_address || '', currency: pre?.order?.currency || 'GBP', shipping: 0, notes: '',
         margin_scheme_enabled: settings.margin_scheme_enabled, raw_paste: '',
-        items: (pre?.order?.items || []).map((it) => ({ name: it.title || '', asin: it.asin || '', sku: it.sku || '', condition: 'Renewed', imei: '', quantity: it.quantity || 1, unitPrice: Number(it.unitPrice || 0) })) }
+        items: (pre?.order?.items || []).map((it) => ({ name: it.title || '', asin: it.asin || '', sku: it.sku || '', condition: pre?.sales_channel === 'Saisales.co.uk' ? 'Refurbished' : 'Renewed', imei: '', quantity: it.quantity || 1, unitPrice: Number(it.unitPrice || 0) })) }
       if (!form.items.length) form.items.push(blankItem())
       if (pre?.order?.grandTotal != null) { const items = form.items.reduce((n, it) => n + it.quantity * it.unitPrice, 0); form.shipping = Math.max(0, round2(Number(pre.order.grandTotal) - items)) }
       form.existing = pre?.existing || []
@@ -130,7 +130,7 @@ window.RiqInvoices = function (h) {
     app.innerHTML = header('new') + `
       <section id="invoice-form" class="grid lg:grid-cols-3 gap-4">
         <div class="lg:col-span-2 space-y-4">
-          ${f.case_id ? `<div class="text-sm rounded-md bg-sky-50 border border-sky-200 px-3 py-2"><i class="fas fa-link mr-1 text-sky-700"></i>From case <a href="/cases/${f.case_id}" data-link class="font-semibold underline">${esc(f.case_ref)}</a>. ${f.contact_source === 'amazon' ? 'Order, items and the customer name and address were filled in from Amazon' : 'Order details were filled in from Amazon'}; check them before saving.</div>` : ''}
+          ${f.case_id ? `<div class="text-sm rounded-md bg-sky-50 border border-sky-200 px-3 py-2"><i class="fas fa-link mr-1 text-sky-700"></i>From case <a href="/cases/${f.case_id}" data-link class="font-semibold underline">${esc(f.case_ref)}</a>. ${f.contact_source === 'shopify' ? 'Order, items and the customer name and address were filled in from Shopify (Saisales.co.uk)' : f.contact_source === 'amazon' ? 'Order, items and the customer name and address were filled in from Amazon' : 'Order details were filled in from Amazon'}; check them before saving.</div>` : ''}
           ${f.contact_error ? `<div class="text-sm rounded-md bg-amber-50 border border-amber-300 px-3 py-2 text-amber-900"><i class="fas fa-address-card mr-1"></i>${esc(f.contact_error)}</div>` : ''}
           ${f.existing?.length ? `<div class="text-sm rounded-md bg-amber-50 border border-amber-300 px-3 py-2 text-amber-900"><i class="fas fa-triangle-exclamation mr-1"></i>This order already has ${f.existing.map((x) => `<button data-redl="${x.id}" class="font-mono font-semibold underline">${esc(x.invoice_number)}</button>`).join(', ')}. Download that instead unless you need a new one.</div>` : ''}
           <details class="bg-white rounded-xl shadow-sm p-4" ${f.case_id && f.buyer_address && !f.contact_error ? '' : 'open'}>

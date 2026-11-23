@@ -10,6 +10,7 @@ import { isAllowedType } from './attachments'
 import { expectedFromNotice } from './returns/service'
 import { ingestRefundEmail, REFUND_MAILBOX } from './returns/refunds'
 import { onCustomerMessage } from './carrier/service'
+import { syncSaisalesMailbox } from './saisales'
 
 const AMAZON_DOMAIN = 'marketplace.amazon.co.uk'
 const DEFAULT_LOOKBACK = 'newer_than:1h' // generous relative to the 15-min cron so a missed run cannot drop mail
@@ -19,13 +20,13 @@ export type SyncResult = { threadsSeen: number; messagesNew: number; casesNew: n
 const ORDER_RE = /\b(\d{3}-\d{7}-\d{7})\b/
 
 /** "Jane Smith <xyz@marketplace.amazon.co.uk>" → { name: "Jane Smith", address: "xyz@…" } */
-function parseAddress(v: string) {
+export function parseAddress(v: string) {
   const m = v.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/)
   if (m) return { name: m[1].trim(), address: m[2].trim().toLowerCase() }
   return { name: '', address: v.trim().toLowerCase() }
 }
 
-function splitName(full: string) {
+export function splitName(full: string) {
   const clean = full.replace(/\s+/g, ' ').replace(/["']/g, '').trim()
   if (!clean) return { first: 'Customer', last: null as string | null }
   const parts = clean.split(' ')
@@ -96,7 +97,7 @@ function cleanSubject(subj: string) {
 }
 
 /** For our own sent replies: keep only the top part above any quoted history. */
-function stripQuoted(raw: string) {
+export function stripQuoted(raw: string) {
   let t = raw.replace(/\r\n/g, '\n')
   for (const re of [/^On .{10,120} wrote:\s*$/m, /^-{2,}\s*Original Message\s*-{2,}$/im, /^From: .*$/m, /^_{10,}$/m]) {
     const m = t.match(re)
@@ -108,7 +109,7 @@ function stripQuoted(raw: string) {
 /** The same email lands in every connected mailbox with a DIFFERENT Gmail id per account. The RFC Message-ID header
  *  is identical across copies, so that is the cross-mailbox duplicate key; emails without one fall back to
  *  (same case, same direction, same text, sent within 2 minutes). Returns the existing message id or null. */
-async function alreadyImported(sql: Sql, m: GmailMessage, caseId: number | null, body: string, direction: 'inbound' | 'outbound'): Promise<number | null> {
+export async function alreadyImported(sql: Sql, m: GmailMessage, caseId: number | null, body: string, direction: 'inbound' | 'outbound'): Promise<number | null> {
   const rfc = header(m, 'Message-ID') || null
   if (rfc) {
     const [r] = await sql`SELECT id FROM messages WHERE rfc_message_id = ${rfc} LIMIT 1`
@@ -180,6 +181,17 @@ export async function runSync(env: Bindings, sql: Sql, trigger: 'cron' | 'manual
   for (const conn of targets) {
     try {
       const r = await syncMailbox(env, sql, conn, ourEmails, trigger, { ...opts, batch: perBox })
+      // Saisales.co.uk (Shopify) customer mail in this mailbox (migration 0029, Gmail page → "Saisales mail"). Its own failure
+      // never hides the Amazon result above.
+      if (conn.saisales_mail) {
+        try {
+          const s = await syncSaisalesMailbox(env, sql, conn, ourEmails, { lookbackDays: opts.lookbackDays, batch: Math.max(6, Math.floor(perBox / 2)) })
+          r.threadsSeen += s.threadsSeen; r.messagesNew += s.messagesNew; r.casesNew += s.casesNew; r.remaining += s.remaining; r.skipped.push(...s.skipped)
+        } catch (e: any) {
+          r.skipped.push({ thread: '-', reason: `Saisales mail: ${String(e?.message ?? e).slice(0, 200)}` })
+          if (e instanceof GmailQuotaError) r.rateLimited = true
+        }
+      }
       total.threadsSeen += r.threadsSeen; total.messagesNew += r.messagesNew; total.casesNew += r.casesNew; total.remaining += r.remaining
       total.skipped.push(...r.skipped); total.query = r.query; if (r.rateLimited) total.rateLimited = true
       total.mailboxes!.push({ id: conn.id, label: conn.label, email: conn.email_address, messagesNew: r.messagesNew, casesNew: r.casesNew, remaining: r.remaining })
@@ -411,7 +423,7 @@ export async function backfillAttachments(env: Bindings, sql: Sql, limit = 25) {
 }
 
 /** Store attachment metadata only — bytes stay in Gmail and are proxied on demand. Never sent to OpenAI. */
-async function recordAttachments(sql: Sql, m: GmailMessage, messageId: number, caseId: number) {
+export async function recordAttachments(sql: Sql, m: GmailMessage, messageId: number, caseId: number) {
   for (const a of listAttachments(m)) {
     // Tolerates a DB without migration 0009 (table missing) — the message itself is still saved.
     await sql`INSERT INTO attachments (message_id, case_id, filename, mime_type, size_bytes, inline, source, gmail_message_id, gmail_attachment_id, amazon_allowed)
@@ -429,7 +441,7 @@ export function classifyReplyTo(replyTo: string): 'noreply' | 'mailbox' | 'unver
   return 'unverified'
 }
 
-async function markSeenFor(sql: Sql, tid: string) {
+export async function markSeenFor(sql: Sql, tid: string) {
   await sql`INSERT INTO gmail_threads_seen (thread_id) VALUES (${tid}) ON CONFLICT (thread_id) DO UPDATE SET seen_at = now()`
 }
 
