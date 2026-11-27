@@ -58,7 +58,7 @@ export const CARRIERS: Record<CarrierId, CarrierInfo> = {
 export function normaliseCarrier(v: string | null | undefined): CarrierId | null {
   const s = String(v ?? '').toLowerCase()
   if (!s.trim()) return null
-  if (/royal\s*mail|parcelforce|\brm\b/.test(s)) return 'royal_mail'
+  if (/royal[\s_-]*mail|parcelforce|\brm\b/.test(s)) return 'royal_mail' // "royal_mail" is what the Add parcel form sends
   if (/\bdpd\b/.test(s)) return 'dpd'
   if (/fed\s*ex/.test(s)) return 'fedex'
   if (/evri|hermes/.test(s)) return 'evri'

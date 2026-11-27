@@ -9,10 +9,11 @@ import { onOutbound, onClaimSubmitted, CLOSED_STATUSES, ON_US_STATUSES, WAITING_
 import { ISSUE_LABEL, detectCarrierIssue } from '../carrier/detect'
 import { inboundLabel } from '../carrier/classify'
 import type { DraftKind } from '../carrier/templates'
-import { BANK_HOLIDAYS_UNTIL } from '../carrier/workdays'
+import { BANK_HOLIDAYS_UNTIL, addWorkingDays, endOfLondonDay, londonDate } from '../carrier/workdays'
+import { kpiItems, summarise, KPI_LABEL, KPI_STEPS, type KpiCase, type KpiMessage } from '../carrier/kpis'
 import {
   getSettings, saveSettings, carrierAddress, recipientAllowed, loadCarrierCase, prepareDraft, openInvestigation, applyPatch,
-  decorate, syncCarrierMail, prepareDueDrafts, isIssue, DEFAULT_SETTINGS, type CarrierSettings,
+  decorate, syncCarrierMail, prepareDueDrafts, isIssue, DEFAULT_SETTINGS, defaultOwner, stampKpiFields, type CarrierSettings,
 } from '../carrier/service'
 
 export const carrierApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -37,12 +38,19 @@ carrierApi.get('/cases', async (c) => {
     const filtered = rows.filter((k: any) =>
       view === 'all' ? true
       : view === 'closed' ? !isOpen(k)
+      : view === 'order_id' ? !k.order_id && !k.no_order
       : view === 'chase' ? k.display_status === 'sla_breach'
       : view === 'on_us' ? ON_US_STATUSES.includes(k.status) || k.customer_update_due
       : view === 'waiting' ? isOpen(k) && k.display_status !== 'sla_breach' && !ON_US_STATUSES.includes(k.status)
       : isOpen(k))
     // Most urgent first: carrier overdue (longest wait), then things on us, then by next due date
     const rank = (k: any) => (k.display_status === 'sla_breach' ? 0 : ON_US_STATUSES.includes(k.status) ? 1 : isOpen(k) ? 2 : 3)
+    if (view === 'order_id') {
+      // Task list: oldest request first, open parcels before closed ones; each row carries its own deadline
+      for (const k of filtered as any[]) k.order_id_due = k.order_id_requested_at ? endOfLondonDay(addWorkingDays(new Date(k.order_id_requested_at), k.order_id_window_days ?? 1)).toISOString() : null
+      filtered.sort((a: any, b: any) => Number(!isOpen(a)) - Number(!isOpen(b)) || String(a.order_id_due ?? '9').localeCompare(String(b.order_id_due ?? '9')))
+      return c.json({ cases: filtered, now: new Date().toISOString(), status_labels: STATUS_LABEL, issue_labels: ISSUE_LABEL })
+    }
     filtered.sort((a: any, b: any) => rank(a) - rank(b) || (b.waiting_working_days ?? -1) - (a.waiting_working_days ?? -1) || String(a.next_due ?? '9').localeCompare(String(b.next_due ?? '9')))
     return c.json({ cases: filtered, now: new Date().toISOString(), status_labels: STATUS_LABEL, issue_labels: ISSUE_LABEL })
   } catch (e) { if (tableMissing(e)) return needMigration(c); throw e } finally { await sql.end() }
@@ -68,6 +76,11 @@ carrierApi.get('/summary', async (c) => {
         (SELECT COUNT(*) FROM carrier_drafts d WHERE d.status IN ('draft','approved'))::int AS drafts_ready
       FROM carrier_cases`)
     const perCarrier = await sql.unsafe(`SELECT carrier, COUNT(*)::int AS n FROM carrier_cases WHERE status NOT IN (${closed}) GROUP BY carrier`)
+    // Order-ID task (migration 0030): how many parcels still need one, and how many are past their deadline
+    const [oi] = await sql`SELECT COUNT(*)::int AS missing, COALESCE(json_agg(json_build_object('at', order_id_requested_at, 'w', order_id_window_days)), '[]') AS clocks
+                           FROM carrier_cases WHERE order_id IS NULL AND NOT no_order`.catch(() => [{ missing: null, clocks: [] }] as any[])
+    const nowMs = Date.now()
+    const missingOverdue = (oi.clocks as any[]).filter((x) => x.at && +endOfLondonDay(addWorkingDays(new Date(x.at), x.w ?? 1)) < nowMs).length
     const byCarrier: Record<string, number> = {}
     for (const row of perCarrier as any[]) byCarrier[CARRIERS[row.carrier as CarrierId]?.label ?? row.carrier] = row.n
     return c.json({
@@ -79,6 +92,8 @@ carrierApi.get('/summary', async (c) => {
       drafts_ready: r.drafts_ready,
       at_risk: Math.round(Number(r.at_risk) * 100) / 100,
       recovered: Math.round(Number(r.recovered) * 100) / 100,
+      missing_order_id: oi.missing,
+      missing_order_id_overdue: oi.missing == null ? null : missingOverdue,
       bank_holidays_until: BANK_HOLIDAYS_UNTIL,
     })
   } catch (e) { if (tableMissing(e)) return c.json({ open: 0, by_carrier: {}, chase_now: 0, on_us: 0, customer_updates_due: 0, drafts_ready: 0, at_risk: 0, recovered: 0, migration_needed: true }); throw e } finally { await sql.end() }
@@ -96,7 +111,8 @@ carrierApi.get('/cases/:id', async (c) => {
     const drafts = await sql`SELECT d.*, cu.name AS created_by_name, au.name AS approved_by_name, su.name AS sent_by_name FROM carrier_drafts d
                              LEFT JOIN users cu ON cu.id = d.created_by LEFT JOIN users au ON au.id = d.approved_by LEFT JOIN users su ON su.id = d.sent_by
                              WHERE d.carrier_case_id = ${id} ORDER BY d.created_at DESC`
-    return c.json({ carrier_case: decorate(k), messages: messages.map((m: any) => ({ ...m, kind_label: inboundLabel(m.kind) })), drafts, status_labels: STATUS_LABEL, issue_labels: ISSUE_LABEL })
+    const staff = await sql`SELECT id, name FROM users WHERE is_active ORDER BY name`
+    return c.json({ carrier_case: decorate(k), messages: messages.map((m: any) => ({ ...m, kind_label: inboundLabel(m.kind) })), drafts, staff, status_labels: STATUS_LABEL, issue_labels: ISSUE_LABEL })
   } catch (e) { if (tableMissing(e)) return needMigration(c); throw e } finally { await sql.end() }
 })
 
@@ -156,6 +172,7 @@ carrierApi.post('/cases', async (c) => {
       VALUES (${kase?.id ?? null}, ${carrier}, ${tracking}, ${orderId}, ${isIssue(b.issue) ? b.issue : 'lost'}, ${b.product ?? null}, ${b.value != null && b.value !== '' ? Number(b.value) : null}, 'manual', ${user.id}, ${`Send ${CARRIERS[carrier].short} investigation`})
       ON CONFLICT (carrier, tracking) WHERE tracking IS NOT NULL DO NOTHING RETURNING id`
     if (!row) { const [ex] = await sql`SELECT id FROM carrier_cases WHERE carrier = ${carrier} AND tracking = ${tracking}`; return c.json({ error: 'This parcel is already on the carrier desk', carrier_case_id: ex.id }, 409) }
+    await stampKpiFields(sql, row.id, { owner: (await defaultOwner(sql)) ?? user.id })
     const d = await prepareDraft(sql, row.id, 'investigation', { id: user.id, name: user.name })
     return c.json({ carrier_case_id: row.id, draft_id: d.id }, 201)
   } catch (e) { if (tableMissing(e)) return needMigration(c); throw e } finally { await sql.end() }
@@ -177,6 +194,16 @@ carrierApi.patch('/cases/:id', async (c) => {
   text('product', 200); text('service', 80); text('claim_ref', 60); text('next_action', 200); text('notes', 2000); text('order_id', 60)
   if ('carrier_refs' in b) up.carrier_refs = (Array.isArray(b.carrier_refs) ? b.carrier_refs : String(b.carrier_refs ?? '').split(/[,\s]+/)).map((x: any) => String(x).trim()).filter((x: string) => /^[\w-]{4,20}$/.test(x))
   if ('customer_update_due' in b) up.customer_update_due = !!b.customer_update_due
+  if ('no_order' in b) up.no_order = !!b.no_order
+  if ('order_id' in up && up.order_id) up.no_order = false
+  if ('order_id' in up || up.no_order) up.order_id_set_by = c.get('user').id
+  if ('order_id' in b && up.order_id && !/^(\d{3}-\d{7}-\d{7}|PO-\d{3}-\d{6,20}|[\w#-]{4,60})$/i.test(String(up.order_id))) err.order_id = 'That does not look like an order number'
+  if ('assigned_to' in b) {
+    if (b.assigned_to === null || b.assigned_to === '') up.assigned_to = null
+    else if (Number.isInteger(Number(b.assigned_to))) up.assigned_to = Number(b.assigned_to)
+    else err.assigned_to = 'Invalid owner'
+    if (c.get('user').role !== 'manager') err.assigned_to = 'Only a manager can change the owner'
+  }
   if (Object.keys(err).length) return c.json({ error: 'Validation failed', fields: err }, 422)
   if (!Object.keys(up).length) return c.json({ error: 'Nothing to update' }, 400)
   if (up.status && CLOSED_STATUSES.includes(up.status as CarrierStatus)) up.closed_at = new Date()
@@ -187,7 +214,13 @@ carrierApi.patch('/cases/:id', async (c) => {
     const [row] = await sql.unsafe(`UPDATE carrier_cases SET ${cols.map((k, i) => `${k} = $${i + 2}${k === 'carrier_refs' ? '::text::jsonb' : ''}`).join(', ')} WHERE id = $1 RETURNING id`,
       [id, ...cols.map((k) => (k === 'carrier_refs' ? JSON.stringify(up[k]) : up[k]))] as any[])
     if (!row) return c.json({ error: 'Carrier case not found' }, 404)
-    if ('status' in up || 'paid' in up) await sql`INSERT INTO carrier_messages (carrier_case_id, direction, kind, body, summary, sent_by) VALUES (${id}, 'note', 'note', ${`Updated by ${c.get('user').name}: ${cols.join(', ')}`}, ${`${c.get('user').name} set ${'status' in up ? `status → ${STATUS_LABEL[up.status as CarrierStatus]}` : ''}${'paid' in up ? ` paid → £${up.paid}` : ''}`.trim()}, ${c.get('user').id})`
+    // A status change is recorded as kind 'status_change' (with the new status) so the KPI report can time it
+    if ('status' in up || 'paid' in up) await sql`INSERT INTO carrier_messages (carrier_case_id, direction, kind, body, summary, extracted, sent_by) VALUES (${id}, 'note', ${'status' in up ? 'status_change' : 'note'}, ${`Updated by ${c.get('user').name}: ${cols.join(', ')}`}, ${`${c.get('user').name} set ${'status' in up ? `status → ${STATUS_LABEL[up.status as CarrierStatus]}` : ''}${'paid' in up ? ` paid → £${up.paid}` : ''}`.trim()}, ${sql.json({ to: up.status ?? null } as any)}, ${c.get('user').id})`
+    if ('order_id' in up || 'no_order' in up)
+      await sql`INSERT INTO carrier_messages (carrier_case_id, direction, kind, body, summary, sent_by) VALUES (${id}, 'note', 'note',
+                ${up.order_id ? `Order ID ${up.order_id} added` : up.no_order ? 'Confirmed: no customer order' : 'Order ID removed'}, ${`${c.get('user').name} ${up.order_id ? `added order ID ${up.order_id}` : up.no_order ? 'confirmed there is no customer order' : 'removed the order ID'}`}, ${c.get('user').id})`
+    // Link the parcel to the customer's case when the order ID matches one (so stage 1 – the customer message – is on the same page)
+    if (up.order_id) await sql`UPDATE carrier_cases SET case_id = (SELECT id FROM cases WHERE order_id = ${String(up.order_id)} ORDER BY id LIMIT 1) WHERE id = ${id} AND case_id IS NULL`
     return c.json({ carrier_case: decorate(await loadCarrierCase(sql, id)) })
   } finally { await sql.end() }
 })
@@ -352,7 +385,8 @@ carrierApi.get('/settings', async (c) => {
   try {
     const s = await getSettings(sql)
     const mailboxes = (await listConnections(sql)).map((m) => ({ id: m.id, label: m.label, email: m.email_address, carrier_mail: !!m.carrier_mail, enabled: m.enabled }))
-    return c.json({ settings: s, defaults: Object.fromEntries(Object.values(CARRIERS).map((x) => [x.id, { to: x.investigationTo, reply_days: x.replyDays, claim_days: x.claimDecisionDays, label: x.label }])), effective_to: Object.fromEntries(Object.keys(CARRIERS).map((id) => [id, carrierAddress(s, id as CarrierId)])), mailboxes, bank_holidays_until: BANK_HOLIDAYS_UNTIL })
+    const staff = await sql`SELECT id, name, role FROM users WHERE is_active ORDER BY name`
+    return c.json({ settings: s, staff, kpi: await getKpiSettings(sql), defaults: Object.fromEntries(Object.values(CARRIERS).map((x) => [x.id, { to: x.investigationTo, reply_days: x.replyDays, claim_days: x.claimDecisionDays, label: x.label }])), effective_to: Object.fromEntries(Object.keys(CARRIERS).map((id) => [id, carrierAddress(s, id as CarrierId)])), mailboxes, bank_holidays_until: BANK_HOLIDAYS_UNTIL })
   } catch (e) { if (tableMissing(e)) return c.json({ settings: DEFAULT_SETTINGS, migration_needed: true }); throw e } finally { await sql.end() }
 })
 carrierApi.put('/settings', requireManager, async (c) => {
@@ -366,6 +400,7 @@ carrierApi.put('/settings', requireManager, async (c) => {
   if ('send_mailbox_id' in b) patch.send_mailbox_id = b.send_mailbox_id ? Number(b.send_mailbox_id) : null
   if ('auto_open' in b) patch.auto_open = !!b.auto_open
   if ('auto_chase' in b) patch.auto_chase = !!b.auto_chase
+  if ('owner_id' in b) patch.owner_id = b.owner_id ? Number(b.owner_id) : null
   if ('extra_allowed_domains' in b) patch.extra_allowed_domains = (Array.isArray(b.extra_allowed_domains) ? b.extra_allowed_domains : String(b.extra_allowed_domains ?? '').split(/[,\s]+/)).map((x) => String(x).trim().toLowerCase().replace(/^@/, '')).filter((x) => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(x)).slice(0, 10)
   if (b.addresses && typeof b.addresses === 'object') {
     const a: Partial<Record<CarrierId, string>> = {}
@@ -374,6 +409,75 @@ carrierApi.put('/settings', requireManager, async (c) => {
   }
   const sql = getDb(c.env)
   try { return c.json({ settings: await saveSettings(sql, patch, c.get('user').id) }) } finally { await sql.end() }
+})
+
+// ───────── KPIs (migration 0030) ─────────
+type KpiSettings = { target_days: number; start: string }
+async function getKpiSettings(sql: any): Promise<KpiSettings> {
+  const [r] = await sql`SELECT value FROM app_settings WHERE key = 'carrier_kpi'`.catch(() => [] as any[])
+  return { target_days: 1, start: '2026-11-23', ...((r?.value as Partial<KpiSettings>) ?? {}) }
+}
+carrierApi.put('/kpi-settings', requireManager, async (c) => {
+  const b = (await c.req.json().catch(() => ({}))) as Partial<KpiSettings>
+  const sql = getDb(c.env)
+  try {
+    const next = await getKpiSettings(sql)
+    if ('target_days' in b) { const n = Number(b.target_days); if (!Number.isInteger(n) || n < 1 || n > 10) return c.json({ error: 'Target must be 1–10 working days' }, 422); next.target_days = n }
+    if ('start' in b) { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.start))) return c.json({ error: 'Start must be YYYY-MM-DD' }, 422); next.start = String(b.start) }
+    await sql`INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES ('carrier_kpi', ${sql.json(next as any)}, ${c.get('user').id}, now())
+              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`
+    return c.json({ kpi: next })
+  } finally { await sql.end() }
+})
+
+// GET /api/carrier/kpis?from=YYYY-MM-DD&to=YYYY-MM-DD → per-step and per-person KPI figures, plus every missed or overdue item
+carrierApi.get('/kpis', async (c) => {
+  const sql = getDb(c.env)
+  try {
+    const kpi = await getKpiSettings(sql)
+    const now = new Date()
+    const ymd = (v: string | undefined) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null)
+    const toDay = ymd(c.req.query('to')) ?? londonDate(now)
+    const asked = ymd(c.req.query('from')) ?? londonDate(new Date(now.getTime() - 29 * 86400_000))
+    const fromDay = asked < kpi.start ? kpi.start : asked // activity before KPIs started is not scored
+    const range = { from: endOfLondonDay(londonDate(new Date(Date.parse(`${fromDay}T12:00:00Z`) - 86400_000))), to: endOfLondonDay(toDay) }
+    let cases: any[]
+    try {
+      cases = await sql`SELECT cc.id, cc.tracking, cc.carrier, cc.case_id, c.case_ref, cc.order_id, cc.no_order, cc.assigned_to, cc.status, cc.reported_at, cc.raised_at, cc.closed_at,
+                               cc.order_id_requested_at, cc.order_id_window_days, cc.order_id_set_at, cc.order_id_set_by, cc.customer_update_due, cc.customer_update_due_at, cc.customer_told_at
+                        FROM carrier_cases cc LEFT JOIN cases c ON c.id = cc.case_id
+                        WHERE cc.updated_at >= ${range.from} OR cc.status NOT IN ('paid','partially_paid','rejected','closed') OR (cc.order_id IS NULL AND NOT cc.no_order)`
+    } catch (e: any) {
+      if (/column .* does not exist|relation "carrier_/.test(String(e?.message))) return c.json({ error: 'Run db/migrations/0030_carrier_kpis.sql in Supabase first.', migration_needed: true }, 503)
+      throw e
+    }
+    const ids = cases.map((k) => k.id)
+    const msgs = ids.length ? await sql`SELECT carrier_case_id, direction, kind, sent_at, sent_by, extracted FROM carrier_messages
+                                        WHERE carrier_case_id = ANY(string_to_array(${ids.join(',')}, ',')::int[])
+                                          AND (direction IN ('inbound','outbound') OR kind IN ('claim_submitted','status_change'))
+                                          AND kind NOT IN ('auto_ack','notification')` : []
+    const byCase = new Map<number, KpiMessage[]>()
+    for (const m of msgs as any[]) { const l = byCase.get(m.carrier_case_id) ?? []; l.push(m); byCase.set(m.carrier_case_id, l) }
+    const items = cases.flatMap((k) => kpiItems(k as KpiCase, byCase.get(k.id) ?? [], { targetDays: kpi.target_days, now }))
+      .filter((i) => +new Date(i.started_at) >= +range.from && +new Date(i.started_at) <= +range.to)
+    const users = await sql`SELECT id, name, role FROM users`
+    const name = new Map((users as any[]).map((u) => [u.id, u.name]))
+    const ownerIds = [...new Set(items.map((i) => i.owner_id))]
+    return c.json({
+      range: { from: fromDay, to: toDay },
+      kpi,
+      steps: summarise(items, range),
+      people: ownerIds.map((id) => ({ id, name: id == null ? 'Unassigned' : name.get(id) ?? `User ${id}`, steps: summarise(items, range, id) }))
+        .sort((a, b) => (a.id == null ? 1 : b.id == null ? -1 : a.name.localeCompare(b.name))),
+      // Everything that missed (or is now past) its target, worst first; then what is due next
+      misses: items.filter((i) => i.state === 'late' || i.state === 'overdue').sort((a, b) => b.working_days - a.working_days)
+        .map((i) => ({ ...i, owner: i.owner_id == null ? 'Unassigned' : name.get(i.owner_id) ?? null, step_title: KPI_LABEL[i.step].title })),
+      due: items.filter((i) => i.state === 'open').sort((a, b) => a.due_at.localeCompare(b.due_at))
+        .map((i) => ({ ...i, owner: i.owner_id == null ? 'Unassigned' : name.get(i.owner_id) ?? null, step_title: KPI_LABEL[i.step].title })),
+      labels: KPI_LABEL,
+      order: KPI_STEPS,
+    })
+  } finally { await sql.end() }
 })
 
 // POST /api/carrier/import (manager) { cases: [...] } — one-off import from the old "Carrier Claims Desk" dashboard export

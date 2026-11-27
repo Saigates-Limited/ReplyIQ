@@ -168,7 +168,43 @@ window.RiqCarrier = function (h) {
 
   // ───────── Carrier desk page ─────────
   let deskView = (() => { try { return localStorage.getItem('riq.carrierView') || 'chase' } catch { return 'chase' } })()
-  const VIEWS = [['chase', 'Chase now'], ['on_us', 'Needs us'], ['waiting', 'Waiting'], ['open', 'All open'], ['closed', 'Closed'], ['all', 'Everything']]
+  const VIEWS = [['chase', 'Chase now'], ['on_us', 'Needs us'], ['order_id', 'Missing order ID'], ['waiting', 'Waiting'], ['open', 'All open'], ['closed', 'Closed'], ['all', 'Everything']]
+  const dueLabel = (iso) => { if (!iso) return '—'; const late = new Date(iso) < new Date(); return `<span class="${late ? 'deadline-overdue font-semibold' : ''}">${late ? 'overdue · ' : 'by '}${fmtDate(iso)}</span>` }
+
+  // Order-ID task list: one row per parcel without an order ID, with its own deadline (backlog 2 working days, new parcels 1)
+  function orderIdTable(cases) {
+    return `<div class="bg-white rounded-xl shadow-sm overflow-x-auto">
+      <div class="px-4 py-3 text-sm text-slate-600 border-b border-slate-100"><i class="fas fa-link mr-1 text-slate-400"></i>Add the customer's order ID so every investigation and claim links back to the customer's message. Search the tracking number in Seller Central, Pack &amp; Go or Click &amp; Drop. If the parcel has no customer order (postage refund, inbound delivery), press <em>No order</em>.</div>
+      <table class="riq w-full text-sm">
+        <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr>
+          <th class="px-4 py-3">Parcel</th><th class="px-4 py-3 hidden md:table-cell">References</th><th class="px-4 py-3 hidden sm:table-cell">Status</th><th class="px-4 py-3">Due</th><th class="px-4 py-3">Order ID</th>
+        </tr></thead>
+        <tbody>${cases.length ? cases.map((k) => `
+          <tr class="border-t border-slate-100" data-oi-row="${k.id}">
+            <td class="px-4 py-3"><a href="/carriers/${k.id}" data-link class="hover:underline">${parcelName(k)}</a>${k.product ? `<div class="text-xs text-slate-400 truncate max-w-[16rem]">${esc(k.product)}</div>` : ''}</td>
+            <td class="px-4 py-3 hidden md:table-cell text-xs font-mono">${(k.carrier_refs || []).length ? `case ${esc((k.carrier_refs || []).join(', '))}` : ''}${k.claim_ref ? `<div>claim ${esc(k.claim_ref)}</div>` : ''}${k.claimed ? `<div class="font-sans text-slate-500">${money(k.claimed)} claimed</div>` : ''}</td>
+            <td class="px-4 py-3 hidden sm:table-cell">${chip(k.display_status)}</td>
+            <td class="px-4 py-3 whitespace-nowrap text-xs">${dueLabel(k.order_id_due)}</td>
+            <td class="px-4 py-3"><div class="flex gap-1 items-center">
+              <input data-oi="${k.id}" class="field-input mt-0 text-sm font-mono w-48" placeholder="e.g. 202-5745896-9109132">
+              <button data-oi-save="${k.id}" class="px-2 py-1.5 rounded-md bg-slate-900 text-white text-xs">Save</button>
+              <button data-oi-none="${k.id}" class="px-2 py-1.5 rounded-md border border-slate-300 text-xs whitespace-nowrap" title="This parcel has no customer order">No order</button>
+            </div></td>
+          </tr>`).join('') : '<tr><td colspan="5" class="px-4 py-10 text-center text-slate-500">Every parcel has an order ID.</td></tr>'}</tbody>
+      </table></div>`
+  }
+  function wireOrderIdTable(onDone) {
+    const save = async (id, body, row) => {
+      try { await axios.patch(`/api/carrier/cases/${id}`, body); row.remove(); toast(body.no_order ? 'Marked: no customer order' : 'Order ID saved'); h.refreshBadges?.(); if (!app.querySelector('[data-oi-row]')) onDone() } catch (e) { err(e) }
+    }
+    app.querySelectorAll('[data-oi-save]').forEach((b) => (b.onclick = () => {
+      const id = b.dataset.oiSave, input = app.querySelector(`[data-oi="${id}"]`), v = input.value.trim()
+      if (!v) return input.focus()
+      save(id, { order_id: v }, b.closest('tr'))
+    }))
+    app.querySelectorAll('[data-oi]').forEach((i) => (i.onkeydown = (e) => { if (e.key === 'Enter') app.querySelector(`[data-oi-save="${i.dataset.oi}"]`).click() }))
+    app.querySelectorAll('[data-oi-none]').forEach((b) => (b.onclick = () => { if (confirm('Confirm this parcel has no customer order (e.g. postage refund or a delivery to us)?')) save(b.dataset.oiNone, { no_order: true }, b.closest('tr')) }))
+  }
 
   async function renderDesk() {
     app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading carrier desk…</p>`
@@ -186,21 +222,23 @@ window.RiqCarrier = function (h) {
             <p class="text-sm text-slate-500">Investigations and claims with Royal Mail, DPD, FedEx and Evri. Carrier replies are read every 15 minutes; chases are prepared automatically when a reply is late. Nothing is sent without your click.</p></div>
           <div class="flex flex-wrap gap-2 text-sm">
             ${ready.length ? `<button id="cd-queue" class="px-3 py-2 rounded-md bg-emerald-600 text-white font-medium"><i class="fas fa-paper-plane mr-1"></i>Review ${ready.length} ready email${ready.length === 1 ? '' : 's'}</button>` : ''}
+            <a href="/carriers/kpis" data-link class="px-3 py-2 rounded-md border border-slate-300 bg-white"><i class="fas fa-chart-line mr-1"></i>KPIs</a>
             <button id="cd-sync" class="px-3 py-2 rounded-md border border-slate-300 bg-white"><i class="fas fa-rotate mr-1"></i>Check carrier mail</button>
             <button id="cd-new" class="px-3 py-2 rounded-md border border-slate-300 bg-white"><i class="fas fa-plus mr-1"></i>Add parcel</button>
             <button id="cd-settings" class="px-3 py-2 rounded-md border border-slate-300 bg-white" title="Carrier desk settings"><i class="fas fa-gear"></i></button>
           </div>
         </div>
-        <div class="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-4">
+        <div class="grid grid-cols-2 lg:grid-cols-${s.missing_order_id == null ? 6 : 7} gap-3 mb-4">
           <div class="kpi" style="--kpi:#2563eb"><div class="l">Open parcels</div><div class="v">${s.open}</div><div class="text-xs text-slate-500">${Object.entries(s.by_carrier).map(([c, n]) => `${esc(c)} ${n}`).join(' · ') || '—'}</div></div>
           <div class="kpi" style="--kpi:#dc2626"><div class="l">Chase now</div><div class="v ${s.chase_now ? 'text-red-700' : ''}">${s.chase_now}</div><div class="text-xs text-slate-500">carrier reply overdue</div></div>
           <div class="kpi" style="--kpi:#f59e0b"><div class="l">Needs us</div><div class="v">${s.on_us}</div><div class="text-xs text-slate-500">raise, reply or claim</div></div>
+          ${s.missing_order_id == null ? '' : `<div data-view="order_id" role="button" tabindex="0" class="kpi cursor-pointer hover:bg-slate-50" style="--kpi:#64748b"><div class="l">Missing order ID</div><div class="v ${s.missing_order_id_overdue ? 'text-red-700' : ''}">${s.missing_order_id}</div><div class="text-xs text-slate-500">${s.missing_order_id_overdue ? `${s.missing_order_id_overdue} overdue` : 'link to the customer'}</div></div>`}
           <div class="kpi" style="--kpi:#0ea5e9"><div class="l">Tell the customer</div><div class="v">${s.customer_updates_due}</div><div class="text-xs text-slate-500">carrier news to pass on</div></div>
           <div class="kpi" style="--kpi:#7c3aed"><div class="l">At risk</div><div class="v">${money(s.at_risk)}</div><div class="text-xs text-slate-500">value of open parcels</div></div>
           <div class="kpi" style="--kpi:#16a34a"><div class="l">Recovered</div><div class="v">${money(s.recovered)}</div><div class="text-xs text-slate-500">paid by carriers to date</div></div>
         </div>
-        <div class="flex flex-wrap gap-1 mb-3 text-sm">${VIEWS.map(([v, l]) => `<button data-view="${v}" class="px-3 py-1.5 rounded-md ${deskView === v ? 'bg-slate-900 text-white' : 'bg-white border border-slate-300'}">${l}</button>`).join('')}</div>
-        <div class="bg-white rounded-xl shadow-sm overflow-x-auto">
+        <div class="flex flex-wrap gap-1 mb-3 text-sm">${VIEWS.map(([v, l]) => `<button data-view="${v}" class="px-3 py-1.5 rounded-md ${deskView === v ? 'bg-slate-900 text-white' : 'bg-white border border-slate-300'}">${l}${v === 'order_id' && s.missing_order_id ? ` <span class="ml-1 px-1.5 rounded-full text-[10px] ${s.missing_order_id_overdue ? 'bg-red-600 text-white' : 'bg-slate-200 text-slate-700'}">${s.missing_order_id}</span>` : ''}</button>`).join('')}</div>
+        ${deskView === 'order_id' ? orderIdTable(list.cases) : `<div class="bg-white rounded-xl shadow-sm overflow-x-auto">
           <table class="riq w-full text-sm">
             <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr>
               <th class="px-4 py-3">Status</th><th class="px-4 py-3">Parcel</th><th class="px-4 py-3 hidden md:table-cell">Issue</th><th class="px-4 py-3">Waiting</th><th class="px-4 py-3 hidden lg:table-cell">Next step</th><th class="px-4 py-3 hidden sm:table-cell">Value / paid</th><th class="px-4 py-3"></th>
@@ -216,10 +254,11 @@ window.RiqCarrier = function (h) {
                 <td class="px-4 py-3 text-right whitespace-nowrap">${(k.live_drafts || []).map((d) => `<button data-draft="${d.id}" data-ccid="${k.id}" class="px-2 py-1 rounded-md ${d.kind === 'claim_pack' ? 'bg-violet-600' : 'bg-emerald-600'} text-white text-xs mb-1"><i class="fas ${d.kind === 'claim_pack' ? 'fa-paste' : 'fa-paper-plane'} mr-1"></i>${d.kind === 'claim_pack' ? 'Claim' : d.kind === 'chase' ? 'Chase' : d.kind === 'investigation' ? 'Raise' : 'Email'}</button>`).join(' ')}</td>
               </tr>`).join('') : `<tr><td colspan="7" class="px-4 py-10 text-center text-slate-500">${deskView === 'chase' ? 'Nothing to chase. Every carrier is inside its reply time.' : 'Nothing here.'}</td></tr>`}</tbody>
           </table>
-        </div>
+        </div>`}
         <p class="text-[11px] text-slate-400 mt-2">Reply times: Royal Mail 3 working days, DPD / FedEx / Evri 5, claim decisions 10 (England &amp; Wales bank holidays skipped; list runs to ${esc(s.bank_holidays_until || '')}).</p>
       </section>`
     app.querySelectorAll('[data-view]').forEach((b) => (b.onclick = () => { deskView = b.dataset.view; try { localStorage.setItem('riq.carrierView', deskView) } catch {} ; renderDesk() }))
+    if (deskView === 'order_id') wireOrderIdTable(renderDesk)
     app.querySelectorAll('tr[data-cc]').forEach((tr) => (tr.onclick = (e) => { if (e.target.closest('button,a')) return; navigate(`/carriers/${tr.dataset.cc}`) }))
     app.querySelectorAll('[data-draft]').forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openDraft(Number(b.dataset.ccid), Number(b.dataset.draft), { onDone: renderDesk }) }))
     document.getElementById('cd-queue')?.addEventListener('click', () => openDraft(ready[0].ccId, ready[0].draftId, { queue: ready, index: 0, onDone: renderDesk }))
@@ -277,6 +316,11 @@ window.RiqCarrier = function (h) {
       </section>
       <section><h3 class="field-label mb-1">Carrier addresses</h3><div class="grid sm:grid-cols-2 gap-3">${Object.entries(data.defaults).filter(([id]) => id !== 'other').map(([id, d]) => `<div><label class="field-label">${esc(d.label)} <span class="normal-case font-normal">· reply ${d.reply_days} wd</span></label><input data-addr="${id}" class="field-input text-sm" value="${esc(s.addresses?.[id] || '')}" placeholder="${esc(d.to || 'not set — add one to email them')}" ${ro}></div>`).join('')}</div>
         <div class="mt-2"><label class="field-label">Extra allowed recipient domains</label><input data-s="extra_allowed_domains" class="field-input text-sm" value="${esc((s.extra_allowed_domains || []).join(', '))}" placeholder="e.g. a carrier account manager's domain" ${ro}></div></section>
+      ${data.kpi ? `<section class="grid sm:grid-cols-3 gap-3">
+        <div><label class="field-label">Owner of new carrier cases</label><select data-s="owner_id" class="field-input" ${ro}><option value="">Unassigned</option>${(data.staff || []).map((u) => `<option value="${u.id}" ${s.owner_id === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select><p class="text-[10px] text-slate-400 mt-0.5">KPIs are reported per owner.</p></div>
+        <div><label class="field-label">KPI target (working days)</label><input data-k="target_days" type="number" min="1" max="10" class="field-input" value="${esc(data.kpi.target_days)}" ${ro}></div>
+        <div><label class="field-label">KPIs count from</label><input data-k="start" type="date" class="field-input" value="${esc(data.kpi.start)}" ${ro}></div>
+      </section>` : ''}
       <section class="space-y-1 text-sm">
         <label class="flex items-center gap-2"><input type="checkbox" data-s="auto_open" ${s.auto_open ? 'checked' : ''} ${ro}> When a customer reports a delivery problem, prepare the investigation email automatically (still needs your click to send)</label>
         <label class="flex items-center gap-2"><input type="checkbox" data-s="auto_chase" ${s.auto_chase ? 'checked' : ''} ${ro}> When a carrier's reply is late, prepare a chase email automatically</label>
@@ -311,7 +355,13 @@ window.RiqCarrier = function (h) {
         signature: v('signature').value, extra_allowed_domains: v('extra_allowed_domains').value, auto_open: v('auto_open').checked, auto_chase: v('auto_chase').checked,
         addresses: Object.fromEntries([...modal.querySelectorAll('[data-addr]')].map((el) => [el.dataset.addr, el.value.trim()])),
       }
-      try { await axios.put('/api/carrier/settings', body); toast('Settings saved'); modal.remove() } catch (e) { err(e) }
+      if (v('owner_id')) body.owner_id = v('owner_id').value || null
+      try {
+        await axios.put('/api/carrier/settings', body)
+        const kt = modal.querySelector('[data-k="target_days"]'), ks = modal.querySelector('[data-k="start"]')
+        if (kt && (String(kt.value) !== String(data.kpi.target_days) || ks.value !== data.kpi.start)) await axios.put('/api/carrier/kpi-settings', { target_days: Number(kt.value), start: ks.value })
+        toast('Settings saved'); modal.remove()
+      } catch (e) { err(e) }
     })
   }
 
@@ -371,7 +421,10 @@ window.RiqCarrier = function (h) {
               ${field('posted_on', 'Posted', k.posted_on ? String(k.posted_on).slice(0, 10) : '', 'date')}${field('service', 'Service', k.service)}
               <div class="col-span-2">${field('product', 'Contents', k.product)}</div>
               <div class="col-span-2">${field('carrier_refs', 'Carrier case references', (k.carrier_refs || []).join(', '), 'text', 'font-mono')}</div>
-              ${field('claim_ref', 'Claim reference', k.claim_ref, 'text', 'font-mono')}${field('order_id', 'Order reference', k.order_id, 'text', 'font-mono')}
+              ${field('claim_ref', 'Claim reference', k.claim_ref, 'text', 'font-mono')}
+              <div><label class="field-label">Order ID ${!k.order_id && !k.no_order ? '<span class="text-red-600 normal-case font-normal">· needed</span>' : ''}</label><input data-p="order_id" class="field-input text-sm font-mono" value="${esc(k.order_id ?? '')}" placeholder="${k.no_order ? 'no customer order' : 'e.g. 202-5745896-9109132'}">
+                ${'no_order' in k ? `<label class="mt-1 flex items-center gap-1 text-[11px] text-slate-500"><input type="checkbox" data-no-order ${k.no_order ? 'checked' : ''}> No customer order</label>` : ''}</div>
+              ${'assigned_to' in k ? `<div class="col-span-2"><label class="field-label">Owner</label><select data-owner class="field-input text-sm" ${isManager ? '' : 'disabled'}><option value="">Unassigned</option>${(data.staff || []).map((u) => `<option value="${u.id}" ${k.assigned_to === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></div>` : ''}
               <div class="col-span-2"><label class="field-label">Notes</label><textarea data-p="notes" rows="3" class="field-input text-sm">${esc(k.notes || '')}</textarea></div>
             </div>
             <dl class="mt-4 grid grid-cols-2 gap-y-1 text-xs text-slate-500">
@@ -384,8 +437,10 @@ window.RiqCarrier = function (h) {
       </section>`
     const saved = document.getElementById('cp-saved')
     app.querySelectorAll('[data-p]').forEach((el) => (el.onchange = async () => {
-      try { await axios.patch(`/api/carrier/cases/${id}`, { [el.dataset.p]: el.value }); saved.style.opacity = 1; setTimeout(() => (saved.style.opacity = 0), 1200); if (el.dataset.p === 'status') renderParcel(id) } catch (e) { err(e) }
+      try { await axios.patch(`/api/carrier/cases/${id}`, { [el.dataset.p]: el.value }); saved.style.opacity = 1; setTimeout(() => (saved.style.opacity = 0), 1200); if (el.dataset.p === 'status' || el.dataset.p === 'order_id') renderParcel(id) } catch (e) { err(e) }
     }))
+    document.querySelector('[data-no-order]')?.addEventListener('change', async (e) => { try { await axios.patch(`/api/carrier/cases/${id}`, { no_order: e.target.checked }); renderParcel(id) } catch (ex) { err(ex); e.target.checked = !e.target.checked } })
+    document.querySelector('[data-owner]')?.addEventListener('change', async (e) => { try { await axios.patch(`/api/carrier/cases/${id}`, { assigned_to: e.target.value || null }); saved.style.opacity = 1; setTimeout(() => (saved.style.opacity = 0), 1200) } catch (ex) { err(ex) } })
     app.querySelectorAll('[data-draft]').forEach((b) => (b.onclick = () => openDraft(id, Number(b.dataset.draft), { onDone: () => renderParcel(id) })))
     app.querySelectorAll('[data-make]').forEach((b) => (b.onclick = async () => {
       try { const { data: r } = await axios.post(`/api/carrier/cases/${id}/drafts`, { kind: b.dataset.make }); openDraft(id, r.draft.id, { onDone: () => renderParcel(id) }) } catch (e) { err(e) }
@@ -394,6 +449,62 @@ window.RiqCarrier = function (h) {
       const t = document.getElementById('cp-note').value.trim(); if (!t) return
       try { await axios.post(`/api/carrier/cases/${id}/note`, { text: t }); renderParcel(id) } catch (e) { err(e) }
     }
+  }
+
+  // ───────── KPI report ─────────
+  let kpiRange = null
+  const pctCls = (p) => (p == null ? 'text-slate-400' : p >= 95 ? 'text-emerald-700' : p >= 80 ? 'text-amber-600' : 'text-red-700')
+  const STATE_CHIP = { on_time: 'bg-emerald-100 text-emerald-800', late: 'bg-rose-100 text-rose-800', overdue: 'bg-red-600 text-white', open: 'bg-sky-100 text-sky-800' }
+  const STATE_LABEL = { on_time: 'On time', late: 'Late', overdue: 'Overdue', open: 'Due' }
+  async function renderKpis() {
+    app.innerHTML = `<p class="text-slate-500"><i class="fas fa-spinner fa-spin mr-2"></i>Loading KPIs…</p>`
+    let r
+    try { ;({ data: r } = await axios.get('/api/carrier/kpis', { params: kpiRange || {} })) } catch (e) {
+      if (e.response?.data?.migration_needed) { app.innerHTML = '<div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Run <code>db/migrations/0030_carrier_kpis.sql</code> in the Supabase SQL editor to switch on carrier KPIs.</div>'; return }
+      return h.renderError(e)
+    }
+    const t = r.kpi.target_days
+    const row = (i) => `<tr class="border-t border-slate-100">
+        <td class="px-3 py-2"><span class="pill ${STATE_CHIP[i.state]} text-[10px]">${STATE_LABEL[i.state]}</span></td>
+        <td class="px-3 py-2 text-xs">${esc(i.step_title)}</td>
+        <td class="px-3 py-2 text-xs"><a href="/carriers/${i.carrier_case_id}" data-link class="font-mono hover:underline">${esc(i.tracking || `#${i.carrier_case_id}`)}</a>${i.case_ref ? ` <span class="text-slate-400">${esc(i.case_ref)}</span>` : ''}</td>
+        <td class="px-3 py-2 text-xs whitespace-nowrap">${fmtDateTime(i.started_at)}</td>
+        <td class="px-3 py-2 text-xs whitespace-nowrap">${fmtDate(i.due_at)}</td>
+        <td class="px-3 py-2 text-xs whitespace-nowrap">${i.done_at ? fmtDateTime(i.done_at) : '—'}</td>
+        <td class="px-3 py-2 text-xs text-right">${i.working_days}</td>
+        <td class="px-3 py-2 text-xs">${esc(i.owner || '')}</td></tr>`
+    const table = (rows, empty) => `<div class="overflow-x-auto"><table class="riq w-full text-sm"><thead class="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500"><tr>
+        <th class="px-3 py-2"></th><th class="px-3 py-2">Step</th><th class="px-3 py-2">Parcel</th><th class="px-3 py-2">Started</th><th class="px-3 py-2">Due</th><th class="px-3 py-2">Done</th><th class="px-3 py-2 text-right">Working days</th><th class="px-3 py-2">Who</th></tr></thead>
+        <tbody>${rows.length ? rows.map(row).join('') : `<tr><td colspan="8" class="px-3 py-6 text-center text-slate-500">${empty}</td></tr>`}</tbody></table></div>`
+    app.innerHTML = `
+      <section id="carrier-kpis">
+        <a href="/carriers" data-link class="text-sm text-slate-500 hover:text-slate-800"><i class="fas fa-arrow-left mr-1"></i>Carrier desk</a>
+        <div class="mt-2 mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div><h1 class="text-2xl font-bold"><i class="fas fa-chart-line mr-2 text-slate-400"></i>Carrier KPIs</h1>
+            <p class="text-sm text-slate-500">Each step must be done within <strong>${t} working day${t === 1 ? '' : 's'}</strong> of the trigger (weekends and bank holidays don't count). Scored from ${fmtDate(r.kpi.start)}.</p></div>
+          <div class="flex flex-wrap items-end gap-2 text-sm">
+            <div><label class="field-label">From</label><input id="kp-from" type="date" class="field-input mt-0" value="${esc(r.range.from)}"></div>
+            <div><label class="field-label">To</label><input id="kp-to" type="date" class="field-input mt-0" value="${esc(r.range.to)}"></div>
+            <button id="kp-go" class="px-3 py-2 rounded-md bg-slate-900 text-white">Show</button>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 mb-5">${r.steps.map((x) => `
+          <div class="bg-white rounded-xl shadow-sm p-4">
+            <div class="text-sm font-semibold">${esc(x.title)}</div>
+            <div class="text-[11px] text-slate-500 leading-tight mt-0.5">${esc(x.from)} → ${esc(x.to.charAt(0).toLowerCase() + x.to.slice(1))}</div>
+            <div class="mt-3 text-3xl font-bold ${pctCls(x.on_time_pct)}">${x.on_time_pct == null ? '—' : `${x.on_time_pct}%`}</div>
+            <div class="text-[11px] text-slate-500">on time${x.avg_days != null ? ` · avg ${x.avg_days} wd` : ''}</div>
+            <div class="mt-2 flex flex-wrap gap-x-3 text-xs"><span class="text-emerald-700">${x.on_time} on time</span><span class="text-rose-700">${x.late} late</span><span class="${x.overdue ? 'text-red-700 font-semibold' : 'text-slate-500'}">${x.overdue} overdue</span><span class="text-sky-700">${x.open} due</span></div>
+          </div>`).join('')}</div>
+        <div class="bg-white rounded-xl shadow-sm mb-5 overflow-x-auto">
+          <h2 class="font-semibold px-4 pt-4 pb-2">By person</h2>
+          <table class="riq w-full text-sm"><thead class="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500"><tr><th class="px-4 py-2">Person</th>${r.steps.map((x) => `<th class="px-4 py-2">${esc(x.title)}</th>`).join('')}</tr></thead>
+            <tbody>${r.people.length ? r.people.map((p) => `<tr class="border-t border-slate-100"><td class="px-4 py-2 font-medium">${esc(p.name)}</td>${p.steps.map((x) => `<td class="px-4 py-2">${x.total ? `<span class="font-semibold ${pctCls(x.on_time_pct)}">${x.on_time_pct == null ? '—' : `${x.on_time_pct}%`}</span> <span class="text-xs text-slate-500">${x.on_time}/${x.on_time + x.late + x.overdue}${x.overdue ? ` · <span class="text-red-700">${x.overdue} overdue</span>` : ''}${x.avg_days != null ? ` · ${x.avg_days} wd` : ''}</span>` : '<span class="text-slate-300">—</span>'}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${r.steps.length + 1}" class="px-4 py-6 text-center text-slate-500">Nothing to score in this period yet.</td></tr>`}</tbody></table>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm mb-5"><h2 class="font-semibold px-4 pt-4 pb-2">Missed or overdue <span class="text-sm font-normal text-slate-500">(${r.misses.length}, slowest first)</span></h2>${table(r.misses, 'Nothing missed in this period.')}</div>
+        <div class="bg-white rounded-xl shadow-sm"><h2 class="font-semibold px-4 pt-4 pb-2">Due next <span class="text-sm font-normal text-slate-500">(${r.due.length})</span></h2>${table(r.due, 'Nothing waiting.')}</div>
+      </section>`
+    document.getElementById('kp-go').onclick = () => { kpiRange = { from: document.getElementById('kp-from').value, to: document.getElementById('kp-to').value }; renderKpis() }
   }
 
   // ───────── Dashboard strip + sidebar badge ─────────
@@ -408,13 +519,14 @@ window.RiqCarrier = function (h) {
           <span><strong>${s.on_us}</strong> need us</span>
           <span><strong>${s.customer_updates_due}</strong> customer update${s.customer_updates_due === 1 ? '' : 's'}</span>
           <span><strong>${s.drafts_ready}</strong> email${s.drafts_ready === 1 ? '' : 's'} ready</span>
+          ${s.missing_order_id ? `<span><strong class="${s.missing_order_id_overdue ? 'text-red-700' : ''}">${s.missing_order_id}</strong> missing order ID</span>` : ''}
           <span class="text-slate-500">${money(s.at_risk)} at risk · ${money(s.recovered)} recovered</span>
         </div></a>`
     } catch { return '' }
   }
   async function badgeCount() {
-    try { const { data: s } = await axios.get('/api/carrier/summary'); return (s.chase_now || 0) + (s.on_us || 0) + (s.customer_updates_due || 0) } catch { return 0 }
+    try { const { data: s } = await axios.get('/api/carrier/summary'); return (s.chase_now || 0) + (s.on_us || 0) + (s.customer_updates_due || 0) + (s.missing_order_id_overdue || 0) } catch { return 0 }
   }
 
-  return { renderDesk, renderParcel, mountCasePanel, dashboardStrip, badgeCount, openDraft }
+  return { renderDesk, renderParcel, renderKpis, mountCasePanel, dashboardStrip, badgeCount, openDraft }
 }

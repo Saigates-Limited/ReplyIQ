@@ -21,6 +21,7 @@ export type CarrierSettings = {
   auto_open: boolean // sync opens a "Ready to raise" carrier case when a customer reports a delivery problem
   auto_chase: boolean // cron prepares a chase draft when the carrier's reply is overdue
   extra_allowed_domains: string[] // carrier emails may only go to carrier domains (+ these)
+  owner_id: number | null // default owner of new carrier cases (KPIs are reported per owner)
 }
 export const DEFAULT_SETTINGS: CarrierSettings = {
   send_mailbox_id: null,
@@ -32,6 +33,7 @@ export const DEFAULT_SETTINGS: CarrierSettings = {
   auto_open: true,
   auto_chase: true,
   extra_allowed_domains: [],
+  owner_id: null,
 }
 export async function getSettings(sql: Sql): Promise<CarrierSettings> {
   const [r] = await sql`SELECT value FROM app_settings WHERE key = 'carrier'`.catch(() => [] as any[])
@@ -154,6 +156,26 @@ async function orderFacts(env: Bindings, sql: Sql, orderId: string | null): Prom
   }
 }
 
+/** Default owner for new carrier cases (Carrier settings). Never throws: before migration 0030 there is none. */
+export async function defaultOwner(sql: Sql): Promise<number | null> {
+  const s = await getSettings(sql).catch(() => DEFAULT_SETTINGS)
+  return s.owner_id ?? null
+}
+/**
+ * KPI fields from migration 0030 (customer report time, owner). Only fills blanks, and is a no-op before the migration
+ * has run, so carrier cases keep opening normally if the code is deployed first.
+ */
+export async function stampKpiFields(sql: Sql, id: number, f: { reportedAt?: Date | null; owner?: number | null }) {
+  if (f.reportedAt == null && f.owner == null) return
+  await sql`UPDATE carrier_cases SET reported_at = COALESCE(reported_at, ${f.reportedAt ?? null}), assigned_to = COALESCE(assigned_to, ${f.owner ?? null}) WHERE id = ${id}`
+    .catch((e: any) => { if (!/column .* does not exist/.test(String(e?.message))) console.error('carrier: KPI fields not saved', e?.message) })
+}
+/** Time of the customer's latest real message on a case (the start of the "raise an investigation" clock). */
+async function lastCustomerMessageAt(sql: Sql, caseId: number): Promise<Date | null> {
+  const [m] = await sql`SELECT sent_at FROM messages WHERE case_id = ${caseId} AND direction = 'inbound' AND kind <> 'event' ORDER BY sent_at DESC LIMIT 1`.catch(() => [] as any[])
+  return m?.sent_at ? new Date(m.sent_at) : null
+}
+
 export type OpenResult =
   | { ok: true; carrier_case_id: number; draft_id: number | null; created: boolean }
   | { ok: false; error: string; code: 'no_tracking' | 'no_carrier' | 'too_early' | 'not_found'; promised?: string | null }
@@ -162,7 +184,7 @@ export type OpenResult =
  * Customer case → carrier case + investigation draft. Pulls carrier, tracking, ship date, item and price from the case
  * and the Amazon order. For "not arrived", waits until Amazon's promised delivery date has passed unless `force`.
  */
-export async function openInvestigation(env: Bindings, sql: Sql, args: { caseId: number; carrier?: string | null; tracking?: string | null; issue?: string | null; force?: boolean; source?: 'customer_message' | 'manual' }, staff: { id: number | null; name: string }): Promise<OpenResult> {
+export async function openInvestigation(env: Bindings, sql: Sql, args: { caseId: number; carrier?: string | null; tracking?: string | null; issue?: string | null; force?: boolean; source?: 'customer_message' | 'manual'; reportedAt?: Date | null }, staff: { id: number | null; name: string }): Promise<OpenResult> {
   const [kase] = await sql`SELECT * FROM cases WHERE id = ${args.caseId}`
   if (!kase) return { ok: false, error: 'Case not found', code: 'not_found' }
   const order = await orderFacts(env, sql, kase.order_id)
@@ -179,6 +201,9 @@ export async function openInvestigation(env: Bindings, sql: Sql, args: { caseId:
   const value = item?.unitPrice ? Number(item.unitPrice) * (item.quantity || 1) : order?.grandTotal ? Number(order.grandTotal) : null
   const postedOn = order?.shipDate ? londonDate(new Date(order.shipDate)) : null
   const deliveredOn = order?.deliveredAt ? londonDate(new Date(order.deliveredAt)) : null
+  // KPI clock: when the customer told us. Auto-opened cases pass the message time; manual opens use the flagged message.
+  const reportedAt = args.reportedAt ?? (kase.carrier_issue_at ? new Date(kase.carrier_issue_at) : await lastCustomerMessageAt(sql, kase.id))
+  const owner = await defaultOwner(sql)
   const [row] = await sql`
     INSERT INTO carrier_cases (case_id, carrier, tracking, order_id, issue, status, product, value, posted_on, delivered_on, source, created_by, next_action)
     VALUES (${kase.id}, ${carrier}, ${tracking}, ${kase.order_id}, ${issue}, 'to_raise', ${item?.title ?? kase.device_model ?? null}, ${value}, ${postedOn}, ${deliveredOn},
@@ -188,6 +213,7 @@ export async function openInvestigation(env: Bindings, sql: Sql, args: { caseId:
       value = COALESCE(carrier_cases.value, EXCLUDED.value), posted_on = COALESCE(carrier_cases.posted_on, EXCLUDED.posted_on),
       delivered_on = COALESCE(carrier_cases.delivered_on, EXCLUDED.delivered_on)
     RETURNING id, (xmax = 0) AS created, status`
+  await stampKpiFields(sql, row.id, { reportedAt, owner })
   if (!kase.tracking_number || !kase.carrier)
     await sql`UPDATE cases SET tracking_number = COALESCE(tracking_number, ${tracking}), carrier = COALESCE(carrier, ${CARRIERS[carrier].label}) WHERE id = ${kase.id}`
   let draftId: number | null = null
@@ -205,7 +231,7 @@ export async function onCustomerMessage(env: Bindings, sql: Sql, caseId: number,
   const [existing] = await sql`SELECT 1 FROM carrier_cases WHERE case_id = ${caseId} AND status NOT IN ('closed','rejected','paid','partially_paid')`.catch(() => [] as any[])
   if (existing) return det
   // Not-yet-due "lost" reports stay as a hint on the case; staff can still open the investigation by hand.
-  await openInvestigation(env, sql, { caseId, issue: det.issue, source: 'customer_message' }, { id: null, name: settings.from_name }).catch((e) => console.error('carrier auto-open failed', e))
+  await openInvestigation(env, sql, { caseId, issue: det.issue, source: 'customer_message', reportedAt: at }, { id: null, name: settings.from_name }).catch((e) => console.error('carrier auto-open failed', e))
   return det
 }
 
@@ -268,9 +294,11 @@ export async function ingestCarrierMessage(sql: Sql, m: GmailMessage, conn: Gmai
     const [kase] = orderId
       ? await sql`SELECT id FROM cases WHERE order_id = ${orderId} ORDER BY id LIMIT 1`
       : await sql`SELECT id FROM cases WHERE upper(replace(tracking_number, ' ', '')) = ${trackings[0]} ORDER BY id LIMIT 1`
+    const owner = await defaultOwner(sql)
     ;[k] = await sql`INSERT INTO carrier_cases (case_id, carrier, tracking, order_id, issue, status, source, next_action)
       VALUES (${kase?.id ?? null}, ${carrier}, ${trackings[0]}, ${orderId}, ${issueFromSubject(subject)}, 'awaiting_carrier', 'carrier_email', 'Check the issue type and value')
       ON CONFLICT (carrier, tracking) WHERE tracking IS NOT NULL DO UPDATE SET updated_at = now() RETURNING *`
+    await stampKpiFields(sql, k.id, { owner })
   }
 
   const kind: string = ours ? (k.raised_at ? 'chase' : 'investigation') : cls!.kind

@@ -103,6 +103,7 @@
     else if (p.startsWith('/returns')) renderTracker('return')
     else if (p === '/chargebacks') renderTracker('chargeback')
     else if (cm && carrierUI) carrierUI.renderParcel(Number(cm[1]))
+    else if (p === '/carriers/kpis' && carrierUI) carrierUI.renderKpis()
     else if (p === '/carriers' && carrierUI) carrierUI.renderDesk()
     else renderDashboard()
   }
