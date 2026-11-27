@@ -6,3 +6,7 @@ OPENAI_API_KEY=sk-your-key-here
 # GOOGLE_CLIENT_ID=...
 # GOOGLE_CLIENT_SECRET=...
 # TOKEN_ENC_KEY=   (openssl rand -base64 32)
+# Shopify (Saisales.co.uk) — Dev Dashboard app installed on the store, client credentials grant (see README "Shopify")
+# SHOPIFY_SHOP=a6fdb4
+# SHOPIFY_CLIENT_ID=
+# SHOPIFY_CLIENT_SECRET=

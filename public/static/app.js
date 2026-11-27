@@ -197,6 +197,8 @@
   // Invoice "Attach to the reply" saves the PDF on the server against the case; the draft editor shows and sends it.
   const invoicesUI = window.RiqInvoices ? window.RiqInvoices({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderError: (e) => renderError(e),
     queueCaseFile: (caseId, file) => axios.post(`/api/cases/${caseId}/files`, file) }) : null
+  // Saisales.co.uk (Shopify) order panel + Settings card (public/static/shopify.js)
+  const shopifyUI = window.RiqShopify ? window.RiqShopify({ esc, toast, fmtDate, fmtDateTime, isManager, renderCase: (id) => renderCase(id) }) : null
   const returnsUI = window.RiqReturns ? window.RiqReturns({ app, esc, toast, fmtDate, fmtDateTime, navigate, isManager, renderError: (e) => renderError(e), refreshBadges: () => refreshBadges(), renderTracker: (k) => renderTracker(k) }) : null
 
   // ---------- header clock ----------
@@ -416,6 +418,7 @@
             <h1 class="text-2xl font-bold">${esc(k.subject)}</h1>
             <div class="mt-1 flex items-center gap-3 text-sm">
               ${statusBadge(k.status)}
+              ${k.channel === 'shopify' ? '<span class="inline-block px-2 py-0.5 rounded-full text-xs bg-emerald-50 text-emerald-800 border border-emerald-200" title="Customer of our own website (Shopify)"><i class="fab fa-shopify mr-1"></i>Saisales.co.uk</span>' : ''}
               ${k.source === 'gmail' ? '<span class="inline-block px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-700 border border-red-200"><i class="fab fa-google mr-1"></i>Gmail</span>' : ''}
               <span class="${d.cls}"><i class="far fa-clock mr-1"></i>${esc(d.label)} · due ${fmtDateTime(k.reply_deadline)}</span>
             </div>
@@ -437,7 +440,7 @@
           <div class="2xl:col-span-3 space-y-4 min-w-0">
           <article id="conversation" class="bg-white rounded-xl shadow-sm border border-slate-100">
             <div class="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
-              <h2 class="font-semibold"><i class="far fa-comments mr-2 text-slate-400"></i>Conversation ${k.order_id ? `<span class="order-chip" title="Amazon order number">order ${esc(k.order_id)}</span>` : ''}</h2>
+              <h2 class="font-semibold"><i class="far fa-comments mr-2 text-slate-400"></i>Conversation ${k.order_id ? `<span class="order-chip" title="${k.channel === 'shopify' ? 'Saisales (Shopify) order number' : 'Amazon order number'}">order ${esc(k.order_id)}</span>` : ''}</h2>
               <div class="flex items-center gap-2 text-xs">
                 ${toneChip(k.tone)}
                 <select id="tone-select" class="field-input py-0.5 text-xs mt-0" style="width:auto" title="Override the AI tone label">
@@ -486,6 +489,7 @@
               ${data.events.length ? `<div class="mt-3 space-y-1">${data.events.map((e) => `<a href="/${e.kind.startsWith('atoz') ? 'atoz' : e.kind === 'chargeback' ? 'chargebacks' : 'returns'}" data-link class="block text-xs rounded-md px-2 py-1 notice ${EVENT_CLASS(e.kind)} text-left"><strong>${esc(EVENT_LABEL[e.kind] || e.kind)}</strong> · ${esc(e.status)}${e.amount ? ` · £${Number(e.amount).toFixed(2)}` : ''}${e.deadline_at ? ` · due ${fmtDateTime(e.deadline_at)}` : ''}</a>`).join('')}</div>` : ''}
             </section>
 
+            <section id="shopify-panel" class="hidden"></section>
             <section id="carrier-panel" class="bg-white rounded-xl shadow-sm p-5 hidden"></section>
             <section id="returns-panel"></section>
 
@@ -501,7 +505,7 @@
               <p class="mt-3 text-xs text-slate-500 bg-slate-50 rounded-md p-2"><i class="fas fa-lock mr-1"></i>Only the first name (<strong>${esc(k.customer_first_name)}</strong>) is ever shared with the AI drafting service.</p>
             </section>
 
-            <section id="amazon-order-panel" class="bg-white rounded-xl shadow-sm p-5">
+            <section id="amazon-order-panel" class="bg-white rounded-xl shadow-sm p-5 ${k.channel === 'shopify' ? 'hidden' : ''}">
               <div class="flex items-center justify-between mb-2">
                 <h2 class="font-semibold"><i class="fab fa-amazon mr-2 text-slate-400"></i>Amazon order</h2>
                 <span class="flex gap-1"><a href="/invoices/new?case=${k.id}" data-link class="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50" title="Make an invoice for this order"><i class="fas fa-file-invoice mr-1"></i>Invoice</a>
@@ -519,7 +523,7 @@
               <form id="fields-form" class="grid grid-cols-1 sm:grid-cols-2 gap-4" autocomplete="off">
                 <div class="sm:col-span-2">
                   <label class="field-label" for="f-order_id">Order ID</label>
-                  <input id="f-order_id" name="order_id" class="field-input font-mono" placeholder="e.g. 204-1234567-1234567" value="${esc(k.order_id || '')}">
+                  <input id="f-order_id" name="order_id" class="field-input font-mono" placeholder="${k.channel === 'shopify' ? 'e.g. #1094' : 'e.g. 204-1234567-1234567'}" value="${esc(k.order_id || '')}">
                 </div>
                 <div class="sm:col-span-2">
                   <label class="field-label" for="f-device_model">Device model</label>
@@ -534,7 +538,7 @@
                   <input id="f-approved_repair_price" name="approved_repair_price" type="number" step="0.01" min="0" class="field-input" value="${esc(k.approved_repair_price ?? '')}">
                 </div>
                 ${boolField('refund_issued', 'Refund issued', k.refund_issued)}
-                ${boolField('a_to_z_open', 'A-to-Z open', k.a_to_z_open)}
+                ${k.channel === 'shopify' ? '' : boolField('a_to_z_open', 'A-to-Z open', k.a_to_z_open)}
                 ${boolField('in_stock', 'In stock', k.in_stock)}
                 ${boolField('repair_quote_accepted', 'Repair quote accepted', k.repair_quote_accepted)}
                 <div>
@@ -556,7 +560,8 @@
 
     wireFields(id)
     wireTicket(id, k)
-    wireAmazonOrder(id, k)
+    if (k.channel !== 'shopify') wireAmazonOrder(id, k)
+    shopifyUI?.mountCasePanel(id, k)
     carrierUI?.mountCasePanel(id, k)
     returnsUI?.mountCasePanel(id, k)
     renderDraftWorkspace(id, k, data.drafts, data.events)
@@ -1274,6 +1279,7 @@
             <button data-act="rename" class="px-2 py-1 rounded-md border border-slate-300"><i class="fas fa-pen mr-1"></i>Rename</button>
             ${m.is_default ? '' : '<button data-act="default" class="px-2 py-1 rounded-md border border-slate-300">Make default</button>'}
             <button data-act="toggle" class="px-2 py-1 rounded-md border border-slate-300">${m.enabled ? '<i class="fas fa-pause mr-1"></i>Pause' : '<i class="fas fa-play mr-1"></i>Resume'}</button>
+            <button data-act="saisales" class="px-2 py-1 rounded-md border ${m.saisales_mail ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-slate-300'}" title="Also read Saisales.co.uk customer mail (info@ / support@saisales.co.uk, Shopify contact form) in this mailbox, and reply to those customers from it"><i class="fab fa-shopify mr-1"></i>Saisales mail: ${m.saisales_mail ? 'on' : 'off'}</button>
             <button data-act="reconnect" class="px-2 py-1 rounded-md border border-slate-300" title="Refresh Google permission for this address"><i class="fab fa-google mr-1"></i>Reconnect</button>` : ''}
           ${isManager ? '<button data-act="disconnect" class="px-2 py-1 rounded-md border border-red-300 text-red-700">Disconnect</button>' : ''}
         </div>
@@ -1361,6 +1367,7 @@
           case 'rename': { const l = prompt('Label for this mailbox (e.g. Manager, Agent, Returns)', m.label); if (l && l.trim()) patch({ label: l.trim() }, 'Renamed'); break }
           case 'default': patch({ is_default: true }, `${m.label} is now the default mailbox`); break
           case 'toggle': patch({ enabled: !m.enabled }, m.enabled ? 'Mailbox paused — it will not be polled' : 'Mailbox resumed'); break
+          case 'saisales': patch({ saisales_mail: !m.saisales_mail }, m.saisales_mail ? 'Saisales mail switched off for this mailbox' : 'Saisales mail switched on: customer emails to Saisales become cases'); break
           case 'reconnect': connectWith(m.label); break
           case 'disconnect':
             if (!confirm(`Disconnect ${m.email_address}? Its cases stay in ReplyIQ; syncing and sending from this address stop until reconnected.`)) return
@@ -1548,7 +1555,7 @@
         ${k.staff_sent_at ? `<div class="pl-6 text-[10px] text-amber-800"><i class="fas fa-user-clock mr-1"></i>Sent by ${esc(k.staff_sent_by_name || 'staff')} without manager approval · ${fmtDateTime(k.staff_sent_at)}</div>` : ''}
         ${k.last_preview ? `<div class="pl-6 ticket-preview" title="${esc(k.last_preview)}"><span class="who">${k.last_direction === 'outbound' ? 'You: ' : ''}</span>${esc(k.last_preview)}</div>` : ''}
         <div class="mt-1 pl-6 flex items-center justify-between gap-2 text-[10px]">
-          <span class="flex items-center gap-1 overflow-hidden whitespace-nowrap">${statusBadge(k.status)}${toneChip(k.tone)}${k.open_atoz ? '<span class="pill" style="background:#ede9fe;color:#6d28d9">A-to-Z</span>' : ''}${k.open_returns ? '<span class="pill" style="background:#cffafe;color:#155e75">RETURN</span>' : ''}${k.open_chargebacks ? '<span class="pill" style="background:#ffe4e6;color:#9f1239">CHARGEBACK</span>' : ''}${k.battery_flag ? '<span class="pill" style="background:#dc2626;color:#fff"><i class="fas fa-fire"></i></span>' : ''}${k.carrier_status ? `<span class="pill ${k.carrier_status === 'sla_breach' || k.carrier_update_due ? 'bg-sky-600 text-white' : 'bg-sky-100 text-sky-800'}" title="Carrier: ${esc(k.carrier_status.replace(/_/g, ' '))}${k.carrier_update_due ? ' — news for the customer' : ''}"><i class="fas fa-truck-fast"></i>${k.carrier_update_due ? ' NEWS' : ''}</span>` : k.carrier_issue ? '<span class="pill bg-amber-100 text-amber-800" title="Customer reports a delivery problem"><i class="fas fa-truck-fast"></i>?</span>' : ''}</span>
+          <span class="flex items-center gap-1 overflow-hidden whitespace-nowrap">${statusBadge(k.status)}${k.channel === 'shopify' ? '<span class="pill bg-emerald-100 text-emerald-800" title="Saisales.co.uk (Shopify)"><i class="fab fa-shopify"></i> SAISALES</span>' : ''}${toneChip(k.tone)}${k.open_atoz ? '<span class="pill" style="background:#ede9fe;color:#6d28d9">A-to-Z</span>' : ''}${k.open_returns ? '<span class="pill" style="background:#cffafe;color:#155e75">RETURN</span>' : ''}${k.open_chargebacks ? '<span class="pill" style="background:#ffe4e6;color:#9f1239">CHARGEBACK</span>' : ''}${k.battery_flag ? '<span class="pill" style="background:#dc2626;color:#fff"><i class="fas fa-fire"></i></span>' : ''}${k.carrier_status ? `<span class="pill ${k.carrier_status === 'sla_breach' || k.carrier_update_due ? 'bg-sky-600 text-white' : 'bg-sky-100 text-sky-800'}" title="Carrier: ${esc(k.carrier_status.replace(/_/g, ' '))}${k.carrier_update_due ? ' — news for the customer' : ''}"><i class="fas fa-truck-fast"></i>${k.carrier_update_due ? ' NEWS' : ''}</span>` : k.carrier_issue ? '<span class="pill bg-amber-100 text-amber-800" title="Customer reports a delivery problem"><i class="fas fa-truck-fast"></i>?</span>' : ''}</span>
           <span class="${d.cls} whitespace-nowrap"><i class="far fa-clock"></i> ${esc(d.label)}</span>
         </div>
       </a>`
@@ -1852,6 +1859,7 @@
             ${isManager ? '<button id="spapi-test" class="mt-3 text-sm px-3 py-1.5 rounded-md border border-slate-300">Test connection</button> <span id="spapi-test-result" class="text-xs ml-2"></span>' : ''}
             <p class="mt-2 text-[10px] text-slate-400">Secrets: SPAPI_LWA_CLIENT_ID · SPAPI_LWA_CLIENT_SECRET · SPAPI_REFRESH_TOKEN (Cloudflare → Workers → replyiq → Settings → Variables &amp; Secrets)</p>
           </div>
+          <div class="bg-white rounded-xl shadow-sm p-5" id="shopify-card"></div>
           <div class="bg-white rounded-xl shadow-sm p-5">
             <h2 class="font-semibold mb-2"><i class="fas fa-server mr-2 text-slate-400"></i>Platform</h2>
             ${row('Hosting', esc(st.hosting))}
@@ -1869,6 +1877,7 @@
       </section>`
     loadApprovalCard()
     loadClosedCard()
+    shopifyUI?.settingsCard(document.getElementById('shopify-card'))
     if (isManager) loadSpendCard()
     if (isManager) axios.get('/api/prompt').then(({ data }) => { const el = document.getElementById('prompt-summary'); if (!el) return; el.innerHTML = data.migration_needed ? `<span class="text-amber-700"><i class="fas fa-database mr-1"></i>Run <code>db/migrations/${esc(data.migration_needed)}</code> first</span>` : data.current && data.current.body.trim() ? `<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>v${data.current.version} in force</span> · ${data.current.body.trim().length} chars · saved ${dayjs(data.current.created_at).fromNow()} by ${esc(data.current.created_by_name || '—')}` : '<span class="text-slate-500">No custom prompt yet — the model gets the policy file and knowledge base only.</span>' }).catch(() => {})
     axios.get('/api/spapi/status').then(({ data }) => { const el = document.getElementById('spapi-state'); if (el) el.innerHTML = data.configured ? '<span class="text-emerald-700"><i class="fas fa-circle-check mr-1"></i>Configured</span>' : '<span class="text-amber-700"><i class="fas fa-circle-exclamation mr-1"></i>Not configured</span>' }).catch(() => {})

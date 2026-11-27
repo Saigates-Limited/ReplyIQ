@@ -20,7 +20,14 @@ async function hasArchiveCols(sql: ReturnType<typeof getDb>) {
   return archiveColsKnown
 }
 let mailboxColKnown: boolean | null = null
+// Shopify columns (migration 0029). Checked alongside the mailbox column (every case query already awaits that check);
+// only a positive answer is cached so applying 0029 takes effect without a redeploy.
+let shopifyColsKnown = false
 async function hasMailboxCol(sql: ReturnType<typeof getDb>) {
+  if (!shopifyColsKnown) {
+    const [s] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'shopify_order'`
+    shopifyColsKnown = !!s
+  }
   if (mailboxColKnown !== null) return mailboxColKnown
   const [r] = await sql`SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'mailbox_id'`
   mailboxColKnown = !!r
@@ -29,7 +36,9 @@ async function hasMailboxCol(sql: ReturnType<typeof getDb>) {
 // Mailbox label/email per case (migration 0013). Without the column, both are NULL.
 const MAILBOX_EXPR = `cases.mailbox_id, (SELECT g.label FROM gmail_connection g WHERE g.id = cases.mailbox_id) AS mailbox_label, (SELECT g.email_address FROM gmail_connection g WHERE g.id = cases.mailbox_id) AS mailbox_email,`
 const MAILBOX_NULL = `NULL::int AS mailbox_id, NULL::text AS mailbox_label, NULL::text AS mailbox_email,`
-const mailboxExpr = (has: boolean, expr: string) => expr.replace(/__MAILBOX__/g, has ? MAILBOX_EXPR : MAILBOX_NULL)
+const SHOPIFY_EXPR = `cases.channel, cases.shopify_order_gid, cases.shopify_order, cases.shopify_synced_at,`
+const SHOPIFY_NULL = `'amazon'::text AS channel, NULL::text AS shopify_order_gid, NULL::jsonb AS shopify_order, NULL::timestamptz AS shopify_synced_at,`
+const mailboxExpr = (has: boolean, expr: string) => expr.replace(/__MAILBOX__/g, has ? MAILBOX_EXPR : MAILBOX_NULL).replace(/__SHOPIFY__/g, shopifyColsKnown ? SHOPIFY_EXPR : SHOPIFY_NULL)
 let spapiColsKnown: boolean | null = null
 async function hasSpapiCols(sql: ReturnType<typeof getDb>) {
   if (spapiColsKnown !== null) return spapiColsKnown
@@ -69,6 +78,7 @@ const CASE_COLUMNS = `
   chargeback_open, battery_flag, tone, assigned_to, internal_notes, source, archived_at, delivery_date_source, spapi_synced_at,
   gmail_thread_id, customer_reply_to,
   __MAILBOX__
+  __SHOPIFY__
   last_customer_message_at,
   ${REPLY_DEADLINE} AS reply_deadline,
   created_at, updated_at
@@ -82,6 +92,7 @@ const CASE_COLUMNS_Q = `
   cases.chargeback_open, cases.battery_flag, cases.tone, cases.assigned_to, cases.internal_notes, cases.source, cases.archived_at, cases.delivery_date_source, cases.spapi_synced_at,
   cases.gmail_thread_id, cases.customer_reply_to,
   __MAILBOX__
+  __SHOPIFY__
   cases.last_customer_message_at,
   ${REPLY_DEADLINE} AS reply_deadline,
   cases.created_at, cases.updated_at

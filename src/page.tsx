@@ -101,6 +101,7 @@ export const page = (user: User) => `${HEAD('ReplyIQ · Saigates Ltd')}
   <script>dayjs.extend(window.dayjs_plugin_relativeTime)</script>
   <script src="/static/carrier.js"></script>
   <script src="/static/returns.js"></script>
+  <script src="/static/shopify.js"></script>
   <script src="/static/invoice-parser.js"></script>
   <script src="/static/invoice-pdf.js"></script>
   <script src="/static/invoices.js"></script>

@@ -47,7 +47,7 @@ export function buildTimeline(kase: CaseRow & Record<string, any>, messages: (Me
 async function askModel(env: Bindings, kase: CaseRow, messages: MessageRow[], events: EventRow[]): Promise<{ bullets: string[]; pending: string; gists: { i: number; line: string }[] } | null> {
   if (!env.OPENAI_API_KEY) return null
   const payload = buildPayload(kase, messages, { events })
-  const body = JSON.stringify({ case: payload.case, events: payload.events, thread: payload.thread.map((m, i) => ({ i, ...m })) })
+  const body = JSON.stringify({ case: payload.caseInput, ...('shopifyOrder' in payload ? { shopify_order: (payload as any).shopifyOrder } : {}), events: payload.events, thread: payload.thread.map((m, i) => ({ i, ...m })) })
   if (/SPC-[A-Za-z]+-\d{6,}/.test(body) || /refund_initiated/.test(body)) return null // same guard as drafting
   const base = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 30000)

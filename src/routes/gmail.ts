@@ -16,6 +16,7 @@ import { getAttachment, getMessage, listAttachments } from '../gmail'
 import { AMAZON_ATTACHMENT_RULES, checkAttachments, parseOutgoingAttachments } from '../attachments'
 import { filesForSend, hasDraftFiles, saysFileAttached } from '../draftFiles'
 import { findAlreadySent, customerWroteSince } from '../sendGuards'
+import { getSaisalesSettings } from '../saisales'
 
 // Protected (mounted behind requireAuth)
 export const gmailApi = new Hono<{ Bindings: Bindings; Variables: Vars }>()
@@ -106,7 +107,7 @@ gmailApi.post('/disconnect', requireManager, async (c) => {
 // PATCH /api/gmail/mailboxes/:id {label?, enabled?, is_default?} (manager)
 gmailApi.patch('/mailboxes/:id', requireManager, async (c) => {
   const id = Number(c.req.param('id'))
-  const body = (await c.req.json().catch(() => ({}))) as { label?: string; enabled?: boolean; is_default?: boolean; carrier_mail?: boolean }
+  const body = (await c.req.json().catch(() => ({}))) as { label?: string; enabled?: boolean; is_default?: boolean; carrier_mail?: boolean; saisales_mail?: boolean }
   const sql = getDb(c.env)
   try {
     if (!(await hasMultiMailbox(sql))) return c.json({ error: 'Run db/migrations/0013_multi_mailbox.sql first' }, 503)
@@ -117,6 +118,11 @@ gmailApi.patch('/mailboxes/:id', requireManager, async (c) => {
     if (body.is_default === true) { await sql`UPDATE gmail_connection SET is_default = FALSE`; await sql`UPDATE gmail_connection SET is_default = TRUE WHERE id = ${id}` }
     // Carrier desk (migration 0015): also poll this mailbox for Royal Mail / DPD / FedEx / Evri mail
     if (body.carrier_mail !== undefined) await sql`UPDATE gmail_connection SET carrier_mail = ${Boolean(body.carrier_mail)} WHERE id = ${id}`
+    // Saisales.co.uk customer mail (migration 0029): also read Saisales mail in this mailbox and reply to those customers from it
+    if (body.saisales_mail !== undefined) {
+      try { await sql`UPDATE gmail_connection SET saisales_mail = ${Boolean(body.saisales_mail)} WHERE id = ${id}` }
+      catch { return c.json({ error: 'Run db/migrations/0029_shopify.sql first' }, 503) }
+    }
     return c.json({ ok: true, mailbox: { ...(await getConnection(sql, id))!, refresh_token_enc: undefined } })
   } finally {
     await sql.end()
@@ -392,20 +398,30 @@ sendApi.post('/drafts/:id/send', async (c) => {
       // Amazon reply lock: buyer replies are ONLY sent from the Seller Central-registered address, never from a staff mailbox
       // (Amazon rejects/blocks replies from any other sender). If that mailbox is not connected, sending is refused.
       const conns = await listConnections(sql)
-      const amazonConn = conns.find((x) => x.email_address.toLowerCase() === AMAZON_REPLY_MAILBOX && x.enabled)
-      if (!amazonConn) {
+      // Saisales.co.uk (Shopify) customers: the reply goes from the mailbox the email arrived in, as the Saisales address
+      // (a verified Gmail "Send mail as" alias of that mailbox), never from the Amazon address.
+      const saisales = (kase as any).channel === 'shopify'
+      const ss = saisales ? await getSaisalesSettings(sql) : null
+      const replyConn = saisales
+        ? conns.find((x) => x.id === (kase as any).mailbox_id && x.enabled) ?? conns.find((x) => x.saisales_mail && x.enabled)
+        : conns.find((x) => x.email_address.toLowerCase() === AMAZON_REPLY_MAILBOX && x.enabled)
+      if (!replyConn) {
         await sql`UPDATE drafts SET status = ${fromStatus}, updated_at = now() WHERE id = ${id} AND status = 'sending'`
-        return c.json({ error: `Replies to Amazon customers must go from ${AMAZON_REPLY_MAILBOX} (the address registered on Seller Central). That mailbox is not connected or is paused — connect it under Gmail, or copy the text into Seller Central and Mark as sent.` }, 409)
+        return c.json({ error: saisales
+          ? 'No connected mailbox reads Saisales mail. On the Gmail page, switch on "Saisales mail" for the mailbox that receives info@saisales.co.uk, then send again.'
+          : `Replies to Amazon customers must go from ${AMAZON_REPLY_MAILBOX} (the address registered on Seller Central). That mailbox is not connected or is paused — connect it under Gmail, or copy the text into Seller Central and Mark as sent.` }, 409)
       }
-      const { token, conn } = await accessToken(c.env, sql, amazonConn.id)
+      const { token, conn } = await accessToken(c.env, sql, replyConn.id)
       const sent = await sendReply(token, {
-        from: conn.email_address,
+        from: ss ? ss.from_address : conn.email_address,
+        fromName: ss ? ss.from_name : undefined,
         to: kase.customer_reply_to,
         subject,
         body: d.draft_text,
         inReplyTo: lastInbound?.rfc_message_id || undefined,
         references: refs.map((r) => r.rfc_message_id).join(' ') || undefined,
-        threadId: kase.gmail_thread_id || undefined,
+        // A Gmail thread id belongs to one account: only reuse it when sending from the mailbox the thread is in.
+        threadId: (saisales && replyConn.id !== (kase as any).mailbox_id) ? undefined : kase.gmail_thread_id || undefined,
         attachments: allFiles.list,
       })
       // Where Gmail stored the files we just sent, so they show on the thread and open like customer attachments.
@@ -416,7 +432,7 @@ sendApi.post('/drafts/:id/send', async (c) => {
         // Route B only: record that no manager approved this reply, who sent it, and what the server verified (migration 0020 columns; checked before we got here).
         if (routine) await tx`UPDATE drafts SET sent_without_manager_approval = TRUE, routine_check = ${tx.json(routine as any)} WHERE id = ${id}`
         const [om] = await tx`INSERT INTO messages (case_id, direction, sender, body, subject, gmail_message_id, sent_at)
-                 VALUES (${kase.id}, 'outbound', ${'Saigates Support (' + user.name + ')'}, ${d.draft_text}, ${subject}, ${sent.id}, now()) RETURNING id`
+                 VALUES (${kase.id}, 'outbound', ${(saisales ? 'Saisales Support (' : 'Saigates Support (') + user.name + ')'}, ${d.draft_text}, ${subject}, ${sent.id}, now()) RETURNING id`
         if (newThread) await tx`UPDATE cases SET gmail_thread_id = ${sent.threadId} WHERE id = ${kase.id} AND gmail_thread_id IS NULL`
         if (await hasDraftFiles(tx as any)) await tx`DELETE FROM draft_files WHERE draft_id = ${id}`
         for (const f of allFiles.list) {
